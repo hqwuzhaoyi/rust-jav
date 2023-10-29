@@ -1,13 +1,15 @@
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::path::PathBuf;
 
 pub mod delete_files;
-pub mod rename_files;
 pub mod move_files;
+pub mod rename_files;
 
 pub fn traverse_directory<P: AsRef<Path>>(
     path: P,
+    output_dir_path: PathBuf,
     patterns: &[String],
     prefixes: &[&str],
     is_root: bool,
@@ -29,7 +31,7 @@ pub fn traverse_directory<P: AsRef<Path>>(
 
         // 如果是目录，则递归调用
         if path.is_dir() {
-            traverse_directory(&path, patterns, prefixes, false)?;
+            traverse_directory(&path, output_dir_path.clone(), patterns, prefixes, false)?;
         }
     }
     Ok(())
