@@ -2,6 +2,7 @@ use regex::Regex;
 use std::fs;
 use std::io::{self};
 use std::path::Path;
+use log::info;
 
 pub fn delete_files_matching_patterns<P: AsRef<Path>>(
     file_path: P,
@@ -17,7 +18,7 @@ pub fn delete_files_matching_patterns<P: AsRef<Path>>(
             let regex_pattern = format!("^{}.*$", pattern.replace("*", ".*"));
             let re = Regex::new(&regex_pattern).unwrap();
             if re.is_match(&file_name) {
-                println!("will delete file: {:?}", path);
+                info!("will delete file: {:?}", path);
                 // 取消下面这行注释以启用删除功能
                 fs::remove_file(path)?;
                 break;

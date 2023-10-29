@@ -1,4 +1,6 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use env_logger;
+use log::{info, LevelFilter};
 use once_cell::sync::Lazy;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -27,17 +29,47 @@ struct Cli {
     /// Organized target folder
     #[arg(short, long)]
     output_dir: String,
+
+    #[arg(short, long, value_enum)]
+    log_level: Option<LogLevel>,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<LogLevel> for LevelFilter {
+    fn from(log_level: LogLevel) -> Self {
+        match log_level {
+            LogLevel::Error => LevelFilter::Error,
+            LogLevel::Warn => LevelFilter::Warn,
+            LogLevel::Info => LevelFilter::Info,
+            LogLevel::Debug => LevelFilter::Debug,
+            LogLevel::Trace => LevelFilter::Trace,
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    let log_level = cli.log_level.unwrap_or(LogLevel::Warn);
+    env_logger::Builder::new()
+        .filter(None, LevelFilter::from(log_level))
+        .init();
+
+    info!("Start to organize files...");
 
     let dir = &cli.dir; // 获取 dir 参数的值
     let output_dir = &cli.output_dir; // 获取 target 参数的值
     let output_dir_path = PathBuf::from(output_dir);
     let pattern_slice: Vec<String> = PATTERNS.iter().cloned().collect();
     let patterns_ref = &pattern_slice;
-    println!("all pattern {:?}", pattern_slice);
+    info!("all pattern {:?}", pattern_slice);
 
     let prefixes = [
         "hhd800.com@",
