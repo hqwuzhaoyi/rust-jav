@@ -24,7 +24,13 @@ fn main() -> io::Result<()> {
         "第一會所新片@SIS001@",
         "zzpp05.com@",
         "RH2048.COM@",
+        "[7sht.me]@",
+        "[98t.tv]@",
+        "[ThZu.Cc]@",
+        "[99u.me]@",
+        "[22sht.me]@",
     ];
-    file_utils::traverse_directory(dir, patterns_ref, &prefixes)?;
+    file_utils::move_files::create_category_directories(dir)?;
+    file_utils::traverse_directory(dir, patterns_ref, &prefixes, true)?;
     Ok(())
 }

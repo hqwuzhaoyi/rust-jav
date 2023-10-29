@@ -13,7 +13,6 @@ pub fn delete_files_matching_patterns<P: AsRef<Path>>(
             Some(name) => name.to_string_lossy(),
             None => return Ok(()),
         };
-        println!("regex pattern: {:?} ", path);
         for pattern in patterns {
             let regex_pattern = format!("^{}.*$", pattern.replace("*", ".*"));
             let re = Regex::new(&regex_pattern).unwrap();
