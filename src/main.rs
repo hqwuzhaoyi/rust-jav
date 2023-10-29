@@ -1,8 +1,6 @@
 use clap::Parser;
 use once_cell::sync::Lazy;
 use std::collections::HashSet;
-
-use std::io::{self};
 use std::path::PathBuf;
 
 mod file_utils;
