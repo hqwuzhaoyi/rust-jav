@@ -15,7 +15,7 @@ pub fn rename_files_removing_prefixes<P: AsRef<Path>>(
                     let new_file_name = file_name_str.replacen(prefix, "", 1);
                     let new_path = path.with_file_name(new_file_name);
                     println!("将 {:?} 更改为 {:?}", path, new_path);
-                    // fs::rename(path, new_path)?;
+                    fs::rename(path, new_path)?;
                     break;
                 }
             }
@@ -35,7 +35,7 @@ pub fn rename_directories_to_uppercase<P: AsRef<Path>>(file_path: P) -> io::Resu
                 let new_path = path.with_file_name(uppercased_name);
                 println!("Renaming {:?} to {:?}", path, new_path);
 
-                // fs::rename(&path, new_path)?;
+                fs::rename(&path, new_path)?;
             }
         }
     }

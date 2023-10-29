@@ -19,7 +19,7 @@ pub fn delete_files_matching_patterns<P: AsRef<Path>>(
             if re.is_match(&file_name) {
                 println!("will delete file: {:?}", path);
                 // 取消下面这行注释以启用删除功能
-                // fs::remove_file(path)?;
+                fs::remove_file(path)?;
                 break;
             }
         }
