@@ -1,0 +1,57 @@
+name: Rust Multi-OS Build and Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+
+    - name: Build Release
+      run: cargo build --release
+
+    - name: Rename binary (Windows)
+      if: startsWith(matrix.os, 'windows')
+      run: mv target/release/rust-jav.exe target/release/rust-jav-${{ matrix.os }}.exe
+
+    - name: Rename binary (Linux/Mac)
+      if: startsWith(matrix.os, 'ubuntu') || startsWith(matrix.os, 'macos')
+      run: mv target/release/rust-jav target/release/rust-jav-${{ matrix.os }}
+
+    - name: Create Release
+      id: create_release
+      if: startsWith(matrix.os, 'ubuntu')
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        draft: false
+        prerelease: false
+
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      if: success()
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./target/release/rust-jav-${{ matrix.os }}
+        asset_name: rust-jav-${{ matrix.os }}
+        asset_content_type: application/octet-stream
