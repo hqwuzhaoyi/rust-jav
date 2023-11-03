@@ -28,7 +28,7 @@ struct Cli {
 
     /// Organized target folder
     #[arg(short, long)]
-    output_dir: String,
+    output_dir: Option<String>,
 
     #[arg(short, long, value_enum)]
     log_level: Option<LogLevel>,
@@ -57,7 +57,7 @@ impl From<LogLevel> for LevelFilter {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let log_level = cli.log_level.unwrap_or(LogLevel::Warn);
+    let log_level = cli.log_level.unwrap_or(LogLevel::Info);
     env_logger::Builder::new()
         .filter(None, LevelFilter::from(log_level))
         .init();
@@ -65,8 +65,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Start to organize files...");
 
     let dir = &cli.dir; // 获取 dir 参数的值
-    let output_dir = &cli.output_dir; // 获取 target 参数的值
-    let output_dir_path = PathBuf::from(output_dir);
+    let output_dir_path = match &cli.output_dir {
+        Some(output_dir) => PathBuf::from(output_dir),
+        None => PathBuf::new(), // Or provide a default value
+    };
     let pattern_slice: Vec<String> = PATTERNS.iter().cloned().collect();
     let patterns_ref = &pattern_slice;
     info!("all pattern {:?}", pattern_slice);
@@ -84,7 +86,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "[22sht.me]@",
     ];
 
-    file_utils::move_files::create_category_directories(output_dir_path.clone())?;
+    if output_dir_path.exists() {
+        file_utils::move_files::create_category_directories(output_dir_path.clone())?;
+    }
+
     file_utils::traverse_directory(dir, output_dir_path.clone(), patterns_ref, &prefixes, true)?;
     Ok(())
 }
