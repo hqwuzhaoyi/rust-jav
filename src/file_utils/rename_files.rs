@@ -5,7 +5,7 @@ use log::info;
 
 pub fn rename_files_removing_prefixes<P: AsRef<Path>>(
     file_path: P,
-    prefixes: &[&str],
+    prefixes: &[String],
 ) -> io::Result<()> {
     let path = file_path.as_ref();
     if path.is_file() {

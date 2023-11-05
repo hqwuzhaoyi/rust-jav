@@ -1,21 +1,34 @@
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::path::PathBuf;
-
 use log::trace;
 
 pub mod delete_files;
 pub mod move_files;
 pub mod rename_files;
 
-pub fn traverse_directory<P: AsRef<Path>>(
-    path: P,
-    output_dir_path: PathBuf,
-    patterns: &[String],
-    prefixes: &[&str],
-    is_root: bool,
-) -> io::Result<()> {
+pub fn traverse_directory<P: AsRef<Path>>(is_root: bool, sub_path: P) -> io::Result<()> {
+    trace!("traverse_directory is called");
+    let config = {
+        let guard = crate::config::get_config().unwrap(); // 假设这个函数返回一个鎖的保護者
+        guard.clone() // 複製數據，保護者在這個大括號結束時釋放鎖
+    }; // 鎖在此被釋放，因為保護者 guard 離開了作用域
+    trace!("config: {:?}", config);
+    //  从默认值没有的话，就从 config 中获取
+    let path = if sub_path.as_ref().to_str().unwrap() == "" {
+        Path::new(&config.dir)
+    } else {
+        sub_path.as_ref()
+    };
+    let output_dir_path = &config.output_dir;
+    let prefixes = &config.prefixes;
+    let patterns = &config.patterns;
+
+    trace!("traverse_directory: {:?}", path);
+    trace!("output_dir_path: {:?}", output_dir_path);
+    trace!("prefixes: {:?}", prefixes);
+    trace!("patterns: {:?}", patterns);
+
     for entry in fs::read_dir(&path)? {
         let entry = entry?;
         let path = entry.path();
@@ -32,7 +45,8 @@ pub fn traverse_directory<P: AsRef<Path>>(
 
         // 如果是目录，则递归调用
         if path.is_dir() {
-            traverse_directory(&path, output_dir_path.clone(), patterns, prefixes, false)?;
+            trace!("traverse_directory: {:?}", path);
+            traverse_directory(false, &path)?;
         }
 
         if is_root {
