@@ -3,6 +3,20 @@ use log::trace;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::path::PathBuf;
+
+fn rename_file(path: &Path, new_path: &PathBuf) -> io::Result<()> {
+    if !new_path.exists() {
+        info!("Renaming {:?} to {:?}", path, new_path);
+        fs::rename(&path, new_path)?;
+    } else {
+        info!(
+            "Directory with the name {:?} already exists, cannot rename {:?}",
+            new_path, path
+        );
+    }
+    Ok(())
+}
 
 pub fn rename_files_removing_prefixes<P: AsRef<Path>>(
     file_path: P,
@@ -16,8 +30,9 @@ pub fn rename_files_removing_prefixes<P: AsRef<Path>>(
                 if file_name_str.starts_with(prefix) {
                     let new_file_name = file_name_str.replacen(prefix, "", 1);
                     let new_path = path.with_file_name(new_file_name);
-                    info!("将 {:?} 更改为 {:?}", path, new_path);
-                    fs::rename(path, new_path)?;
+
+                    rename_file(path, &new_path)?;
+
                     break;
                 }
             }
@@ -35,9 +50,7 @@ pub fn rename_directories_to_uppercase<P: AsRef<Path>>(file_path: P) -> io::Resu
             if dir_name_str.chars().any(|c| c.is_ascii_lowercase()) {
                 let uppercased_name = dir_name_str.to_ascii_uppercase();
                 let new_path = path.with_file_name(uppercased_name);
-                info!("Renaming {:?} to {:?}", path, new_path);
-
-                fs::rename(&path, new_path)?;
+                rename_file(path, &new_path)?;
             }
         }
     }
@@ -61,8 +74,7 @@ pub fn rename_files_removing_uncensored<P: AsRef<Path>>(file_path: P) -> io::Res
             if let Some(extension) = path.extension() {
                 let new_file_name = format!("{}.{}", new_file_stem, extension.to_string_lossy());
                 let new_path = path.with_file_name(new_file_name);
-                info!("将 {:?} 更改为 {:?}", path, new_path);
-                fs::rename(path, new_path)?;
+                rename_file(path, &new_path)?;
             }
         }
     }

@@ -30,7 +30,10 @@ pub fn move_directories<P: AsRef<Path>>(file_path: P, output_dir_path: P) -> io:
     let output_path = output_dir_path.as_ref();
     if path.is_dir() {
         if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
-            if dir_name.ends_with("-UC") || dir_name.contains("UNCENSORED") {
+            if dir_name.ends_with("-UC")
+                || dir_name.contains("UNCENSORED")
+                || dir_name.contains("uncensored")
+            {
                 let new_path = output_path.join("UNCENSORED").join(dir_name);
                 info!("Moving {:?} to {:?}", path, new_path);
                 if !new_path.exists() {
