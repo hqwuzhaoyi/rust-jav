@@ -1,7 +1,8 @@
+use log::info;
+use log::trace;
 use std::fs;
 use std::io;
 use std::path::Path;
-use log::info;
 
 pub fn rename_files_removing_prefixes<P: AsRef<Path>>(
     file_path: P,
@@ -37,6 +38,31 @@ pub fn rename_directories_to_uppercase<P: AsRef<Path>>(file_path: P) -> io::Resu
                 info!("Renaming {:?} to {:?}", path, new_path);
 
                 fs::rename(&path, new_path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn rename_files_removing_uncensored<P: AsRef<Path>>(file_path: P) -> io::Result<()> {
+    let path = file_path.as_ref();
+    if path.is_file() {
+        if let Some(file_stem) = path.file_stem() {
+            let file_stem_str = file_stem.to_string_lossy();
+            trace!("rename_files_removing_uncensored: {:?}", file_stem_str);
+            let new_file_stem = if file_stem_str.ends_with("-U") {
+                file_stem_str.replacen("-U", "", 1)
+            } else if file_stem_str.ends_with("-UC") {
+                file_stem_str.replacen("-UC", "-C", 1)
+            } else {
+                file_stem_str.into_owned()
+            };
+
+            if let Some(extension) = path.extension() {
+                let new_file_name = format!("{}.{}", new_file_stem, extension.to_string_lossy());
+                let new_path = path.with_file_name(new_file_name);
+                info!("将 {:?} 更改为 {:?}", path, new_path);
+                fs::rename(path, new_path)?;
             }
         }
     }

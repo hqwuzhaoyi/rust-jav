@@ -3,6 +3,8 @@ use std::fs;
 use std::io::{self};
 use std::path::Path;
 
+use crate::file_utils::rename_files::rename_files_removing_uncensored;
+
 pub fn create_category_directories<P: AsRef<Path>>(path: P) -> io::Result<()> {
     let output_path = path.as_ref();
 
@@ -32,7 +34,15 @@ pub fn move_directories<P: AsRef<Path>>(file_path: P, output_dir_path: P) -> io:
                 let new_path = output_path.join("UNCENSORED").join(dir_name);
                 info!("Moving {:?} to {:?}", path, new_path);
                 if !new_path.exists() {
-                    fs::rename(&path, new_path)?;
+                    fs::rename(&path, new_path.clone())?;
+
+                    // 去new_path 内的所有文件调用 rename_files_removing_uncensored
+                    for entry in fs::read_dir(&new_path)? {
+                        let entry = entry?;
+                        let path = entry.path();
+                        println!("rename UNCENSORED dir: {:?}", path);
+                        rename_files_removing_uncensored(&path)?;
+                    }
                 } else {
                     info!("Directory {:?} already exists", new_path);
                 }
