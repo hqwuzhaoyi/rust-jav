@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::Path;
+use log::info;
 use log::trace;
 
 pub mod delete_files;
@@ -37,6 +38,10 @@ pub fn traverse_directory<P: AsRef<Path>>(is_root: bool, sub_path: P) -> io::Res
         trace!("Before delete files: {:?}", path);
         delete_files::delete_files_matching_patterns(&path, patterns)?;
         trace!("delete files end");
+
+        trace!("Before delete directories: {:?}", path);
+        delete_files::delete_dir_with_no_video(&path)?;
+        trace!("delete directories end");
 
         // 对每个文件执行重命名操作
         trace!("Before rename files: {:?}", path);
