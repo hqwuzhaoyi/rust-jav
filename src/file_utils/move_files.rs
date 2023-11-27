@@ -52,6 +52,7 @@ pub fn move_directories<P: AsRef<Path>>(file_path: P, output_dir_path: P) -> io:
             } else if dir_name.ends_with("ch")
                 || dir_name.ends_with("-C")
                 || dir_name.ends_with("CH")
+                || dir_name.ends_with("C_X1080X")
             {
                 let new_path = output_path.join("CHINESE").join(dir_name);
                 info!("Moving {:?} to {:?}", path, new_path);
