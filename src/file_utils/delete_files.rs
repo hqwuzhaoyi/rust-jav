@@ -38,12 +38,22 @@ where
     if path.as_ref().is_dir() {
         let mut has_video = false;
         let mut has_nfo = false;
+        let mut only_has_trailers_dir = false;
+
         for entry in fs::read_dir(&path)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
                 trace!("path.is_dir: {:?}", path);
                 delete_dir_with_no_video(&path)?;
+                let dir_name = match path.file_name() {
+                    Some(name) => name.to_string_lossy(),
+                    None => return Ok(()),
+                };
+
+                if dir_name == "trailers" {
+                    only_has_trailers_dir = true;
+                }
             } else if path.is_file() {
                 trace!("path.is_file: {:?}", path);
                 let file_name = match path.file_name() {
@@ -68,11 +78,13 @@ where
         trace!("has_video: {:?}", has_video);
         trace!("path: {:?}", path.as_ref());
 
-        if has_nfo && !has_video {
-            let file_path = path.as_ref();
-            info!("will delete dir: {:?}", file_path);
-            // 取消下面这行注释以启用删除功能
-            fs::remove_dir_all(path)?;
+        if !has_video {
+            if has_nfo || only_has_trailers_dir {
+                let file_path = path.as_ref();
+                info!("will delete dir: {:?}", file_path);
+                // 取消下面这行注释以启用删除功能
+                fs::remove_dir_all(path)?;
+            }
         }
     } else {
         let file_path = path.as_ref();

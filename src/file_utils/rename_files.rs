@@ -5,15 +5,28 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 
-fn rename_file(path: &Path, new_path: &PathBuf) -> io::Result<()> {
-    if !new_path.exists() {
+pub fn rename_file(path: &Path, new_path: &PathBuf) -> io::Result<()> {
+    if new_path.exists() {
+        trace!("File with the name {:?} already exists", new_path);
+        if new_path.is_dir() {
+            // 遍历目录中的所有文件和子目录
+            for entry in fs::read_dir(path)? {
+                let entry = entry?;
+                let file_name = entry.file_name();
+                let target_path = new_path.join(file_name);
+                fs::rename(entry.path(), target_path)?;
+            }
+            // 可选：删除原始目录
+            fs::remove_dir_all(path)?;
+        } else {
+            info!(
+                "File with the name {:?} already exists, cannot rename {:?}",
+                new_path, path
+            );
+        }
+    } else {
         info!("Renaming {:?} to {:?}", path, new_path);
         fs::rename(&path, new_path)?;
-    } else {
-        info!(
-            "Directory with the name {:?} already exists, cannot rename {:?}",
-            new_path, path
-        );
     }
     Ok(())
 }
