@@ -1,23 +1,53 @@
 use log::info;
 use log::trace;
+use log::error;
 use std::fs;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
+
+pub fn move_and_delete_directory<P: AsRef<Path>>(path: P, new_path: P) -> io::Result<()> {
+    let path = path.as_ref();
+    let new_path = new_path.as_ref();
+
+    // 遍历目录中的所有文件和子目录
+    match fs::read_dir(path) {
+        Ok(entries) => {
+            for entry in entries {
+                match entry {
+                    Ok(entry) => {
+                        let file_name = entry.file_name();
+                        let target_path = new_path.join(file_name);
+                        match fs::rename(entry.path(), &target_path) {
+                            Ok(_) => info!("File moved from {:?} to {:?}", entry.path(), target_path),
+                            Err(e) => error!("Error moving file {:?}: {}", entry.path(), e),
+                        }
+                    },
+                    Err(e) => error!("Error reading entry in directory {:?}: {}", path, e),
+                }
+            }
+        },
+        Err(e) => {
+            error!("Error reading directory {:?}: {}", path, e);
+            return Err(e);
+        },
+    }
+
+    // 可选：删除原始目录
+    match fs::remove_dir_all(path) {
+        Ok(_) => info!("Directory {:?} deleted successfully.", path),
+        Err(e) => error!("Error deleting directory {:?}: {}", path, e),
+    }
+
+    Ok(())
+}
 
 pub fn rename_file(path: &Path, new_path: &PathBuf) -> io::Result<()> {
     if new_path.exists() {
         trace!("File with the name {:?} already exists", new_path);
         if new_path.is_dir() {
             // 遍历目录中的所有文件和子目录
-            for entry in fs::read_dir(path)? {
-                let entry = entry?;
-                let file_name = entry.file_name();
-                let target_path = new_path.join(file_name);
-                fs::rename(entry.path(), target_path)?;
-            }
-            // 可选：删除原始目录
-            fs::remove_dir_all(path)?;
+            move_and_delete_directory(path, new_path)?;
         } else {
             info!(
                 "File with the name {:?} already exists, cannot rename {:?}",
