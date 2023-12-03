@@ -110,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "[ThZu.Cc]@",
         "[99u.me]@",
         "[22sht.me]@",
+        "AVAV66.XYZ@",
     ];
 
     let dir = cli.dir.clone();

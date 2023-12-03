@@ -6,39 +6,54 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 
+
 pub fn move_and_delete_directory<P: AsRef<Path>>(path: P, new_path: P) -> io::Result<()> {
     let path = path.as_ref();
     let new_path = new_path.as_ref();
 
-    // 遍历目录中的所有文件和子目录
-    match fs::read_dir(path) {
-        Ok(entries) => {
-            for entry in entries {
-                match entry {
-                    Ok(entry) => {
-                        let file_name = entry.file_name();
-                        let target_path = new_path.join(file_name);
-                        match fs::rename(entry.path(), &target_path) {
-                            Ok(_) => info!("File moved from {:?} to {:?}", entry.path(), target_path),
-                            Err(e) => error!("Error moving file {:?}: {}", entry.path(), e),
-                        }
-                    },
-                    Err(e) => error!("Error reading entry in directory {:?}: {}", path, e),
-                }
-            }
-        },
+    // 直接重命名整个目录
+    match fs::rename(path, new_path) {
+        Ok(_) => info!("Directory moved from {:?} to {:?}", path, new_path),
         Err(e) => {
-            error!("Error reading directory {:?}: {}", path, e);
+            error!("Error moving directory {:?} to {:?}: {}", path, new_path, e);
             return Err(e);
-        },
+        }
     }
 
-    // 可选：删除原始目录
-    match fs::remove_dir_all(path) {
-        Ok(_) => info!("Directory {:?} deleted successfully.", path),
-        Err(e) => error!("Error deleting directory {:?}: {}", path, e),
-    }
+    Ok(())
+}
 
+pub fn remove_nfo_files<P: AsRef<Path>>(path: P) -> io::Result<()> {
+    let path = path.as_ref();
+    if path.is_dir() {
+        match fs::read_dir(path) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => {
+                            let path = entry.path();
+                            if path.is_dir() {
+                                if let Err(e) = remove_nfo_files(&path) {
+                                    error!("Error removing nfo files in directory {:?}: {}", path, e);
+                                }
+                            } else if path.is_file() {
+                                if let Some(extension) = path.extension() {
+                                    if extension == "nfo" {
+                                        info!("Deleting file {:?}", path);
+                                        if let Err(e) = fs::remove_file(&path) {
+                                            error!("Error deleting file {:?}: {}", path, e);
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        Err(e) => error!("Error reading entry in directory {:?}: {}", path, e),
+                    }
+                }
+            },
+            Err(e) => error!("Error reading directory {:?}: {}", path, e),
+        }
+    }
     Ok(())
 }
 
@@ -48,6 +63,10 @@ pub fn rename_file(path: &Path, new_path: &PathBuf) -> io::Result<()> {
         if new_path.is_dir() {
             // 遍历目录中的所有文件和子目录
             move_and_delete_directory(path, new_path)?;
+
+            // 删除new_path文件夹下的nfo文件
+            remove_nfo_files(&new_path)?;
+
         } else {
             info!(
                 "File with the name {:?} already exists, cannot rename {:?}",
