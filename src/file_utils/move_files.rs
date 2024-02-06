@@ -34,7 +34,10 @@ pub fn move_directories<P: AsRef<Path>>(file_path: P, output_dir_path: P) -> io:
                 || dir_name.contains("UNCENSORED")
                 || dir_name.contains("uncensored")
             {
-                let new_path = output_path.join("UNCENSORED").join(dir_name);
+                // new_path 去掉后缀 -UC、UNCENSORED、uncensored
+                let new_path = output_path
+                    .join("UNCENSORED")
+                    .join(dir_name.replace("-UC", ""));
                 info!("Moving {:?} to {:?}", path, new_path);
                 if !new_path.exists() {
                     fs::rename(&path, new_path.clone())?;
