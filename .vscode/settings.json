@@ -1,7 +1,8 @@
 {
-    "workbench.colorCustomizations": {
-        "activityBar.background": "#0E3423",
-        "titleBar.activeBackground": "#134931",
-        "titleBar.activeForeground": "#F5FCF9"
-    }
+  "workbench.colorCustomizations": {
+    "activityBar.background": "#0E3423",
+    "titleBar.activeBackground": "#134931",
+    "titleBar.activeForeground": "#F5FCF9"
+  },
+  "github.copilot.editor.enableAutoCompletions": true
 }
