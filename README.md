@@ -28,3 +28,9 @@ cargo build --release
 ```shell
 CROSS_CONTAINER_OPTS="--platform linux/amd64" cross build --target x86_64-unknown-linux-gnu -v
 ```
+
+## 生成测试文件
+
+```shell
+cargo run --example create
+```
