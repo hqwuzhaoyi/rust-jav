@@ -21,6 +21,7 @@ fn main() -> std::io::Result<()> {
     let files = [
         "test/2CH/1.nfo",
         "test/2CH/asd-C.mp4",
+        "test/2CH/uur76.mp4",
         "test/AVAV66.XYZ@BAB084/論壇文宣/灣搭拉咩拉@無限討論區 FastZone.ORG.txt",
         "test/TEST1/test1.mp4",
         "test/259LUXU-1699/259LUXU-1699.nfo",

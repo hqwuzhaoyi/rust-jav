@@ -80,7 +80,8 @@ impl From<LogLevel> for LevelFilter {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let log_level = cli.log_level.unwrap_or(LogLevel::Info);
     env_logger::Builder::new()
@@ -139,6 +140,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         file_utils::move_files::create_category_directories(path)?;
     }
 
-    file_utils::traverse_directory(true, dir)?;
+    file_utils::traverse_directory(true, dir).await?;
     Ok(())
 }

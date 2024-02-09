@@ -4,12 +4,14 @@ use log::trace;
 use std::fs;
 use std::io;
 use std::path::Path;
+use async_recursion::async_recursion;
 
 pub mod delete_files;
 pub mod move_files;
 pub mod rename_files;
 
-pub fn traverse_directory<P: AsRef<Path>>(is_root: bool, sub_path: P) -> io::Result<()> {
+#[async_recursion]
+pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(is_root: bool, sub_path: P) -> io::Result<()> {
     trace!("traverse_directory is called");
     let config = {
         let guard = crate::config::get_config().unwrap(); // 假设这个函数返回一个鎖的保護者
@@ -46,12 +48,12 @@ pub fn traverse_directory<P: AsRef<Path>>(is_root: bool, sub_path: P) -> io::Res
                 let path = entry.path();
 
                 // 对每个文件执行删除操作
-                trace!("Before delete files: {:?}", path);
-                delete_files::delete_files_matching_patterns(&path, patterns)?;
+                trace!("Before delete files111: {:?}", path);
+                let _ = delete_files::delete_files_matching_patterns(&path, patterns).await?;
                 trace!("delete files end");
 
                 trace!("Before delete directories: {:?}", path);
-                delete_files::delete_dir_with_no_video(&path)?;
+                let _ = delete_files::delete_dir_with_no_video(path.clone()).await?;
                 trace!("delete directories end");
 
                 // 对每个文件执行重命名操作
@@ -62,7 +64,7 @@ pub fn traverse_directory<P: AsRef<Path>>(is_root: bool, sub_path: P) -> io::Res
                 // 如果是目录，则递归调用
                 if path.is_dir() {
                     trace!("traverse_directory: {:?}", path);
-                    traverse_directory(false, &path)?;
+                    traverse_directory(false, path.clone()).await?;
                 }
 
                 if is_root {
