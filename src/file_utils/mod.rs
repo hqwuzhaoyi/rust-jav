@@ -9,6 +9,7 @@ use async_recursion::async_recursion;
 pub mod delete_files;
 pub mod move_files;
 pub mod rename_files;
+pub mod create_dir;
 
 #[async_recursion]
 pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(is_root: bool, sub_path: P) -> io::Result<()> {

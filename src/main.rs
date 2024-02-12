@@ -137,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if should_create_directories {
         info!("Creating category directories...");
         let path = output_dir.as_path();
-        file_utils::move_files::create_category_directories(path)?;
+        file_utils::create_dir::create_category_directories(path)?;
     }
 
     file_utils::traverse_directory(true, dir).await?;
