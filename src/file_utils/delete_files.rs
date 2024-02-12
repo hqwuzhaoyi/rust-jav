@@ -14,12 +14,11 @@ pub async fn delete_files_matching_patterns<P: AsRef<Path>>(
     patterns: &[String],
 ) -> io::Result<()> {
     let path = file_path.as_ref();
-    println!("path: {:?}", path);
     let is_file: bool = fs::metadata(&path)
         .await
         .map(|m| m.is_file())
         .unwrap_or(false);
-    println!("is_file: {:?}", is_file);
+
     if is_file {
         let file_name = match path.file_name() {
             Some(name) => name.to_string_lossy().into_owned(),
@@ -28,7 +27,6 @@ pub async fn delete_files_matching_patterns<P: AsRef<Path>>(
         for pattern in patterns {
             let regex_pattern = format!("^{}.*$", pattern.replace("*", ".*"));
             let re = Regex::new(&regex_pattern).unwrap();
-            println!("regex_pattern: {:?}", regex_pattern);
             if re.is_match(&file_name) {
                 info!("will delete file: {:?}", path);
                 // 使用 tokio 的异步删除文件功能
