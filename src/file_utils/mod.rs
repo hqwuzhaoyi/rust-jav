@@ -1,5 +1,4 @@
 use log::error;
-use log::info;
 use log::trace;
 use std::fs;
 use std::io;
@@ -74,7 +73,7 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(is_root:
                     trace!("rename directories end");
                     if output_dir_path.exists() {
                         trace!("move files: {:?}", path);
-                        move_files::move_directories(&path, &output_dir_path)?;
+                        move_files::move_directories(&path, &output_dir_path).await?;
                         trace!("move files end");
                     }
                 }
