@@ -12,8 +12,9 @@ const VIDEO_PATTERNS: [&str; 4] = ["mp4", "mkv", "avi", "wmv"];
 pub async fn delete_files_matching_patterns<P: AsRef<Path>>(
     file_path: P,
     patterns: &[String],
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let path = file_path.as_ref();
+    let mut dir_deleted = false;
     let is_file: bool = fs::metadata(&path)
         .await
         .map(|m| m.is_file())
@@ -22,7 +23,7 @@ pub async fn delete_files_matching_patterns<P: AsRef<Path>>(
     if is_file {
         let file_name = match path.file_name() {
             Some(name) => name.to_string_lossy().into_owned(),
-            None => return Ok(()),
+            None => return Ok(false),
         };
         for pattern in patterns {
             let regex_pattern = format!("^{}.*$", pattern.replace("*", ".*"));
@@ -31,19 +32,22 @@ pub async fn delete_files_matching_patterns<P: AsRef<Path>>(
                 info!("will delete file: {:?}", path);
                 // 使用 tokio 的异步删除文件功能
                 fs::remove_file(path).await?;
+                dir_deleted = true;
                 break;
             }
         }
     }
-    Ok(())
+    Ok(dir_deleted)
 }
 
 // 删除目录下有nfo文件但是没有视频的目录
 #[async_recursion]
 pub async fn delete_dir_with_no_video<P: AsRef<Path> + Send + Sync + 'static>(
     path: P,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let path_ref = path.as_ref();
+    let mut dir_deleted = false;
+    let mut is_empty = true;
     if path_ref.is_dir() {
         let mut has_video = false;
         let mut has_nfo = false;
@@ -51,6 +55,7 @@ pub async fn delete_dir_with_no_video<P: AsRef<Path> + Send + Sync + 'static>(
 
         let mut entries = fs::read_dir(path_ref).await?;
         while let Some(entry) = entries.next_entry().await? {
+            is_empty = false;
             let path = entry.path();
             if path.is_dir() {
                 trace!("path.is_dir: {:?}", path);
@@ -81,13 +86,14 @@ pub async fn delete_dir_with_no_video<P: AsRef<Path> + Send + Sync + 'static>(
         trace!("only_has_trailers_dir: {:?}", only_has_trailers_dir);
         trace!("path: {:?}", path_ref);
 
-        if !has_video && (has_nfo || !only_has_trailers_dir) {
+        if (!has_video && (has_nfo || !only_has_trailers_dir)) || is_empty {
             info!("will delete dir: {:?}", path_ref);
             // 取消下面这行注释以启用删除功能
             fs::remove_dir_all(path_ref).await?;
+            dir_deleted = true;
         }
     } else {
         trace!("is not dir: {:?}", path_ref);
     }
-    Ok(())
+    Ok(dir_deleted)
 }

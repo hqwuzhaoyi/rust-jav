@@ -1,9 +1,10 @@
 use log::info;
+use log::trace;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io;
 
-use crate::file_utils::rename_files::rename_files_removing_uncensored;
+use crate::file_utils::rename_files_async::rename_files_removing_uncensored;
 
 pub async fn move_directories<P: AsRef<Path>>(file_path: P, output_dir_path: P) -> io::Result<()> {
     let path = file_path.as_ref();
@@ -12,7 +13,7 @@ pub async fn move_directories<P: AsRef<Path>>(file_path: P, output_dir_path: P) 
         .await
         .map(|m| m.is_dir())
         .unwrap_or(false);
-    println!("is_file: {:?}", is_dir);
+    trace!("is_file: {:?}", is_dir);
     if is_dir {
         if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
             let new_dir_name = if dir_name.ends_with("-UC")
@@ -24,7 +25,7 @@ pub async fn move_directories<P: AsRef<Path>>(file_path: P, output_dir_path: P) 
                 dir_name.to_string()
             };
 
-            println!("dir_name: {:?}", dir_name);
+            trace!("dir_name: {:?}", dir_name);
 
             let new_path = if dir_name.ends_with("-UC")
                 || dir_name.contains("UNCENSORED")
@@ -41,7 +42,9 @@ pub async fn move_directories<P: AsRef<Path>>(file_path: P, output_dir_path: P) 
                 PathBuf::new() // 如果不匹配任何条件，则不移动
             };
 
-            if !new_path.as_os_str().is_empty() && !new_path.as_path().exists() {
+            let is_not_empty = !new_path.as_os_str().is_empty();
+
+            if is_not_empty && !new_path.as_path().exists() {
                 info!("Moving {:?} to {:?}", path, new_path);
                 fs::rename(path, &new_path).await?;
 
@@ -52,10 +55,10 @@ pub async fn move_directories<P: AsRef<Path>>(file_path: P, output_dir_path: P) 
                         let entry_path = entry.path();
                         println!("Renaming in UNCENSORED dir: {:?}", entry_path);
                         // 注意：调用异步函数
-                        rename_files_removing_uncensored(&entry_path)?;
+                        rename_files_removing_uncensored(&entry_path).await?;
                     }
                 }
-            } else {
+            } else if is_not_empty {
                 info!("Directory {:?} already exists", new_path);
             }
         }

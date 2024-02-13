@@ -1,5 +1,4 @@
 use std::fs::{self, File};
-use std::io::Result;
 use std::path::Path;
 
 fn main() -> std::io::Result<()> {

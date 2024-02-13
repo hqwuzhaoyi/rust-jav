@@ -1,17 +1,20 @@
+use async_recursion::async_recursion;
 use log::error;
 use log::trace;
 use std::fs;
 use std::io;
 use std::path::Path;
-use async_recursion::async_recursion;
 
+pub mod create_dir;
 pub mod delete_files;
 pub mod move_files;
-pub mod rename_files;
-pub mod create_dir;
+pub mod rename_files_async;
 
 #[async_recursion]
-pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(is_root: bool, sub_path: P) -> io::Result<()> {
+pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
+    is_root: bool,
+    sub_path: P,
+) -> io::Result<()> {
     trace!("traverse_directory is called");
     let config = {
         let guard = crate::config::get_config().unwrap(); // 假设这个函数返回一个鎖的保護者
@@ -42,39 +45,70 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(is_root:
                     Ok(e) => e,
                     Err(e) => {
                         error!("Failed to access entry in directory {:?}: {}", path, e);
-                        continue; // 跳过这个项目，继续下一个
+                        continue;
                     }
                 };
                 let path = entry.path();
 
                 // 对每个文件执行删除操作
-                trace!("Before delete files111: {:?}", path);
-                let _ = delete_files::delete_files_matching_patterns(&path, patterns).await?;
-                trace!("delete files end");
+                match delete_files::delete_files_matching_patterns(&path, patterns).await {
+                    Ok(dir_deleted) => {
+                        // if dir_deleted {
+                        //     // 目录被删除，可能不需要继续后续的重命名或其他操作
+                        //     trace!("Directory deleted, skipping further actions for this path.");
+                        //     continue; // 跳过当前迭代
+                        // }
+                    }
+                    Err(e) => {
+                        error!("Error deleting files: {}", e);
+                        continue;
+                    }
+                }
 
-                trace!("Before delete directories: {:?}", path);
-                let _ = delete_files::delete_dir_with_no_video(path.clone()).await?;
-                trace!("delete directories end");
+                // 删除没有视频的目录，并根据返回值决定是否继续
+                match delete_files::delete_dir_with_no_video(path.clone()).await {
+                    Ok(dir_deleted) => {
+                        if dir_deleted {
+                            // 目录被删除，可能不需要继续后续的重命名或其他操作
+                            trace!("Directory deleted, skipping further actions for this path.");
+                            continue; // 跳过当前迭代
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error deleting directories: {}", e);
+                        continue;
+                    }
+                }
 
                 // 对每个文件执行重命名操作
-                trace!("Before rename files: {:?}", path);
-                rename_files::rename_files_removing_prefixes(&path, prefixes)?;
-                trace!("rename files end");
+                if let Err(e) =
+                    rename_files_async::rename_files_removing_prefixes(&path, prefixes).await
+                {
+                    error!("Error renaming files: {}", e);
+                    continue;
+                }
 
                 // 如果是目录，则递归调用
                 if path.is_dir() {
-                    trace!("traverse_directory: {:?}", path);
-                    traverse_directory(false, path.clone()).await?;
+                    if let Err(e) = traverse_directory(false, path.clone()).await {
+                        error!("Error traversing directory: {}", e);
+                        continue;
+                    }
                 }
 
+                // 对于根目录特有的操作
                 if is_root {
-                    trace!("Before rename directories: {:?}", path);
-                    rename_files::rename_directories_to_uppercase(&path)?;
-                    trace!("rename directories end");
+                    if let Err(e) = rename_files_async::rename_directories_to_uppercase(&path).await
+                    {
+                        error!("Error renaming directories to uppercase: {}", e);
+                        continue;
+                    }
                     if output_dir_path.exists() {
-                        trace!("move files: {:?}", path);
-                        move_files::move_directories(&path, &output_dir_path).await?;
-                        trace!("move files end");
+                        if let Err(e) = move_files::move_directories(&path, &output_dir_path).await
+                        {
+                            error!("Error moving directories: {}", e);
+                            continue;
+                        }
                     }
                 }
             }
