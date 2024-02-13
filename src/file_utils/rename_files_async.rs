@@ -73,9 +73,11 @@ pub async fn rename_file(path: &Path, new_path: &PathBuf) -> IoResult<()> {
                 new_path, path
             );
         }
-    } else {
+    } else if fs::metadata(path).await.is_ok() {
         info!("Renaming {:?} to {:?}", path, new_path);
         fs::rename(path, new_path).await?;
+    } else {
+        trace!("File {:?} does not exist", path)
     }
     Ok(())
 }
