@@ -1,0 +1,82 @@
+{
+    // 使用 IntelliSense 了解相关属性。
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'rust-jav'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=rust-jav",
+                    "--package=rust-jav"
+                ],
+                "filter": {
+                    "name": "rust-jav",
+                    "kind": "bin"
+                }
+            },
+            "args": ["-d", "./examples/test", "-o", ".", "-a", "-l", "trace"],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'rust-jav'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=rust-jav",
+                    "--package=rust-jav"
+                ],
+                "filter": {
+                    "name": "rust-jav",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'create'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=create",
+                    "--package=rust-jav"
+                ],
+                "filter": {
+                    "name": "create",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'create'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=create",
+                    "--package=rust-jav"
+                ],
+                "filter": {
+                    "name": "create",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
