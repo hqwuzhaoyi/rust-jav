@@ -80,12 +80,16 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
                     }
                 }
 
-                // 对每个文件执行重命名操作
-                if let Err(e) =
-                    rename_files_async::rename_files_removing_prefixes(&path, prefixes).await
-                {
-                    error!("Error renaming files: {}", e);
-                    continue;
+                if fs::metadata(&path).is_ok() {
+                    // 对每个文件执行重命名操作
+                    if let Err(e) =
+                        rename_files_async::rename_files_removing_prefixes(&path, prefixes).await
+                    {
+                        error!("Error renaming files: {}", e);
+                        continue;
+                    }
+                } else {
+                    trace!("File {:?} does not exist", path);
                 }
 
                 // 如果是目录，则递归调用
