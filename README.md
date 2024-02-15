@@ -25,9 +25,16 @@ cargo build --release
 
 跨平台编译
 
+先安装 [cross](https://github.com/cross-rs/cross)
+
+```shell
+cargo install cross --git https://github.com/cross-rs/cross
+
+````
+
 ```shell
 CROSS_CONTAINER_OPTS="--platform linux/amd64" cross build --target x86_64-unknown-linux-gnu -v
-```
+````
 
 ## 测试命令
 
