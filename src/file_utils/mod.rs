@@ -31,6 +31,12 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
     let prefixes = &config.prefixes;
     let patterns = &config.patterns;
 
+    let delete_files_matching_patterns = config.should_delete_ad_files();
+    let should_delete_dir_with_no_video = config.should_delete_dir_with_no_video();
+    let should_rename_upper_case = config.should_rename_upper_case();
+    let should_move_dir = config.should_move_dir();
+    let should_remove_prefixes = config.should_remove_prefixes();
+
     trace!("traverse_directory: {:?}", path);
     trace!("output_dir_path: {:?}", output_dir_path);
     trace!("prefixes: {:?}", prefixes);
@@ -50,46 +56,55 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
                 };
                 let path = entry.path();
 
-                // 对每个文件执行删除操作
-                match delete_files::delete_files_matching_patterns(&path, patterns).await {
-                    Ok(dir_deleted) => {
-                        // if dir_deleted {
-                        //     // 目录被删除，可能不需要继续后续的重命名或其他操作
-                        //     trace!("Directory deleted, skipping further actions for this path.");
-                        //     continue; // 跳过当前迭代
-                        // }
-                    }
-                    Err(e) => {
-                        error!("Error deleting files: {}", e);
-                        continue;
-                    }
-                }
-
-                // 删除没有视频的目录，并根据返回值决定是否继续
-                match delete_files::delete_dir_with_no_video(path.clone()).await {
-                    Ok(dir_deleted) => {
-                        if dir_deleted {
-                            // 目录被删除，可能不需要继续后续的重命名或其他操作
-                            trace!("Directory deleted, skipping further actions for this path.");
-                            continue; // 跳过当前迭代
+                if delete_files_matching_patterns {
+                    // 对每个文件执行删除操作
+                    match delete_files::delete_files_matching_patterns(&path, patterns).await {
+                        Ok(dir_deleted) => {
+                            // if dir_deleted {
+                            //     // 目录被删除，可能不需要继续后续的重命名或其他操作
+                            //     trace!("Directory deleted, skipping further actions for this path.");
+                            //     continue; // 跳过当前迭代
+                            // }
+                        }
+                        Err(e) => {
+                            error!("Error deleting files: {}", e);
+                            continue;
                         }
                     }
-                    Err(e) => {
-                        error!("Error deleting directories: {}", e);
-                        continue;
+                }
+
+                if should_delete_dir_with_no_video {
+                    // 删除没有视频的目录，并根据返回值决定是否继续
+                    match delete_files::delete_dir_with_no_video(path.clone()).await {
+                        Ok(dir_deleted) => {
+                            if dir_deleted {
+                                // 目录被删除，可能不需要继续后续的重命名或其他操作
+                                trace!(
+                                    "Directory deleted, skipping further actions for this path."
+                                );
+                                continue; // 跳过当前迭代
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error deleting directories: {}", e);
+                            continue;
+                        }
                     }
                 }
 
-                if fs::metadata(&path).is_ok() {
-                    // 对每个文件执行重命名操作
-                    if let Err(e) =
-                        rename_files_async::rename_files_removing_prefixes(&path, prefixes).await
-                    {
-                        error!("Error renaming files: {}", e);
-                        continue;
+                if should_remove_prefixes {
+                    if fs::metadata(&path).is_ok() {
+                        // 对每个文件执行重命名操作
+                        if let Err(e) =
+                            rename_files_async::rename_files_removing_prefixes(&path, prefixes)
+                                .await
+                        {
+                            error!("Error renaming files: {}", e);
+                            continue;
+                        }
+                    } else {
+                        trace!("File {:?} does not exist", path);
                     }
-                } else {
-                    trace!("File {:?} does not exist", path);
                 }
 
                 // 如果是目录，则递归调用
@@ -102,7 +117,6 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
 
                 // 对于根目录特有的操作
                 if is_root {
-                    let should_rename_upper_case = config.should_rename_upper_case();
                     if should_rename_upper_case {
                         if let Err(e) =
                             rename_files_async::rename_directories_to_uppercase(&path).await
@@ -111,8 +125,6 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
                             continue;
                         }
                     }
-
-                    let should_move_dir = config.should_move_dir();
 
                     if should_move_dir && output_dir_path.exists() {
                         if let Err(e) = move_files::move_directories(&path, &output_dir_path).await

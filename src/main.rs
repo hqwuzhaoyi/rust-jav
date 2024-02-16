@@ -33,6 +33,13 @@ struct Cli {
     #[arg(long)]
     delete_ad: bool,
 
+    /// Whether to delete directories with no video files
+    /// e.g. directories with only nfo files
+    /// e.g. directories with only trailers
+    /// e.g. directories with only sample files
+    #[arg(long)]
+    delete_dir_with_no_video: bool,
+
     /// Whether to move chinese subtitle files
     #[arg(long)]
     move_chinese: bool,
@@ -99,6 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let move_uncensored = cli.move_uncensored || cli.all;
     let rename_upper_case = cli.rename_upper_case || cli.all;
     let remove_prefixes = cli.remove_prefixes || cli.all;
+    let delete_dir_with_no_video = cli.delete_dir_with_no_video || cli.all;
 
     let prefixes = [
         "hhd800.com@",
@@ -126,6 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         remove_prefixes,
         prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
         patterns: pattern_slice,
+        delete_dir_with_no_video,
     };
 
     let output_dir = config.output_dir.clone();
