@@ -7,10 +7,11 @@ pub struct CliConfig {
     pub dir: String,
     pub output_dir: PathBuf,
     pub delete_ad: bool,
+    pub delete_dir_with_no_video: bool,
+    pub remove_prefixes: bool,
     pub move_chinese: bool,
     pub move_uncensored: bool,
     pub rename_upper_case: bool,
-    pub remove_prefixes: bool,
     pub prefixes: Vec<String>,
     pub patterns: Vec<String>,
 }
@@ -31,6 +32,11 @@ impl CliConfig {
     pub fn should_delete_ad_files(&self) -> bool {
         trace!("should_delete_ad_files is called");
         self.delete_ad
+    }
+
+    pub fn should_delete_dir_with_no_video(&self) -> bool {
+        trace!("should_delete_dir_with_no_video is called");
+        self.delete_dir_with_no_video
     }
 
     pub fn should_rename_upper_case(&self) -> bool {
