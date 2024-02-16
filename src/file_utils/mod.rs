@@ -102,10 +102,14 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
 
                 // 对于根目录特有的操作
                 if is_root {
-                    if let Err(e) = rename_files_async::rename_directories_to_uppercase(&path).await
-                    {
-                        error!("Error renaming directories to uppercase: {}", e);
-                        continue;
+                    let should_rename_upper_case = config.should_rename_upper_case();
+                    if should_rename_upper_case {
+                        if let Err(e) =
+                            rename_files_async::rename_directories_to_uppercase(&path).await
+                        {
+                            error!("Error renaming directories to uppercase: {}", e);
+                            continue;
+                        }
                     }
                     if output_dir_path.exists() {
                         if let Err(e) = move_files::move_directories(&path, &output_dir_path).await
