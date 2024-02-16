@@ -22,6 +22,42 @@ impl CliConfig {
         trace!("output_dir.exists(): {}", self.output_dir.exists());
         self.output_dir.exists() && (self.move_chinese || self.move_uncensored)
     }
+
+    pub fn should_remove_prefixes(&self) -> bool {
+        trace!("should_remove_prefixes is called");
+        self.remove_prefixes
+    }
+
+    pub fn should_delete_ad_files(&self) -> bool {
+        trace!("should_delete_ad_files is called");
+        self.delete_ad
+    }
+
+    pub fn should_rename_upper_case(&self) -> bool {
+        trace!("should_rename_upper_case is called");
+        self.rename_upper_case
+    }
+
+    pub fn should_move_chinese(&self) -> bool {
+        trace!("should_move_chinese is called");
+        self.move_chinese
+    }
+
+    pub fn should_move_uncensored(&self) -> bool {
+        trace!("should_move_uncensored is called");
+        self.move_uncensored
+    }
+
+
+    pub fn should_use_all_options(&self) -> bool {
+        trace!("should_use_all_options is called");
+        self.all_options()
+    }
+
+    pub fn all_options(&self) -> bool {
+        trace!("all_options is called");
+        self.move_chinese && self.move_uncensored && self.delete_ad && self.rename_upper_case && self.remove_prefixes
+    }
 }
 
 pub static CONFIG: OnceCell<Mutex<CliConfig>> = OnceCell::new();
