@@ -111,7 +111,10 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
                             continue;
                         }
                     }
-                    if output_dir_path.exists() {
+
+                    let should_move_dir = config.should_move_dir();
+
+                    if should_move_dir && output_dir_path.exists() {
                         if let Err(e) = move_files::move_directories(&path, &output_dir_path).await
                         {
                             error!("Error moving directories: {}", e);

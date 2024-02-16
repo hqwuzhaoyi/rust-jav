@@ -48,6 +48,10 @@ impl CliConfig {
         self.move_uncensored
     }
 
+    pub fn should_move_dir(&self) -> bool {
+        trace!("should_move_dir  is called");
+        self.move_chinese || self.move_uncensored
+    }
 
     pub fn should_use_all_options(&self) -> bool {
         trace!("should_use_all_options is called");
@@ -56,7 +60,11 @@ impl CliConfig {
 
     pub fn all_options(&self) -> bool {
         trace!("all_options is called");
-        self.move_chinese && self.move_uncensored && self.delete_ad && self.rename_upper_case && self.remove_prefixes
+        self.move_chinese
+            && self.move_uncensored
+            && self.delete_ad
+            && self.rename_upper_case
+            && self.remove_prefixes
     }
 }
 

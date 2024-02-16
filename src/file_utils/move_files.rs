@@ -27,15 +27,25 @@ pub async fn move_directories<P: AsRef<Path>>(file_path: P, output_dir_path: P) 
 
             trace!("dir_name: {:?}", dir_name);
 
-            let new_path = if dir_name.ends_with("-UC")
+            let config = {
+                let guard = crate::config::get_config().unwrap(); // 假设这个函数返回一个鎖的保護者
+                guard.clone() // 複製數據，保護者在這個大括號結束時釋放鎖
+            }; // 鎖在此被釋放，因為保護者 guard 離開了作用域
+
+            let should_move_chinese = &config.should_move_chinese();
+            let should_move_uncensored = &config.should_move_uncensored();
+
+            let new_path = if (dir_name.ends_with("-UC")
                 || dir_name.contains("UNCENSORED")
-                || dir_name.contains("uncensored")
+                || dir_name.contains("uncensored"))
+                && *should_move_uncensored
             {
                 output_path.join("UNCENSORED").join(&new_dir_name)
-            } else if dir_name.ends_with("ch")
+            } else if (dir_name.ends_with("ch")
                 || dir_name.ends_with("-C")
                 || dir_name.ends_with("CH")
-                || dir_name.ends_with("C_X1080X")
+                || dir_name.ends_with("C_X1080X"))
+                && *should_move_chinese
             {
                 output_path.join("CHINESE").join(&new_dir_name)
             } else {
