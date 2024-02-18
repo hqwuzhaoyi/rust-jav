@@ -1,9 +1,11 @@
 use async_recursion::async_recursion;
+use indicatif::ProgressBar;
 use log::error;
 use log::trace;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 pub mod create_dir;
 pub mod delete_files;
@@ -16,6 +18,12 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
     sub_path: P,
 ) -> io::Result<()> {
     trace!("traverse_directory is called");
+
+    let pb = ProgressBar::new_spinner();
+    pb.enable_steady_tick(Duration::from_millis(100));
+    pb.set_message("Traversing directories...");
+    let mut count = 0;
+
     let config = {
         let guard = crate::config::get_config().unwrap(); // 假设这个函数返回一个鎖的保護者
         guard.clone() // 複製數據，保護者在這個大括號結束時釋放鎖
@@ -43,6 +51,7 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
     trace!("patterns: {:?}", patterns);
 
     let path = sub_path.as_ref();
+
     // 处理 fs::read_dir 的结果
     match fs::read_dir(path) {
         Ok(entries) => {
@@ -134,6 +143,8 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
                         }
                     }
                 }
+                count += 1; // 更新计数器
+                pb.inc(1); // 更新进度条
             }
         }
         Err(e) => {
@@ -141,5 +152,6 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
             return Err(e);
         }
     }
+    pb.finish_with_message(format!("Processed {} items.", count));
     Ok(())
 }
