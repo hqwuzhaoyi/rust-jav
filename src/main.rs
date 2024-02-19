@@ -1,4 +1,5 @@
 use clap::{Parser, ValueEnum};
+use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect};
 use env_logger;
 use log::{info, LevelFilter};
 use once_cell::sync::Lazy;
@@ -89,6 +90,20 @@ impl From<LogLevel> for LevelFilter {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let items = vec!["foo", "bar", "baz"];
+
+    let selection = MultiSelect::new()
+        .with_prompt("What do you choose?")
+        .items(&items)
+        .interact()
+        .unwrap();
+
+    println!("You chose:");
+
+    for i in selection {
+        println!("{}", items[i]);
+    }
+
     let cli = Cli::parse();
     let log_level = cli.log_level.unwrap_or(LogLevel::Info);
     env_logger::Builder::new()
@@ -123,10 +138,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     let dir = cli.dir.clone();
+    let output_dir = cli.output_dir.map_or_else(PathBuf::new, PathBuf::from);
+
+
+
+    // 并且不等于空字符串
+    if output_dir.to_str().is_none() || output_dir.to_str().unwrap().is_empty() {
+        // 使用 dialoguer 获取目录
+        let dir: String = dialoguer::Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Please enter the directory to organize")
+            .interact_text()?;
+
+        println!("Directory specified: {}", dir);
+    }
+
 
     let config = CliConfig {
         dir: cli.dir,
-        output_dir: cli.output_dir.map_or_else(PathBuf::new, PathBuf::from),
+        output_dir,
         delete_ad,
         move_chinese,
         move_uncensored,
@@ -136,6 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         patterns: pattern_slice,
         delete_dir_with_no_video,
     };
+
 
     let output_dir = config.output_dir.clone();
     let should_create_directories = config.should_create_directories();
