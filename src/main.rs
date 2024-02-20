@@ -1,171 +1,30 @@
-use clap::{Parser, ValueEnum};
-use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect};
+use clap::Parser;
 use env_logger;
 use log::{info, LevelFilter};
-use once_cell::sync::Lazy;
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 mod config;
 mod file_utils;
 
-use config::{set_config, CliConfig};
-
-const PATTERNS: Lazy<HashSet<String>> = Lazy::new(|| {
-    include_str!("../patterns.txt")
-        .lines()
-        .map(|s| s.to_string())
-        .collect()
-});
-
-/// Simple program to greet a person
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Cli {
-    /// Name of the person to greet
-    #[arg(short = 'd', long)]
-    dir: String,
-
-    /// Organized target folder
-    #[arg(short = 'o', long)]
-    output_dir: Option<String>,
-
-    /// Whether to delete ad files
-    #[arg(long)]
-    delete_ad: bool,
-
-    /// Whether to delete directories with no video files
-    /// e.g. directories with only nfo files
-    /// e.g. directories with only trailers
-    /// e.g. directories with only sample files
-    #[arg(long)]
-    delete_dir_with_no_video: bool,
-
-    /// Whether to move chinese subtitle files
-    #[arg(long)]
-    move_chinese: bool,
-
-    /// Whether to move UNCENSORED files
-    #[arg(long)]
-    move_uncensored: bool,
-
-    /// Whether to use the --upper-case flag
-    #[arg(long)]
-    rename_upper_case: bool,
-
-    /// Whether to use all options
-    #[arg(short = 'a', long)]
-    all: bool,
-
-    /// Whether to use the --remove-prefixes flag
-    /// Remove prefixes from file names
-    /// e.g. [7sht.me]@ -> ""
-    #[arg(long)]
-    remove_prefixes: bool,
-
-    #[arg(short = 'l', long, value_enum)]
-    log_level: Option<LogLevel>,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
-enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-impl From<LogLevel> for LevelFilter {
-    fn from(log_level: LogLevel) -> Self {
-        match log_level {
-            LogLevel::Error => LevelFilter::Error,
-            LogLevel::Warn => LevelFilter::Warn,
-            LogLevel::Info => LevelFilter::Info,
-            LogLevel::Debug => LevelFilter::Debug,
-            LogLevel::Trace => LevelFilter::Trace,
-        }
-    }
-}
+use config::{interactive_config, set_config, Cli, CliConfig, LogLevel};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let items = vec!["foo", "bar", "baz"];
+    let cli_args = Cli::parse();
 
-    let selection = MultiSelect::new()
-        .with_prompt("What do you choose?")
-        .items(&items)
-        .interact()
-        .unwrap();
-
-    println!("You chose:");
-
-    for i in selection {
-        println!("{}", items[i]);
-    }
-
-    let cli = Cli::parse();
-    let log_level = cli.log_level.unwrap_or(LogLevel::Info);
+    let log_level: LogLevel = cli_args.log_level.unwrap_or(LogLevel::Info);
     env_logger::Builder::new()
         .filter(None, LevelFilter::from(log_level))
         .init();
 
     info!("Start to organize files...");
 
-    // let dir = &cli.dir; // 获取 dir 参数的值
-    let pattern_slice: Vec<String> = PATTERNS.iter().cloned().collect();
-    info!("all pattern {:?}", pattern_slice);
-
-    let delete_ad = cli.delete_ad || cli.all;
-    let move_chinese = cli.move_chinese || cli.all;
-    let move_uncensored = cli.move_uncensored || cli.all;
-    let rename_upper_case = cli.rename_upper_case || cli.all;
-    let remove_prefixes = cli.remove_prefixes || cli.all;
-    let delete_dir_with_no_video = cli.delete_dir_with_no_video || cli.all;
-
-    let prefixes = [
-        "hhd800.com@",
-        "zzpp01.com@",
-        "第一會所新片@SIS001@",
-        "zzpp05.com@",
-        "RH2048.COM@",
-        "[7sht.me]@",
-        "[98t.tv]@",
-        "[ThZu.Cc]@",
-        "[99u.me]@",
-        "[22sht.me]@",
-        "AVAV66.XYZ@",
-    ];
-
-    let dir = cli.dir.clone();
-    let output_dir = cli.output_dir.map_or_else(PathBuf::new, PathBuf::from);
-
-
-
-    // 并且不等于空字符串
-    if output_dir.to_str().is_none() || output_dir.to_str().unwrap().is_empty() {
-        // 使用 dialoguer 获取目录
-        let dir: String = dialoguer::Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("Please enter the directory to organize")
-            .interact_text()?;
-
-        println!("Directory specified: {}", dir);
-    }
-
+    let dir = cli_args.dir.clone();
+    let cli = interactive_config(cli_args).await?;
 
     let config = CliConfig {
-        dir: cli.dir,
-        output_dir,
-        delete_ad,
-        move_chinese,
-        move_uncensored,
-        rename_upper_case,
-        remove_prefixes,
-        prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
-        patterns: pattern_slice,
-        delete_dir_with_no_video,
+        ..cli.into()
     };
-
 
     let output_dir = config.output_dir.clone();
     let should_create_directories = config.should_create_directories();
