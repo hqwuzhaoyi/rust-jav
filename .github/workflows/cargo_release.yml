@@ -1,0 +1,26 @@
+name: Rust CI/CD
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      # 运行测试
+      - name: Run tests
+        run: cargo test
+
+      # 使用 cargo-release 发布新版本
+      - name: Release
+        run: cargo release minor --execute
+        env:
+          CARGO_TOKEN: ${{ secrets.CARGO_TOKEN }}
