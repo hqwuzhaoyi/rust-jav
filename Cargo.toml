@@ -1,6 +1,6 @@
 [package]
 name = "rust-jav"
-version = "0.3.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "A tool to process jav files"
@@ -17,5 +17,5 @@ env_logger = "0.9"
 tokio = { version = "1", features = ["full"] }
 mini-redis = "0.4"
 async-recursion = "1.0.5"
-indicatif = {version = "*", features = ["rayon"]}
+indicatif = {version = "0.17.8", features = ["rayon"]}
 dialoguer = "0.11.0"
