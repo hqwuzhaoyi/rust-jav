@@ -80,12 +80,6 @@ jobs:
         env:
           OUTPUT: CHANGES.md
 
-      - name: Print the changelog output
-        run: echo "${{ steps.git-cliff.outputs.content }}"
-
-      - name: Print the CHANGES.md output
-        run: cat CHANGES.md
-
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
