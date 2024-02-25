@@ -76,7 +76,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         with:
           config: cliff.toml
-          args: -vv --latest --strip header
+          args: -vv --latest --strip header --output CHANGES.md
         env:
           OUTPUT: CHANGES.md
 
