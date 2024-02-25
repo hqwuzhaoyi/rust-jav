@@ -41,7 +41,7 @@ jobs:
       - name: Check if version is already published
         id: check-version
         run: |
-          PACKAGE_NAME=$(cargo pkgid | cut -d# -f1 | cut -d: -f2)
+          PACKAGE_NAME="rust-jav"
           CURRENT_VERSION=$(cargo pkgid | cut -d# -f2)
           PUBLISHED_VERSIONS=$(cargo search $PACKAGE_NAME | grep "^$PACKAGE_NAME =" | cut -d'"' -f2)
           if [[ "$PUBLISHED_VERSIONS" == *"$CURRENT_VERSION"* ]]; then
