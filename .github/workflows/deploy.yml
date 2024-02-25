@@ -70,6 +70,15 @@ jobs:
             echo "ASSET=$dirname.tar.gz" >> $GITHUB_ENV
           fi
 
+      - name: Generate a changelog
+        uses: orhun/git-cliff-action@v3
+        id: git-cliff
+        with:
+          config: cliff.toml
+          args: -vv --latest --strip header
+        env:
+          OUTPUT: CHANGES.md
+
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
@@ -78,3 +87,4 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           generate_release_notes: true
           draft: true
+          body: ${{ steps.git-cliff.outputs.content }}
