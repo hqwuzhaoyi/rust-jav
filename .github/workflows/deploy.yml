@@ -83,6 +83,9 @@ jobs:
       - name: Print the changelog output
         run: echo "${{ steps.git-cliff.outputs.content }}"
 
+      - name: Print the CHANGES.md output
+        run: cat CHANGELOG.md
+
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
@@ -92,3 +95,4 @@ jobs:
           generate_release_notes: true
           draft: true
           body: ${{ steps.git-cliff.outputs.content }}
+          body_path: ${{ github.workspace }}-CHANGELOG.txt
