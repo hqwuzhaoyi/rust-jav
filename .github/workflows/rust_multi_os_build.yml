@@ -69,10 +69,6 @@ jobs:
             tar -czf "$dirname.tar.gz" "$dirname"
             echo "ASSET=$dirname.tar.gz" >> $GITHUB_ENV
           fi
-          - name: Install git-cliff
-          run: |
-            curl -Ls https://github.com/orhun/git-cliff/releases/download/v0.1.0/git-cliff-v0.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
-            sudo mv git-cliff /usr/local/bin/
 
       - name: Install git-cliff
         run: |
