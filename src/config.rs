@@ -7,7 +7,7 @@ use once_cell::sync::OnceCell;
 use std::collections::HashSet;
 use std::{path::PathBuf, sync::Mutex};
 
-const PREFIXES: [&str; 11] = [
+const PREFIXES: [&str; 12] = [
     "hhd800.com@",
     "zzpp01.com@",
     "第一會所新片@SIS001@",
@@ -19,6 +19,7 @@ const PREFIXES: [&str; 11] = [
     "[99u.me]@",
     "[22sht.me]@",
     "AVAV66.XYZ@",
+    "4k2.com@",
 ];
 
 #[derive(Debug, Clone)]
