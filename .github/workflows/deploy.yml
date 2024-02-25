@@ -84,7 +84,7 @@ jobs:
         run: echo "${{ steps.git-cliff.outputs.content }}"
 
       - name: Print the CHANGES.md output
-        run: cat CHANGELOG.md
+        run: cat CHANGES.md
 
       - name: Release
         uses: softprops/action-gh-release@v1
