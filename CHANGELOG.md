@@ -1,6 +1,18 @@
 ## What's Changed
-* Update GitHub workflow for Rust multi-OS build and release
-* Add Cargo release workflow
+* Update changelog and push to master by @hqwuzhaoyi
+* chore: add git commit changelog to github workflow publish by @hqwuzhaoyi
+* chore: Update package name in publish workflow by @hqwuzhaoyi
+* chore: Add check for already published version before publishing to crates.io by @hqwuzhaoyi
+* chore: Add publish workflow for Cargo crate by @hqwuzhaoyi
+* chore: Remove cargo_release_beta.yml and update release.yml by @hqwuzhaoyi
+* chore: Add deploy workflow for building and uploading binaries by @hqwuzhaoyi
+* Remove cargo_release.yml workflow by @hqwuzhaoyi
+* chore: Remove git-cliff and CHANGELOG generation by @hqwuzhaoyi
+* chore: Remove installation of git-cliff by @hqwuzhaoyi
+* build: Update binary name in rust_multi_os_build.yml by @hqwuzhaoyi
+* build: Update GitHub workflow, add Cargo release workflow, and add CHANGELOG.md file. by @hqwuzhaoyi
+* Update GitHub workflow for Rust multi-OS build and release by @hqwuzhaoyi
+* Add Cargo release workflow by @hqwuzhaoyi
 * Update GitHub Actions workflow to trigger on tags by @hqwuzhaoyi
 * Add create-release workflow to automate GitHub Releases by @hqwuzhaoyi
 * Add CHANGELOG.md file by @hqwuzhaoyi
