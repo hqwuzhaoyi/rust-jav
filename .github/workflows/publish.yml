@@ -38,6 +38,20 @@ jobs:
       - name: Print the changelog
         run: cat "${{ steps.git-cliff.outputs.changelog }}"
 
+      - name: Check if version is already published
+        id: check-version
+        run: |
+          PACKAGE_NAME=$(cargo pkgid | cut -d# -f1 | cut -d: -f2)
+          CURRENT_VERSION=$(cargo pkgid | cut -d# -f2)
+          PUBLISHED_VERSIONS=$(cargo search $PACKAGE_NAME | grep "^$PACKAGE_NAME =" | cut -d'"' -f2)
+          if [[ "$PUBLISHED_VERSIONS" == *"$CURRENT_VERSION"* ]]; then
+            echo "Version $CURRENT_VERSION of $PACKAGE_NAME is already published."
+            echo "SKIP_PUBLISH=true" >> $GITHUB_ENV
+          else
+            echo "Version $CURRENT_VERSION of $PACKAGE_NAME is not published."
+            echo "SKIP_PUBLISH=false" >> $GITHUB_ENV
+          fi
+
       - name: Login to crates.io
         uses: actions-rs/cargo@v1
         with:
@@ -46,6 +60,7 @@ jobs:
 
       - name: Publish to crates.io
         uses: actions-rs/cargo@v1
+        if: env.SKIP_PUBLISH == 'false'
         with:
           command: publish
           args: --verbose --allow-dirty
