@@ -88,4 +88,4 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: true
           body: ${{ steps.git-cliff.outputs.content }}
-          body_path: ${{ github.workspace }}-CHANGES.md
+          body_path: CHANGES.md
