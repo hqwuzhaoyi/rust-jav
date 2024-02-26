@@ -80,6 +80,9 @@ jobs:
         env:
           OUTPUT: CHANGES.md
 
+      - name: Print the changelog
+        run: cat CHANGES.md
+
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
@@ -87,5 +90,4 @@ jobs:
             ${{ env.ASSET }}
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: true
-          body: ${{ steps.git-cliff.outputs.content }}
           body_path: CHANGES.md
