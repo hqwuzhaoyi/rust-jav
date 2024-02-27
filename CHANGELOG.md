@@ -1,4 +1,19 @@
 ## What's Changed
+* chore: Update rust-jav version to 0.3.5 by @hqwuzhaoyi
+* Update deploy.yml to fetch full history by @hqwuzhaoyi
+* Add changelog printing step by @hqwuzhaoyi
+* Update body_path in deploy.yml by @hqwuzhaoyi
+* Update body_path in deploy.yml by @hqwuzhaoyi
+* chore: Remove generate_release_notes option from deploy workflow by @hqwuzhaoyi
+* Remove unnecessary print statements by @hqwuzhaoyi
+* chore: Add output file option to deploy workflow by @hqwuzhaoyi
+* Update file path in deploy workflow by @hqwuzhaoyi
+* Add print statement for CHANGES.md by @hqwuzhaoyi
+* Add changelog output to workflow by @hqwuzhaoyi
+* chore: Add conditional step to generate changelog for Ubuntu latest by @hqwuzhaoyi
+* chore: Add changelog generation using git-cliff action by @hqwuzhaoyi
+* Update PREFIXES array in config.rs by @hqwuzhaoyi
+* Update changelog by @github-actions[bot]
 * Update changelog and push to master by @hqwuzhaoyi
 * chore: add git commit changelog to github workflow publish by @hqwuzhaoyi
 * chore: Update package name in publish workflow by @hqwuzhaoyi
@@ -16,6 +31,9 @@
 * Update GitHub Actions workflow to trigger on tags by @hqwuzhaoyi
 * Add create-release workflow to automate GitHub Releases by @hqwuzhaoyi
 * Add CHANGELOG.md file by @hqwuzhaoyi
+
+## New Contributors
+* @github-actions[bot] made their first contribution
 
 ## What's Changed in v0.3.0
 * chore: Release rust-jav version 0.3.0 by @hqwuzhaoyi
