@@ -1,4 +1,6 @@
 ## What's Changed
+* chore: Release rust-jav version 0.4.0 by @hqwuzhaoyi
+* Update changelog by @github-actions[bot]
 * chore: Update rust-jav version to 0.3.5 by @hqwuzhaoyi
 * Update deploy.yml to fetch full history by @hqwuzhaoyi
 * Add changelog printing step by @hqwuzhaoyi
