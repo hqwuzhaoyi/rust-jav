@@ -1,6 +1,6 @@
 [package]
 name = "rust-jav"
-version = "0.3.1"
+version = "0.3.5"
 edition = "2021"
 license = "MIT"
 description = "A tool to process jav files"
