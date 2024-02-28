@@ -17,22 +17,20 @@
 cargo run  -- -d ./examples/test
 ```
 
-
-| 参数        | 说明                                                                                       |
-| ----------- | ------------------------------------------------------------------------------------------ |
-| -d          | jav torrent 文件夹                                                                         |
-| -o          | 整理后输出的文件夹，`CHINESE` 和 `UNCENSORED` 文件夹会放在这个文件夹下，不指定则不进行整理 |
-| -a          | 所有功能启用                                                                               |
-| -l          | 日志级别，可选 `trace` `debug` `info` `warn` `error`                                       |
-| -v          | 版本                                                                                       |
-| --delete-ad | 删除 jav torrent 中的无用文件, 如广告视频                                                  |
-
-｜ --delete-dir-with-no-video ｜ 删除 jav torrent 中的没有视频的文件夹 ｜
-｜ --move-chinese ｜ 将 `-C` `ch` 结尾的文件放到 `CHINESE` 文件夹中 ｜
-｜ --move-uncensored ｜ 将 `-UC` 结尾的文件放到 `UNCENSORED` 文件夹中 ｜
-｜ --rename-upper-case ｜ 文件夹名重命名为大写 ｜
-｜ --remove-prefixes ｜ 删除文件名中的前缀，如 hhd800.com@ ｜
-｜ -h | 帮助 |
+| 参数                       | 说明                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------------ |
+| -d                         | jav torrent 文件夹                                                                         |
+| -o                         | 整理后输出的文件夹，`CHINESE` 和 `UNCENSORED` 文件夹会放在这个文件夹下，不指定则不进行整理 |
+| -a                         | 所有功能启用                                                                               |
+| -l                         | 日志级别，可选 `trace` `debug` `info` `warn` `error`                                       |
+| -v                         | 版本                                                                                       |
+| --delete-ad                | 删除 jav torrent 中的无用文件, 如广告视频                                                  |
+| --delete-dir-with-no-video | 删除 jav torrent 中的没有视频的文件夹 ｜                                                   |
+| --move-chinese             | 将 `-C` `ch` 结尾的文件放到 `CHINESE` 文件夹中                                             |
+| --move-uncensored          | 将 `-UC` 结尾的文件放到 `UNCENSORED` 文件夹中                                              |
+| --rename-upper-case        | 文件夹名重命名为大写                                                                       |
+| --remove-prefixes          | 删除文件名中的前缀，如 hhd800.com@                                                         |
+| -h                         | 帮助                                                                                       |
 
 ## Build
 
