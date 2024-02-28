@@ -1,4 +1,8 @@
 ## What's Changed
+* docs: fix README.md  table
+* Update changelog by @github-actions[bot]
+
+## What's Changed in v0.4.0
 * chore: Release rust-jav version 0.4.0 by @hqwuzhaoyi
 * Update changelog by @github-actions[bot]
 * chore: Update rust-jav version to 0.3.5 by @hqwuzhaoyi
@@ -34,8 +38,7 @@
 * Add create-release workflow to automate GitHub Releases by @hqwuzhaoyi
 * Add CHANGELOG.md file by @hqwuzhaoyi
 
-## New Contributors
-* @github-actions[bot] made their first contribution
+**Full Changelog**: https://github.com/hqwuzhaoyi/rust-jav/compare/v0.3.0...v0.4.0
 
 ## What's Changed in v0.3.0
 * chore: Release rust-jav version 0.3.0 by @hqwuzhaoyi
@@ -84,9 +87,6 @@
 * Merge branch 'master' of https://github.com/hqwuzhaoyi/rust-jav by @hqwuzhaoyi
 * Release by @hqwuzhaoyi in [#1](https://github.com/hqwuzhaoyi/rust-jav/pull/1)
 * chore: Remove unnecessary steps in GitHub workflow by @hqwuzhaoyi
-
-## New Contributors
-* @ made their first contribution
 
 **Full Changelog**: https://github.com/hqwuzhaoyi/rust-jav/compare/v0.1.0...v0.3.0
 
