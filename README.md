@@ -17,6 +17,13 @@
 
 ## 使用
 
+推荐目录结构
+
+-- jav
+  -- CHINESE 有吗
+  -- UNCENSORED 无码
+  -- jav torrent jav下载的视频文件夹
+
 ```
 cargo run  -- -d ./examples/test
 ```
