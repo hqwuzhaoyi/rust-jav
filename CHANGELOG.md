@@ -1,4 +1,6 @@
 ## What's Changed
+* Update README.md with preview image and additional information by @hqwuzhaoyi
+* Update changelog by @github-actions[bot]
 * docs: fix README.md  table
 * Update changelog by @github-actions[bot]
 
