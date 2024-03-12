@@ -1,4 +1,6 @@
 ## What's Changed
+* Refactor directory structure in README.md by @hqwuzhaoyi
+* Update changelog by @github-actions[bot]
 * Update README.md with recommended directory structure by @hqwuzhaoyi
 * Update changelog by @github-actions[bot]
 * Update README.md with preview image and additional information by @hqwuzhaoyi
