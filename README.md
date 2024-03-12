@@ -1,6 +1,10 @@
 # Rust Jav
 
-为 jav torrent 编写的一些小工具
+为 jav torrent 编写的一些小工具, 用于整理 jav torrent 文件夹，可以搭配 [MetaTube](https://metatube-community.github.io/) 使用
+
+## 预览
+
+![image](./images/preview.png)
 
 ## 功能
 
