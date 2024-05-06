@@ -1,4 +1,6 @@
 ## What's Changed
+* Add new prefixes to the PREFIXES array in config.rs by @hqwuzhaoyi
+* Update changelog by @github-actions[bot]
 * Refactor directory structure in README.md by @hqwuzhaoyi
 * Update changelog by @github-actions[bot]
 * Update README.md with recommended directory structure by @hqwuzhaoyi
