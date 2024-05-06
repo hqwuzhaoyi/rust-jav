@@ -7,7 +7,7 @@ use once_cell::sync::OnceCell;
 use std::collections::HashSet;
 use std::{path::PathBuf, sync::Mutex};
 
-const PREFIXES: [&str; 12] = [
+const PREFIXES: [&str; 14] = [
     "hhd800.com@",
     "zzpp01.com@",
     "第一會所新片@SIS001@",
@@ -20,6 +20,8 @@ const PREFIXES: [&str; 12] = [
     "[22sht.me]@",
     "AVAV66.XYZ@",
     "4k2.com@",
+    "[7SHT.ME]",
+    "[22SHT.ME]",
 ];
 
 #[derive(Debug, Clone)]
@@ -222,7 +224,6 @@ pub async fn interactive_config(mut cli: Cli) -> Result<Cli, Box<dyn std::error:
             "删除广告文件",
         ];
         let default_selections: Vec<bool> = vec![true; items.len()];
-
 
         let selections = MultiSelect::with_theme(&theme)
             .with_prompt("选择要使用的选项（按空格键选择）")
