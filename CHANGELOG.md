@@ -1,4 +1,6 @@
 ## What's Changed
+* chore: Add new patterns to patterns.txt by @hqwuzhaoyi
+* Update changelog by @github-actions[bot]
 * Add new prefixes to the PREFIXES array in config.rs by @hqwuzhaoyi
 * Update changelog by @github-actions[bot]
 * Refactor directory structure in README.md by @hqwuzhaoyi
