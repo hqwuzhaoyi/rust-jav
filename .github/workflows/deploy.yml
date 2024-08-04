@@ -80,7 +80,7 @@ jobs:
           config: cliff.toml
           args: -vv --latest --strip header
         env:
-          OUTPUT: CHANGES.md
+          OUTPUT: CHANGELOG.md
 
       - name: Release
         uses: softprops/action-gh-release@v1
@@ -89,4 +89,4 @@ jobs:
             ${{ env.ASSET }}
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: true
-          body_path: CHANGES.md
+          body_path: CHANGELOG.md
