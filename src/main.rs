@@ -1,43 +1,37 @@
-use clap::Parser;
-use env_logger;
-use log::{info, LevelFilter};
 use std::path::PathBuf;
 
-mod config;
-mod file_utils;
+use clap::Parser;
+use color_eyre::Result;
+use tokio::sync::mpsc;
 
-use config::{interactive_config, set_config, Cli, CliConfig, LogLevel};
+use rust_jav::config::Cli;
+use rust_jav::tui;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
+    // Install color_eyre panic and error hooks
+    color_eyre::install()?;
+
     let cli_args = Cli::parse();
 
-    let log_level: LogLevel = cli_args.log_level.unwrap_or(LogLevel::Info);
-    env_logger::Builder::new()
-        .filter(None, LevelFilter::from(log_level))
-        .init();
+    // Get the source directory as PathBuf
+    let source_dir = PathBuf::from(&cli_args.dir);
 
-    info!("Start to organize files...");
+    // Initialize the TUI
+    let mut terminal = tui::init_terminal()?;
 
-    let dir = cli_args.dir.clone();
-    let cli = interactive_config(cli_args).await?;
+    // Create action channel
+    let (action_tx, _action_rx) = mpsc::unbounded_channel();
 
-    let config = CliConfig {
-        ..cli.into()
-    };
+    // Create the app
+    let app = tui::App::new(source_dir, action_tx);
 
-    let output_dir = config.output_dir.clone();
-    let should_create_directories = config.should_create_directories();
-    set_config(config)?;
+    // Run the TUI event loop
+    let result = tui::run_app(&mut terminal, app).await;
 
-    info!("should_create_directories: {}", should_create_directories);
+    // Restore terminal on exit
+    tui::restore_terminal(&mut terminal)?;
 
-    if should_create_directories {
-        info!("Creating category directories...");
-        let path = output_dir.as_path();
-        file_utils::create_dir::create_category_directories(path)?;
-    }
-
-    file_utils::traverse_directory(true, dir).await?;
-    Ok(())
+    // Return any error from the event loop
+    result
 }

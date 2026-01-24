@@ -1,3 +1,21 @@
 /target
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
 examples/test/*
+
+# IDE
 .DS_Store
+.idea/
+.vscode/
+
+# Environment
+.env*
+*.log
+
+# Project tools
+.claude/
+.serena/
+.specify/
