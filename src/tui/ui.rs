@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Gauge, Paragraph},
     Frame,
 };
 
@@ -39,6 +39,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     // Draw help bar
     draw_help_bar(f, app, main_chunks[3]);
+
+    // Draw progress overlay when executing (T078)
+    if app.mode == AppMode::Executing {
+        draw_progress_overlay(f, app, size);
+    }
 
     // Draw dialog overlay if any
     if let Some(ref dialog) = app.dialog {
@@ -248,19 +253,121 @@ pub fn draw_progress_overlay(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    if let Some(ref _progress) = app.execution {
+    if let Some(ref progress) = app.execution {
         // Create a centered progress dialog
-        let progress_area = centered_rect(60, 40, area);
+        let progress_area = centered_rect(70, 50, area);
+
+        // Clear the area first
+        f.render_widget(ratatui::widgets::Clear, progress_area);
 
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Yellow))
             .title(" Executing Operations ");
 
-        f.render_widget(ratatui::widgets::Clear, progress_area);
+        let inner = block.inner(progress_area);
         f.render_widget(block, progress_area);
 
-        // Progress details would go here
+        // Layout for progress content
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints([
+                Constraint::Length(3),  // Current operation
+                Constraint::Length(3),  // Progress bar
+                Constraint::Length(3),  // Statistics
+                Constraint::Length(2),  // ETA
+                Constraint::Min(1),     // Spacer
+                Constraint::Length(1),  // Help hint
+            ])
+            .split(inner);
+
+        // Current operation
+        let current_op = progress.current_operation.as_deref().unwrap_or("Preparing...");
+        let current_file = progress.current_file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        
+        let op_text = if current_file.is_empty() {
+            format!("Operation: {}", current_op)
+        } else {
+            format!("Operation: {} - {}", current_op, current_file)
+        };
+        
+        let op_paragraph = Paragraph::new(op_text)
+            .style(Style::default().fg(Color::White))
+            .block(Block::default().borders(Borders::NONE));
+        f.render_widget(op_paragraph, chunks[0]);
+
+        // Progress bar
+        let percent = if progress.total_files > 0 {
+            ((progress.processed_files as f64 / progress.total_files as f64) * 100.0) as u16
+        } else {
+            0
+        };
+        
+        let progress_label = format!(
+            "{}/{} operations ({}%)",
+            progress.processed_files,
+            progress.total_files,
+            percent
+        );
+        
+        let gauge = Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title(" Progress "))
+            .gauge_style(Style::default().fg(Color::Green).bg(Color::DarkGray))
+            .percent(percent)
+            .label(progress_label);
+        f.render_widget(gauge, chunks[1]);
+
+        // Statistics (T080)
+        let stats_text = format!(
+            "Success: {}  |  Errors: {}  |  Skipped: {}",
+            progress.success_count,
+            progress.error_count,
+            progress.skip_count
+        );
+        
+        let stats_style = if progress.error_count > 0 {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+        
+        let stats_paragraph = Paragraph::new(stats_text)
+            .style(stats_style)
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(Block::default().borders(Borders::ALL).title(" Statistics "));
+        f.render_widget(stats_paragraph, chunks[2]);
+
+        // ETA
+        let elapsed = progress.start_time.elapsed();
+        let eta_text = if progress.processed_files > 0 && progress.total_files > progress.processed_files {
+            let rate = progress.processed_files as f64 / elapsed.as_secs_f64();
+            let remaining = (progress.total_files - progress.processed_files) as f64 / rate;
+            format!(
+                "Elapsed: {:.1}s  |  ETA: {:.1}s  |  Rate: {:.1} ops/s",
+                elapsed.as_secs_f64(),
+                remaining,
+                rate
+            )
+        } else {
+            format!("Elapsed: {:.1}s", elapsed.as_secs_f64())
+        };
+        
+        let eta_paragraph = Paragraph::new(eta_text)
+            .style(Style::default().fg(Color::Cyan))
+            .alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(eta_paragraph, chunks[3]);
+
+        // Help hint
+        let help_text = "Press Esc or Ctrl+C to cancel";
+        let help_paragraph = Paragraph::new(help_text)
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(help_paragraph, chunks[5]);
     }
 }
 

@@ -39,8 +39,21 @@ pub fn restore_terminal(terminal: &mut Tui) -> Result<()> {
     Ok(())
 }
 
+/// Minimum terminal size for proper TUI display
+const MIN_TERMINAL_WIDTH: u16 = 80;
+const MIN_TERMINAL_HEIGHT: u16 = 24;
+
 /// Run the main application event loop
 pub async fn run_app(terminal: &mut Tui, mut app: App) -> Result<()> {
+    // T097: Check terminal size
+    let size = terminal.size()?;
+    if size.width < MIN_TERMINAL_WIDTH || size.height < MIN_TERMINAL_HEIGHT {
+        app.add_log(super::state::LogEntry::warning(format!(
+            "Terminal size {}x{} is smaller than recommended {}x{}",
+            size.width, size.height, MIN_TERMINAL_WIDTH, MIN_TERMINAL_HEIGHT
+        )));
+    }
+
     // Log startup
     app.add_log(super::state::LogEntry::info("rust-jav TUI started"));
     app.add_log(super::state::LogEntry::info(format!(
@@ -51,8 +64,20 @@ pub async fn run_app(terminal: &mut Tui, mut app: App) -> Result<()> {
     // Initial directory scan
     app.file_tree.scan_directory().await;
 
-    // Log scan complete
-    app.add_log(super::state::LogEntry::success("Directory scan complete"));
+    // Log scan complete with file count
+    let file_count = app.file_tree.node_count();
+    app.add_log(super::state::LogEntry::success(format!(
+        "Directory scan complete: {} items found",
+        file_count
+    )));
+
+    // T099: Warn about large directories
+    if file_count > 10000 {
+        app.add_log(super::state::LogEntry::warning(format!(
+            "Large directory detected ({} items). Performance may be affected.",
+            file_count
+        )));
+    }
 
     // Analyze operations to find affected files
     app.add_log(super::state::LogEntry::info("Analyzing operations..."));
@@ -95,6 +120,20 @@ pub async fn run_app(terminal: &mut Tui, mut app: App) -> Result<()> {
             }
         }
 
+        // T066: Check if file tree needs refresh after move operations
+        if app.needs_refresh {
+            app.needs_refresh = false;
+            app.add_log(super::state::LogEntry::info("Refreshing file list..."));
+            app.file_tree.scan_directory().await;
+            // Re-analyze operations after refresh
+            let executor = super::executor::OperationExecutor::new(app.source_dir.clone(), true);
+            let analysis = executor.analyze_operations().await;
+            app.operations.update_all_affected(analysis);
+            app.add_log(super::state::LogEntry::success("File list refreshed"));
+            // Update preview
+            update_preview_for_panel(&mut app);
+        }
+
         // Check if we should quit
         if app.should_quit {
             break;
@@ -135,6 +174,14 @@ fn handle_dialog_event(app: &mut App, key: KeyCode, _modifiers: KeyModifiers) {
             KeyCode::Enter => {
                 // Confirm move
                 app.confirm_dialog();
+            }
+            KeyCode::Tab => {
+                // T057: Path autocomplete
+                let completions = super::state::PathCompleter::complete(&app.source_dir, custom_path);
+                if let Some(completion) = super::state::PathCompleter::next_completion(&completions, custom_path) {
+                    *custom_path = completion;
+                    *selected_target = None; // Clear preset selection when using custom path
+                }
             }
             KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
                 // Quick target selection (1-9)
@@ -433,6 +480,18 @@ async fn run_execution_step(app: &mut App) {
             "Failed: {} - {}",
             op_name,
             error_msg
+        )));
+    }
+
+    // T100: Log failed files with permission errors
+    for (failed_path, error) in &result.failed_files {
+        let file_name = failed_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        app.add_log(super::state::LogEntry::warning(format!(
+            "  Failed: {} - {}",
+            file_name,
+            error
         )));
     }
 

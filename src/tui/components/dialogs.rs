@@ -227,7 +227,7 @@ fn render_conflict_dialog(
 }
 
 /// Render the help dialog
-fn render_help_dialog(f: &mut Frame, scroll_offset: usize) {
+fn render_help_dialog(f: &mut Frame, _scroll_offset: usize) {
     let area = centered_rect(70, 80, f.area());
 
     // Clear the area behind the dialog
@@ -236,7 +236,7 @@ fn render_help_dialog(f: &mut Frame, scroll_offset: usize) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Blue))
-        .title(" Help (F1 to close) ");
+        .title(" Help (F1 or ? to close) ");
 
     let help_sections = vec![
         ("Navigation", vec![
@@ -251,6 +251,7 @@ fn render_help_dialog(f: &mut Frame, scroll_offset: usize) {
             ("m", "Move selected file(s)"),
             ("v", "Toggle multi-select mode"),
             ("Space", "Toggle selection (multi-select)"),
+            ("a", "Select/deselect all files"),
             ("/", "Search files"),
         ]),
         ("Operations Panel", vec![
@@ -258,9 +259,15 @@ fn render_help_dialog(f: &mut Frame, scroll_offset: usize) {
             ("a", "Toggle all operations"),
             ("Enter", "Execute enabled operations"),
         ]),
+        ("Execution Mode", vec![
+            ("Ctrl+C / Esc", "Cancel execution"),
+            ("", "Progress shows in overlay"),
+            ("", "Logs update in real-time"),
+            ("", "Stats: success/error/skip"),
+        ]),
         ("General", vec![
             ("q", "Quit (with confirmation)"),
-            ("F1", "Show/hide help"),
+            ("F1 / ?", "Show/hide help"),
             ("Esc", "Close dialog / Cancel"),
         ]),
     ];

@@ -15,8 +15,10 @@ pub enum OperationType {
     StandardizeNames,
     /// Extract codes from filenames
     ExtractCodes,
-    /// Move files to categorized folders
+    /// Move files to categorized folders (CHINESE/UNCENSORED)
     CategorizeFiles,
+    /// Move regular files (not CHINESE or UNCENSORED) to ORIGIN
+    MoveOrigin,
     /// Remove duplicate files
     RemoveDuplicates,
 }
@@ -30,6 +32,7 @@ impl OperationType {
             OperationType::StandardizeNames => "Standardize Names",
             OperationType::ExtractCodes => "Extract Codes",
             OperationType::CategorizeFiles => "Categorize Files",
+            OperationType::MoveOrigin => "Move to ORIGIN",
             OperationType::RemoveDuplicates => "Remove Duplicates",
         }
     }
@@ -41,7 +44,8 @@ impl OperationType {
             OperationType::CleanEmptyDirs => "Remove directories that contain no files",
             OperationType::StandardizeNames => "Rename files to follow standard naming conventions",
             OperationType::ExtractCodes => "Extract JAV codes from filenames",
-            OperationType::CategorizeFiles => "Sort files into category-based folders",
+            OperationType::CategorizeFiles => "Sort files into CHINESE/UNCENSORED folders",
+            OperationType::MoveOrigin => "Move regular files (not CHINESE or UNCENSORED) to ORIGIN folder",
             OperationType::RemoveDuplicates => "Find and remove duplicate files",
         }
     }
@@ -54,6 +58,7 @@ impl OperationType {
             OperationType::StandardizeNames,
             OperationType::ExtractCodes,
             OperationType::CategorizeFiles,
+            OperationType::MoveOrigin,
             OperationType::RemoveDuplicates,
         ]
     }

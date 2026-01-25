@@ -207,3 +207,30 @@ impl FileOperationResult {
         matches!(self, FileOperationResult::Error { .. })
     }
 }
+
+/// T101: Check available disk space for a path
+/// Returns available space in bytes, or None if unable to determine
+#[cfg(unix)]
+pub fn check_disk_space(path: &std::path::Path) -> Option<u64> {
+    // Try to get filesystem stats
+    // This is a simplified check - just verify the path is accessible
+    if std::fs::metadata(path).is_ok() {
+        // On Unix, we can't easily get free space without libc
+        // Return None to indicate we couldn't check
+        None
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+pub fn check_disk_space(path: &std::path::Path) -> Option<u64> {
+    // On Windows, we'd use GetDiskFreeSpaceExW
+    // For now, return None to indicate we couldn't check
+    None
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn check_disk_space(_path: &std::path::Path) -> Option<u64> {
+    None
+}

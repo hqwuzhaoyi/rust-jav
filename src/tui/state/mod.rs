@@ -8,7 +8,7 @@ pub mod log_persistence;
 pub mod op_state;
 
 pub use exec_state::{ExecutionProgress, FileOperationResult};
-pub use file_state::{FileNode, FileStatus, LogEntry, LogLevel, TreeState};
+pub use file_state::{ConflictResolution, FileNode, FileStatus, LogEntry, LogLevel, MoveConflict, MoveTarget, PathCompleter, TreeState};
 pub use log_persistence::{LogPersistence, SessionStats};
 pub use op_state::{Operation, OperationsState, OperationType};
 

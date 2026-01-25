@@ -9,7 +9,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -285,6 +285,11 @@ impl FileTreeComponent {
         self.filter = None;
     }
 
+    /// Get the total number of nodes (T099)
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
     /// Get visible nodes (filtered if search active)
     fn visible_nodes(&self) -> Vec<(usize, &FileNode)> {
         match &self.filter {
@@ -301,6 +306,43 @@ impl Component for FileTreeComponent {
     fn render(&self, f: &mut Frame, area: Rect, focused: bool) {
         // Use visible_nodes() to apply search filter (T109 fix)
         let visible = self.visible_nodes();
+
+        // T098: Handle empty directory with friendly message
+        if self.nodes.is_empty() {
+            let border_style = if focused {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(" Files ");
+
+            let empty_message = Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "📂 Directory is empty",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "No files found in this directory.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(Span::styled(
+                    "Try selecting a different source directory.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ])
+            .block(block)
+            .alignment(ratatui::layout::Alignment::Center);
+
+            f.render_widget(empty_message, area);
+            return;
+        }
+
         let items: Vec<ListItem> = visible
             .iter()
             .map(|(original_idx, node)| {

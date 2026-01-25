@@ -20,6 +20,8 @@ pub struct OperationResult {
     pub error: Option<String>,
     /// List of affected file paths
     pub affected_files: Vec<PathBuf>,
+    /// List of failed file paths with error messages (T100)
+    pub failed_files: Vec<(PathBuf, String)>,
 }
 
 impl OperationResult {
@@ -32,6 +34,7 @@ impl OperationResult {
             affected_count,
             error: None,
             affected_files,
+            failed_files: Vec::new(),
         }
     }
 
@@ -43,6 +46,25 @@ impl OperationResult {
             affected_count: 0,
             error: Some(error),
             affected_files: Vec::new(),
+            failed_files: Vec::new(),
+        }
+    }
+
+    /// Create a partial success result with some failures (T100)
+    pub fn partial(op_type: OperationType, affected_files: Vec<PathBuf>, failed_files: Vec<(PathBuf, String)>) -> Self {
+        let affected_count = affected_files.len();
+        let has_failures = !failed_files.is_empty();
+        Self {
+            op_type,
+            success: !has_failures || affected_count > 0,
+            affected_count,
+            error: if has_failures {
+                Some(format!("{} file(s) failed", failed_files.len()))
+            } else {
+                None
+            },
+            affected_files,
+            failed_files,
         }
     }
 }
@@ -73,6 +95,7 @@ impl OperationExecutor {
                 OperationType::StandardizeNames => self.find_files_to_standardize().await,
                 OperationType::ExtractCodes => self.find_files_with_jav_codes().await,
                 OperationType::CategorizeFiles => self.find_files_to_categorize().await,
+                OperationType::MoveOrigin => self.find_origin_files().await,
                 OperationType::RemoveDuplicates => self.find_duplicate_files().await,
             };
             results.push((op_type, affected_files));
@@ -114,6 +137,10 @@ impl OperationExecutor {
                 let files = self.find_files_to_categorize().await;
                 OperationResult::success(operation.op_type, files)
             }
+            OperationType::MoveOrigin => {
+                let files = self.find_origin_files().await;
+                OperationResult::success(operation.op_type, files)
+            }
             OperationType::RemoveDuplicates => {
                 let files = self.find_duplicate_files().await;
                 OperationResult::success(operation.op_type, files)
@@ -138,6 +165,9 @@ impl OperationExecutor {
             }
             OperationType::CategorizeFiles => {
                 self.execute_categorize_files().await
+            }
+            OperationType::MoveOrigin => {
+                self.execute_move_origin().await
             }
             OperationType::RemoveDuplicates => {
                 self.execute_remove_duplicates().await
@@ -183,6 +213,34 @@ impl OperationExecutor {
                     || name_upper.contains("UNCENSORED");
 
                 if is_chinese || is_uncensored {
+                    files.push(file);
+                }
+            }
+        }
+        files
+    }
+
+    /// Find regular files (not CHINESE or UNCENSORED) for ORIGIN folder
+    async fn find_origin_files(&self) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+
+        for file in self.collect_video_files_sync(&self.source_dir) {
+            if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
+                let name_upper = name.to_uppercase();
+                // Chinese subtitle patterns
+                let is_chinese = name_upper.contains("-C.")
+                    || name_upper.contains("-C-")
+                    || name_upper.ends_with("-C")
+                    || name.to_lowercase().ends_with("-ch")
+                    || name.to_lowercase().contains("-ch.")
+                    || name_upper.contains("C_X1080X");
+
+                // Uncensored patterns
+                let is_uncensored = name_upper.contains("-UC")
+                    || name_upper.contains("UNCENSORED");
+
+                // Regular files: not Chinese and not Uncensored
+                if !is_chinese && !is_uncensored {
                     files.push(file);
                 }
             }
@@ -269,6 +327,7 @@ impl OperationExecutor {
         let files = self.find_files_with_jav_codes().await;
         let jav_pattern = Regex::new(r"(?i)([A-Z]{2,6})[-_]?(\d{2,5})").unwrap();
         let mut affected = Vec::new();
+        let mut failed = Vec::new(); // T100: Track failed files
 
         for file in files {
             if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
@@ -281,23 +340,28 @@ impl OperationExecutor {
 
                     // Create directory if needed
                     if !target_dir.exists() {
-                        let _ = std::fs::create_dir_all(&target_dir);
+                        if let Err(e) = std::fs::create_dir_all(&target_dir) {
+                            failed.push((file.clone(), format!("Cannot create dir: {}", e)));
+                            continue;
+                        }
                     }
 
                     let target_file = target_dir.join(file.file_name().unwrap());
-                    if std::fs::rename(&file, &target_file).is_ok() {
-                        affected.push(target_file);
+                    match std::fs::rename(&file, &target_file) {
+                        Ok(_) => affected.push(target_file),
+                        Err(e) => failed.push((file.clone(), e.to_string())),
                     }
                 }
             }
         }
 
-        OperationResult::success(OperationType::OrganizeByCode, affected)
+        OperationResult::partial(OperationType::OrganizeByCode, affected, failed)
     }
 
     async fn execute_clean_empty_dirs(&self) -> OperationResult {
         let dirs = self.find_empty_directories().await;
         let mut affected = Vec::new();
+        let mut failed = Vec::new(); // T100: Track failed dirs
 
         // Sort by path length descending to remove deepest directories first
         let mut dirs = dirs;
@@ -306,22 +370,18 @@ impl OperationExecutor {
         for dir in dirs {
             match std::fs::remove_dir(&dir) {
                 Ok(_) => affected.push(dir),
-                Err(e) => {
-                    return OperationResult::failure(
-                        OperationType::CleanEmptyDirs,
-                        format!("Failed to remove {}: {}", dir.display(), e),
-                    );
-                }
+                Err(e) => failed.push((dir, e.to_string())),
             }
         }
 
-        OperationResult::success(OperationType::CleanEmptyDirs, affected)
+        OperationResult::partial(OperationType::CleanEmptyDirs, affected, failed)
     }
 
     async fn execute_standardize_names(&self) -> OperationResult {
         let files = self.find_files_to_standardize().await;
         let prefixes = self.get_prefixes();
         let mut affected = Vec::new();
+        let mut failed = Vec::new(); // T100
 
         for file in files {
             if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
@@ -329,8 +389,9 @@ impl OperationExecutor {
                     if name.starts_with(prefix) {
                         let new_name = name.replacen(prefix, "", 1);
                         let new_path = file.with_file_name(new_name);
-                        if std::fs::rename(&file, &new_path).is_ok() {
-                            affected.push(new_path);
+                        match std::fs::rename(&file, &new_path) {
+                            Ok(_) => affected.push(new_path),
+                            Err(e) => failed.push((file.clone(), e.to_string())),
                         }
                         break;
                     }
@@ -338,7 +399,7 @@ impl OperationExecutor {
             }
         }
 
-        OperationResult::success(OperationType::StandardizeNames, affected)
+        OperationResult::partial(OperationType::StandardizeNames, affected, failed)
     }
 
     async fn execute_extract_codes(&self) -> OperationResult {
@@ -350,6 +411,7 @@ impl OperationExecutor {
     async fn execute_categorize_files(&self) -> OperationResult {
         let files = self.find_files_to_categorize().await;
         let mut affected = Vec::new();
+        let mut failed = Vec::new(); // T100
 
         let chinese_dir = self.source_dir.join("CHINESE");
         let uncensored_dir = self.source_dir.join("UNCENSORED");
@@ -365,33 +427,68 @@ impl OperationExecutor {
                 };
 
                 if !target_dir.exists() {
-                    let _ = std::fs::create_dir_all(target_dir);
+                    if let Err(e) = std::fs::create_dir_all(target_dir) {
+                        failed.push((file.clone(), format!("Cannot create dir: {}", e)));
+                        continue;
+                    }
                 }
 
                 let target_file = target_dir.join(file.file_name().unwrap());
                 if !target_file.exists() {
-                    if std::fs::rename(&file, &target_file).is_ok() {
-                        affected.push(target_file);
+                    match std::fs::rename(&file, &target_file) {
+                        Ok(_) => affected.push(target_file),
+                        Err(e) => failed.push((file.clone(), e.to_string())),
                     }
                 }
             }
         }
 
-        OperationResult::success(OperationType::CategorizeFiles, affected)
+        OperationResult::partial(OperationType::CategorizeFiles, affected, failed)
+    }
+
+    async fn execute_move_origin(&self) -> OperationResult {
+        let files = self.find_origin_files().await;
+        let mut affected = Vec::new();
+        let mut failed = Vec::new(); // T100
+
+        let origin_dir = self.source_dir.join("ORIGIN");
+
+        for file in files {
+            if !origin_dir.exists() {
+                if let Err(e) = std::fs::create_dir_all(&origin_dir) {
+                    failed.push((file.clone(), format!("Cannot create dir: {}", e)));
+                    continue;
+                }
+            }
+
+            if let Some(file_name) = file.file_name() {
+                let target_file = origin_dir.join(file_name);
+                if !target_file.exists() {
+                    match std::fs::rename(&file, &target_file) {
+                        Ok(_) => affected.push(target_file),
+                        Err(e) => failed.push((file.clone(), e.to_string())),
+                    }
+                }
+            }
+        }
+
+        OperationResult::partial(OperationType::MoveOrigin, affected, failed)
     }
 
     async fn execute_remove_duplicates(&self) -> OperationResult {
         let files = self.find_duplicate_files().await;
         let mut affected = Vec::new();
+        let mut failed = Vec::new(); // T100
 
         // Only remove files in dry_run=false mode
         for file in files {
-            if std::fs::remove_file(&file).is_ok() {
-                affected.push(file);
+            match std::fs::remove_file(&file) {
+                Ok(_) => affected.push(file),
+                Err(e) => failed.push((file, e.to_string())),
             }
         }
 
-        OperationResult::success(OperationType::RemoveDuplicates, affected)
+        OperationResult::partial(OperationType::RemoveDuplicates, affected, failed)
     }
 
     // === Utility functions ===

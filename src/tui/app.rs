@@ -122,6 +122,9 @@ pub struct App {
 
     /// Search query (when in search mode)
     pub search_query: String,
+
+    /// Flag to trigger file tree refresh (T066)
+    pub needs_refresh: bool,
 }
 
 impl App {
@@ -145,6 +148,7 @@ impl App {
             source_dir,
             should_quit: false,
             search_query: String::new(),
+            needs_refresh: false,
         }
     }
 
@@ -243,6 +247,8 @@ impl App {
             if self.file_tree.is_multi_select() {
                 self.file_tree.toggle_multi_select();
             }
+            // Trigger file tree refresh (T066)
+            self.needs_refresh = true;
         }
         self.hide_dialog();
     }
@@ -280,21 +286,31 @@ impl App {
         if self.file_tree.is_multi_select() {
             self.file_tree.toggle_multi_select();
         }
+        // Trigger file tree refresh (T066)
+        self.needs_refresh = true;
     }
 
-    /// Get predefined move targets
+    /// Get predefined move targets (T052)
     pub fn get_move_targets(&self) -> Vec<String> {
-        vec![
-            "CHINESE".to_string(),
-            "UNCENSORED".to_string(),
-            "organized".to_string(),
-            "archive".to_string(),
-            "other".to_string(),
-        ]
+        super::state::MoveTarget::default_presets()
+            .into_iter()
+            .map(|t| t.path)
+            .collect()
+    }
+
+    /// Get move targets with full metadata (T052)
+    pub fn get_move_targets_full(&self) -> Vec<super::state::MoveTarget> {
+        super::state::MoveTarget::default_presets()
     }
 
     /// Start execution mode
     pub fn start_execution(&mut self) {
+        // T101: Log execution start
+        self.add_log(super::state::LogEntry::info(format!(
+            "Starting execution in: {}",
+            self.source_dir.display()
+        )));
+
         self.mode = AppMode::Executing;
         // Initialize execution progress
         let enabled_ops = self.operations.enabled_operation_count();
