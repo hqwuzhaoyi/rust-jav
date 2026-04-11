@@ -1,10 +1,10 @@
-use std::path::PathBuf;
-
 use clap::Parser;
 use color_eyre::Result;
 use tokio::sync::mpsc;
 
-use rust_jav::config::Cli;
+use rust_jav::cli::Cli;
+use rust_jav::report::OutputFormat;
+use rust_jav::runtime::{resolve_run_request, RunRequest};
 use rust_jav::tui;
 
 #[tokio::main]
@@ -14,24 +14,33 @@ async fn main() -> Result<()> {
 
     let cli_args = Cli::parse();
 
-    // Get the source directory as PathBuf
-    let source_dir = PathBuf::from(&cli_args.dir);
+    match resolve_run_request(cli_args).await? {
+        RunRequest::Tui { dir } => {
+            let mut terminal = tui::init_terminal()?;
+            let (action_tx, _action_rx) = mpsc::unbounded_channel();
+            let app = tui::App::new(dir, action_tx);
+            let result = tui::run_app(&mut terminal, app).await;
+            tui::restore_terminal(&mut terminal)?;
+            result
+        }
+        RunRequest::Report {
+            report,
+            format,
+            exit_code,
+        } => {
+            print_report(&report, format);
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+            Ok(())
+        }
+    }
+}
 
-    // Initialize the TUI
-    let mut terminal = tui::init_terminal()?;
-
-    // Create action channel
-    let (action_tx, _action_rx) = mpsc::unbounded_channel();
-
-    // Create the app
-    let app = tui::App::new(source_dir, action_tx);
-
-    // Run the TUI event loop
-    let result = tui::run_app(&mut terminal, app).await;
-
-    // Restore terminal on exit
-    tui::restore_terminal(&mut terminal)?;
-
-    // Return any error from the event loop
-    result
+fn print_report(report: &rust_jav::report::CommandReport, format: OutputFormat) {
+    let output = match format {
+        OutputFormat::Text => report.to_text(),
+        OutputFormat::Json => report.to_json(),
+    };
+    println!("{output}");
 }

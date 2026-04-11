@@ -51,7 +51,9 @@ impl ProgressComponent {
 impl Component for ProgressComponent {
     fn render(&self, f: &mut Frame, area: Rect, focused: bool) {
         let border_style = if focused {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::DarkGray)
         };
@@ -88,11 +90,7 @@ impl Component for ProgressComponent {
             );
 
             let gauge = Gauge::default()
-                .gauge_style(
-                    Style::default()
-                        .fg(Color::Green)
-                        .bg(Color::DarkGray)
-                )
+                .gauge_style(Style::default().fg(Color::Green).bg(Color::DarkGray))
                 .percent((percentage * 100.0) as u16)
                 .label(label);
 
@@ -100,16 +98,23 @@ impl Component for ProgressComponent {
 
             // Current file info
             let current_info = if let Some(ref file) = progress.current_file {
-                let filename = file.file_name()
+                let filename = file
+                    .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| file.display().to_string());
-                let op = progress.current_operation.as_deref().unwrap_or("Processing");
+                let op = progress
+                    .current_operation
+                    .as_deref()
+                    .unwrap_or("Processing");
                 Line::from(vec![
                     Span::styled(format!("{}: ", op), Style::default().fg(Color::DarkGray)),
                     Span::styled(filename, Style::default().fg(Color::White)),
                 ])
             } else {
-                Line::from(Span::styled("Preparing...", Style::default().fg(Color::DarkGray)))
+                Line::from(Span::styled(
+                    "Preparing...",
+                    Style::default().fg(Color::DarkGray),
+                ))
             };
 
             let current_para = Paragraph::new(current_info);
@@ -138,16 +143,10 @@ impl Component for ProgressComponent {
                 ]),
                 Line::from(vec![
                     Span::styled("Elapsed: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        progress.elapsed_string(),
-                        Style::default().fg(Color::Cyan),
-                    ),
+                    Span::styled(progress.elapsed_string(), Style::default().fg(Color::Cyan)),
                     Span::raw("  "),
                     Span::styled("ETA: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        progress.eta_string(),
-                        Style::default().fg(Color::Cyan),
-                    ),
+                    Span::styled(progress.eta_string(), Style::default().fg(Color::Cyan)),
                 ]),
             ];
 

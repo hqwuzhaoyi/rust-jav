@@ -214,13 +214,10 @@ impl FileOperationResult {
 pub fn check_disk_space(path: &std::path::Path) -> Option<u64> {
     // Try to get filesystem stats
     // This is a simplified check - just verify the path is accessible
-    if std::fs::metadata(path).is_ok() {
-        // On Unix, we can't easily get free space without libc
-        // Return None to indicate we couldn't check
-        None
-    } else {
-        None
-    }
+    let _ = std::fs::metadata(path).ok()?;
+    // On Unix, we can't easily get free space without libc
+    // Return None to indicate we couldn't check
+    None
 }
 
 #[cfg(windows)]

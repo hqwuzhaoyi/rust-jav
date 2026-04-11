@@ -4,7 +4,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::file_state::{LogEntry, LogLevel};
 
@@ -35,7 +35,7 @@ impl LogPersistence {
     }
 
     /// Get log file path with date-based naming
-    fn get_log_file_path(log_dir: &PathBuf) -> PathBuf {
+    fn get_log_file_path(log_dir: &Path) -> PathBuf {
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         log_dir.join(format!("tui-{}.log", date))
     }
@@ -63,7 +63,8 @@ impl LogPersistence {
         };
 
         let timestamp = entry.timestamp.format("%Y-%m-%d %H:%M:%S%.3f");
-        let file_info = entry.file
+        let file_info = entry
+            .file
             .as_ref()
             .map(|f| format!(" [{}]", f.display()))
             .unwrap_or_default();
@@ -86,7 +87,7 @@ impl LogPersistence {
     }
 
     /// Write a session start marker
-    pub fn write_session_start(&self, source_dir: &PathBuf) {
+    pub fn write_session_start(&self, source_dir: &Path) {
         if !self.enabled {
             return;
         }
@@ -121,10 +122,7 @@ impl LogPersistence {
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let content = format!(
             "[{}] Session ended - Success: {}, Errors: {}, Warnings: {}\n",
-            timestamp,
-            stats.success_count,
-            stats.error_count,
-            stats.warning_count
+            timestamp, stats.success_count, stats.error_count, stats.warning_count
         );
 
         if let Ok(file) = OpenOptions::new()

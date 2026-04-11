@@ -26,7 +26,7 @@ pub async fn delete_files_matching_patterns<P: AsRef<Path>>(
             None => return Ok(false),
         };
         for pattern in patterns {
-            let regex_pattern = format!("^{}.*$", pattern.replace("*", ".*"));
+            let regex_pattern = format!("^{}.*$", pattern.replace('*', ".*"));
             let re = Regex::new(&regex_pattern).unwrap();
             if re.is_match(&file_name) {
                 info!("will delete file: {:?}", path);

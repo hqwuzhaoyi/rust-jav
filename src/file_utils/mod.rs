@@ -10,6 +10,7 @@ use std::time::Duration;
 pub mod create_dir;
 pub mod delete_files;
 pub mod move_files;
+pub mod rename_files;
 pub mod rename_files_async;
 
 #[async_recursion]
@@ -68,7 +69,7 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
                 if delete_files_matching_patterns {
                     // 对每个文件执行删除操作
                     match delete_files::delete_files_matching_patterns(&path, patterns).await {
-                        Ok(dir_deleted) => {
+                        Ok(_dir_deleted) => {
                             // if dir_deleted {
                             //     // 目录被删除，可能不需要继续后续的重命名或其他操作
                             //     trace!("Directory deleted, skipping further actions for this path.");
@@ -136,8 +137,7 @@ pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
                     }
 
                     if should_move_dir && output_dir_path.exists() {
-                        if let Err(e) = move_files::move_directories(&path, &output_dir_path).await
-                        {
+                        if let Err(e) = move_files::move_directories(&path, output_dir_path).await {
                             error!("Error moving directories: {}", e);
                             continue;
                         }

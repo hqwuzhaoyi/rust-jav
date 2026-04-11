@@ -48,7 +48,8 @@ impl PreviewComponent {
     /// Set the selected files to preview
     pub fn set_selected_files(&mut self, files: Vec<PathBuf>) {
         // Calculate total size
-        self.total_size = files.iter()
+        self.total_size = files
+            .iter()
             .filter_map(|p| std::fs::metadata(p).ok())
             .map(|m| m.len())
             .sum();
@@ -95,9 +96,12 @@ impl PreviewComponent {
             )));
         } else {
             // Header
-            lines.push(Line::from(vec![
-                Span::styled("📁 Selected Files", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "📁 Selected Files",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )]));
             lines.push(Line::from(""));
 
             // Summary
@@ -105,7 +109,9 @@ impl PreviewComponent {
                 Span::styled("Count: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     self.selected_files.len().to_string(),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" files", Style::default().fg(Color::DarkGray)),
             ]));
@@ -113,17 +119,24 @@ impl PreviewComponent {
                 Span::styled("Total Size: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format_file_size(self.total_size),
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]));
 
             // File list (up to 15 files to leave room for operation details)
             if !self.selected_files.is_empty() {
                 lines.push(Line::from(""));
-                let max_files = if self.highlighted_operation.is_some() { 10 } else { 20 };
+                let max_files = if self.highlighted_operation.is_some() {
+                    10
+                } else {
+                    20
+                };
 
                 for (i, file) in self.selected_files.iter().take(max_files).enumerate() {
-                    let filename = file.file_name()
+                    let filename = file
+                        .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| file.display().to_string());
 
@@ -132,19 +145,23 @@ impl PreviewComponent {
                         .unwrap_or_else(|_| "?".to_string());
 
                     lines.push(Line::from(vec![
-                        Span::styled(format!("  {:2}. ", i + 1), Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            format!("  {:2}. ", i + 1),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                         Span::styled(filename, Style::default().fg(Color::White)),
-                        Span::styled(format!("  ({})", size_str), Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            format!("  ({})", size_str),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                     ]));
                 }
 
                 if self.selected_files.len() > max_files {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("  ... and {} more", self.selected_files.len() - max_files),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  ... and {} more", self.selected_files.len() - max_files),
+                        Style::default().fg(Color::DarkGray),
+                    )]));
                 }
             }
         }
@@ -152,9 +169,10 @@ impl PreviewComponent {
         // Show highlighted operation details below (if any)
         if let Some(ref op) = self.highlighted_operation {
             lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("─".repeat(30), Style::default().fg(Color::DarkGray)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "─".repeat(30),
+                Style::default().fg(Color::DarkGray),
+            )]));
             lines.push(Line::from(""));
 
             // Operation header
@@ -162,7 +180,9 @@ impl PreviewComponent {
                 Span::styled("⚙️  ", Style::default()),
                 Span::styled(
                     op.op_type.name().to_string(),
-                    Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
                 Span::styled(
@@ -172,9 +192,10 @@ impl PreviewComponent {
             ]));
 
             // Description
-            lines.push(Line::from(vec![
-                Span::styled(op.op_type.description().to_string(), Style::default().fg(Color::DarkGray)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                op.op_type.description().to_string(),
+                Style::default().fg(Color::DarkGray),
+            )]));
 
             // Affected count
             if op.affected_count > 0 {
@@ -201,7 +222,9 @@ impl PreviewComponent {
 impl Component for PreviewComponent {
     fn render(&self, f: &mut Frame, area: Rect, focused: bool) {
         let border_style = if focused {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::DarkGray)
         };

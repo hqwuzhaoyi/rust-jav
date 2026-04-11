@@ -8,9 +8,12 @@ pub mod log_persistence;
 pub mod op_state;
 
 pub use exec_state::{ExecutionProgress, FileOperationResult};
-pub use file_state::{ConflictResolution, FileNode, FileStatus, LogEntry, LogLevel, MoveConflict, MoveTarget, PathCompleter, TreeState};
+pub use file_state::{
+    ConflictResolution, FileNode, FileStatus, LogEntry, LogLevel, MoveConflict, MoveTarget,
+    PathCompleter, TreeState,
+};
 pub use log_persistence::{LogPersistence, SessionStats};
-pub use op_state::{Operation, OperationsState, OperationType};
+pub use op_state::{Operation, OperationType, OperationsState};
 
 use std::path::PathBuf;
 
@@ -44,10 +47,7 @@ pub enum Action {
     FocusPrevious,
 
     /// Directory scan completed
-    ScanComplete {
-        root: PathBuf,
-        nodes: Vec<FileNode>,
-    },
+    ScanComplete { root: PathBuf, nodes: Vec<FileNode> },
 
     /// Directory scan failed
     ScanFailed { root: PathBuf, error: String },

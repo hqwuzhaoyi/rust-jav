@@ -34,20 +34,24 @@ pub async fn move_directories<P: AsRef<Path>>(file_path: P, output_dir_path: P) 
 
             let should_move_chinese = &config.should_move_chinese();
             let should_move_uncensored = &config.should_move_uncensored();
+            let should_move_origin = &config.should_move_origin();
 
-            let new_path = if (dir_name.ends_with("-UC")
+            let is_uncensored = dir_name.ends_with("-UC")
                 || dir_name.contains("UNCENSORED")
-                || dir_name.contains("uncensored"))
-                && *should_move_uncensored
-            {
-                output_path.join("UNCENSORED").join(&new_dir_name)
-            } else if (dir_name.ends_with("ch")
+                || dir_name.contains("uncensored");
+
+            let is_chinese = dir_name.ends_with("ch")
                 || dir_name.ends_with("-C")
                 || dir_name.ends_with("CH")
-                || dir_name.ends_with("C_X1080X"))
-                && *should_move_chinese
-            {
+                || dir_name.ends_with("C_X1080X");
+
+            let new_path = if is_uncensored && *should_move_uncensored {
+                output_path.join("UNCENSORED").join(&new_dir_name)
+            } else if is_chinese && *should_move_chinese {
                 output_path.join("CHINESE").join(&new_dir_name)
+            } else if !is_uncensored && !is_chinese && *should_move_origin {
+                // 不是 UNCENSORED 也不是 CHINESE 的普通视频移动到 ORIGIN
+                output_path.join("ORIGIN").join(&new_dir_name)
             } else {
                 PathBuf::new() // 如果不匹配任何条件，则不移动
             };

@@ -148,12 +148,13 @@ impl FileTreeComponent {
         }
 
         // Synchronously read directory (for now)
-        if let Ok(entries) = std::fs::read_dir(&parent_path) {
+        if let Ok(entries) = std::fs::read_dir(parent_path) {
             let mut children: Vec<FileNode> = entries
                 .filter_map(|e| e.ok())
                 .map(|entry| {
                     let path = entry.path();
-                    let name = path.file_name()
+                    let name = path
+                        .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
                     let is_dir = path.is_dir();
@@ -162,12 +163,10 @@ impl FileTreeComponent {
                 .collect();
 
             // Sort: directories first, then alphabetically
-            children.sort_by(|a, b| {
-                match (a.is_dir, b.is_dir) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                }
+            children.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
             });
 
             // Insert children after parent
@@ -196,7 +195,8 @@ impl FileTreeComponent {
         }
 
         if remove_count > 0 {
-            self.nodes.drain((parent_idx + 1)..(parent_idx + 1 + remove_count));
+            self.nodes
+                .drain((parent_idx + 1)..(parent_idx + 1 + remove_count));
         }
 
         // Mark as not loaded
@@ -229,7 +229,9 @@ impl FileTreeComponent {
     /// Select or deselect all files (not directories)
     pub fn toggle_select_all(&mut self) {
         // Check if all files are already selected
-        let file_paths: Vec<_> = self.nodes.iter()
+        let file_paths: Vec<_> = self
+            .nodes
+            .iter()
             .filter(|n| !n.is_dir)
             .map(|n| n.path.clone())
             .collect();
@@ -293,7 +295,9 @@ impl FileTreeComponent {
     /// Get visible nodes (filtered if search active)
     fn visible_nodes(&self) -> Vec<(usize, &FileNode)> {
         match &self.filter {
-            Some(query) => self.nodes.iter()
+            Some(query) => self
+                .nodes
+                .iter()
                 .enumerate()
                 .filter(|(_, n)| n.name.to_lowercase().contains(query))
                 .collect(),
@@ -310,7 +314,9 @@ impl Component for FileTreeComponent {
         // T098: Handle empty directory with friendly message
         if self.nodes.is_empty() {
             let border_style = if focused {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
@@ -384,7 +390,9 @@ impl Component for FileTreeComponent {
             .collect();
 
         let border_style = if focused {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::DarkGray)
         };
@@ -392,7 +400,10 @@ impl Component for FileTreeComponent {
         let title = if self.filter.is_some() {
             format!(" Files [SEARCH: {} matches] ", visible.len())
         } else if self.state.multi_select_mode {
-            format!(" Files [MULTI-SELECT: {} selected] ", self.state.selected_files.len())
+            format!(
+                " Files [MULTI-SELECT: {} selected] ",
+                self.state.selected_files.len()
+            )
         } else {
             " Files ".to_string()
         };
@@ -429,7 +440,8 @@ async fn scan_directory_flat(path: &PathBuf, depth: usize) -> std::io::Result<Ve
 
     while let Some(entry) = entries.next_entry().await? {
         let entry_path = entry.path();
-        let name = entry_path.file_name()
+        let name = entry_path
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         let is_dir = entry_path.is_dir();
@@ -437,12 +449,10 @@ async fn scan_directory_flat(path: &PathBuf, depth: usize) -> std::io::Result<Ve
     }
 
     // Sort: directories first, then alphabetically
-    items.sort_by(|a, b| {
-        match (a.2, b.2) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.0.to_lowercase().cmp(&b.0.to_lowercase()),
-        }
+    items.sort_by(|a, b| match (a.2, b.2) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.0.to_lowercase().cmp(&b.0.to_lowercase()),
     });
 
     for (name, item_path, is_dir) in items {

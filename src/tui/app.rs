@@ -206,7 +206,12 @@ impl App {
             }
         }
         // Handle Dialog::Move (T110 fix)
-        else if let Some(Dialog::Move { source_files, selected_target, custom_path }) = self.dialog.clone() {
+        else if let Some(Dialog::Move {
+            source_files,
+            selected_target,
+            custom_path,
+        }) = self.dialog.clone()
+        {
             // Determine target path
             let targets = self.get_move_targets();
             let target_path = if !custom_path.is_empty() {
@@ -231,14 +236,18 @@ impl App {
                     }
                     match std::fs::rename(source, &dest) {
                         Ok(_) => {
-                            self.add_log(super::state::LogEntry::success(
-                                format!("Moved: {} -> {}", source.display(), dest.display())
-                            ));
+                            self.add_log(super::state::LogEntry::success(format!(
+                                "Moved: {} -> {}",
+                                source.display(),
+                                dest.display()
+                            )));
                         }
                         Err(e) => {
-                            self.add_log(super::state::LogEntry::error(
-                                format!("Failed to move {}: {}", source.display(), e)
-                            ));
+                            self.add_log(super::state::LogEntry::error(format!(
+                                "Failed to move {}: {}",
+                                source.display(),
+                                e
+                            )));
                         }
                     }
                 }
@@ -255,13 +264,14 @@ impl App {
 
     /// Execute move files operation
     fn execute_move_files(&mut self, target: PathBuf) {
-        let files_to_move = if self.file_tree.is_multi_select() && self.file_tree.selected_count() > 0 {
-            self.file_tree.selected_files()
-        } else if let Some(path) = self.file_tree.selected_path() {
-            vec![path]
-        } else {
-            vec![]
-        };
+        let files_to_move =
+            if self.file_tree.is_multi_select() && self.file_tree.selected_count() > 0 {
+                self.file_tree.selected_files()
+            } else if let Some(path) = self.file_tree.selected_path() {
+                vec![path]
+            } else {
+                vec![]
+            };
 
         for source in files_to_move {
             if let Some(file_name) = source.file_name() {
@@ -271,14 +281,18 @@ impl App {
                 }
                 match std::fs::rename(&source, &dest) {
                     Ok(_) => {
-                        self.add_log(super::state::LogEntry::success(
-                            format!("Moved: {} -> {}", source.display(), dest.display())
-                        ));
+                        self.add_log(super::state::LogEntry::success(format!(
+                            "Moved: {} -> {}",
+                            source.display(),
+                            dest.display()
+                        )));
                     }
                     Err(e) => {
-                        self.add_log(super::state::LogEntry::error(
-                            format!("Failed to move {}: {}", source.display(), e)
-                        ));
+                        self.add_log(super::state::LogEntry::error(format!(
+                            "Failed to move {}: {}",
+                            source.display(),
+                            e
+                        )));
                     }
                 }
             }

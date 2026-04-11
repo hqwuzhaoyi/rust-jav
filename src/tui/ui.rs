@@ -21,10 +21,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // Status bar
-            Constraint::Min(10),    // Main content (three panels)
-            Constraint::Length(8),  // Log panel
-            Constraint::Length(1),  // Help bar
+            Constraint::Length(1), // Status bar
+            Constraint::Min(10),   // Main content (three panels)
+            Constraint::Length(8), // Log panel
+            Constraint::Length(1), // Help bar
         ])
         .split(size);
 
@@ -68,7 +68,12 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let status = Line::from(vec![
-        Span::styled(" rust-jav ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " rust-jav ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("│ "),
         Span::styled(mode_str, mode_style.add_modifier(Modifier::BOLD)),
         Span::raw(" │ "),
@@ -78,8 +83,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         ),
     ]);
 
-    let status_bar = Paragraph::new(status)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let status_bar =
+        Paragraph::new(status).style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
     f.render_widget(status_bar, area);
 }
@@ -126,29 +131,38 @@ fn draw_log_panel(f: &mut Frame, app: &App, area: Rect) {
         .title(" Logs ");
 
     // Build log lines from app.logs
-    let log_lines: Vec<Line> = app.logs.iter().rev().take(area.height as usize - 2).map(|entry| {
-        let level_style = match entry.level {
-            super::state::LogLevel::Info => Style::default().fg(Color::Blue),
-            super::state::LogLevel::Success => Style::default().fg(Color::Green),
-            super::state::LogLevel::Warning => Style::default().fg(Color::Yellow),
-            super::state::LogLevel::Error => Style::default().fg(Color::Red),
-        };
+    let log_lines: Vec<Line> = app
+        .logs
+        .iter()
+        .rev()
+        .take(area.height as usize - 2)
+        .map(|entry| {
+            let level_style = match entry.level {
+                super::state::LogLevel::Info => Style::default().fg(Color::Blue),
+                super::state::LogLevel::Success => Style::default().fg(Color::Green),
+                super::state::LogLevel::Warning => Style::default().fg(Color::Yellow),
+                super::state::LogLevel::Error => Style::default().fg(Color::Red),
+            };
 
-        let level_str = match entry.level {
-            super::state::LogLevel::Info => "INFO",
-            super::state::LogLevel::Success => "OK",
-            super::state::LogLevel::Warning => "WARN",
-            super::state::LogLevel::Error => "ERR",
-        };
+            let level_str = match entry.level {
+                super::state::LogLevel::Info => "INFO",
+                super::state::LogLevel::Success => "OK",
+                super::state::LogLevel::Warning => "WARN",
+                super::state::LogLevel::Error => "ERR",
+            };
 
-        let time_str = entry.timestamp.format("%H:%M:%S").to_string();
+            let time_str = entry.timestamp.format("%H:%M:%S").to_string();
 
-        Line::from(vec![
-            Span::styled(format!("[{}] ", time_str), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:4} ", level_str), level_style),
-            Span::raw(&entry.message),
-        ])
-    }).collect();
+            Line::from(vec![
+                Span::styled(
+                    format!("[{}] ", time_str),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(format!("{:4} ", level_str), level_style),
+                Span::raw(&entry.message),
+            ])
+        })
+        .collect();
 
     // If no logs, show placeholder
     let content = if log_lines.is_empty() {
@@ -160,8 +174,7 @@ fn draw_log_panel(f: &mut Frame, app: &App, area: Rect) {
         log_lines
     };
 
-    let paragraph = Paragraph::new(content)
-        .block(block);
+    let paragraph = Paragraph::new(content).block(block);
 
     f.render_widget(paragraph, area);
 }
@@ -170,18 +183,9 @@ fn draw_log_panel(f: &mut Frame, app: &App, area: Rect) {
 fn draw_help_bar(f: &mut Frame, app: &App, area: Rect) {
     let shortcuts = match app.mode {
         AppMode::Normal => get_normal_mode_shortcuts(app),
-        AppMode::Executing => vec![
-            ("Ctrl+C", "Cancel"),
-            ("j/k", "Scroll log"),
-        ],
-        AppMode::Search => vec![
-            ("Enter", "Apply"),
-            ("Esc", "Cancel"),
-        ],
-        AppMode::Help => vec![
-            ("j/k", "Scroll"),
-            ("Esc/F1", "Close"),
-        ],
+        AppMode::Executing => vec![("Ctrl+C", "Cancel"), ("j/k", "Scroll log")],
+        AppMode::Search => vec![("Enter", "Apply"), ("Esc", "Cancel")],
+        AppMode::Help => vec![("j/k", "Scroll"), ("Esc/F1", "Close")],
     };
 
     let mut spans = Vec::new();
@@ -209,19 +213,14 @@ fn draw_help_bar(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let help_line = Line::from(spans);
-    let help_bar = Paragraph::new(help_line)
-        .style(Style::default().bg(Color::Black));
+    let help_bar = Paragraph::new(help_line).style(Style::default().bg(Color::Black));
 
     f.render_widget(help_bar, area);
 }
 
 /// Get shortcuts for normal mode based on focused panel
 fn get_normal_mode_shortcuts(app: &App) -> Vec<(&'static str, &'static str)> {
-    let common = vec![
-        ("Tab", "Next panel"),
-        ("q", "Quit"),
-        ("F1", "Help"),
-    ];
+    let common = vec![("Tab", "Next panel"), ("q", "Quit"), ("F1", "Help")];
 
     let panel_specific: Vec<(&'static str, &'static str)> = match app.focused_panel {
         Panel::FileTree => vec![
@@ -237,9 +236,7 @@ fn get_normal_mode_shortcuts(app: &App) -> Vec<(&'static str, &'static str)> {
             ("a", "Toggle all"),
             ("Enter", "Execute"),
         ],
-        Panel::Preview => vec![
-            ("j/k", "Scroll"),
-        ],
+        Panel::Preview => vec![("j/k", "Scroll")],
     };
 
     let mut shortcuts = panel_specific;
@@ -273,29 +270,33 @@ pub fn draw_progress_overlay(f: &mut Frame, app: &App, area: Rect) {
             .direction(Direction::Vertical)
             .margin(1)
             .constraints([
-                Constraint::Length(3),  // Current operation
-                Constraint::Length(3),  // Progress bar
-                Constraint::Length(3),  // Statistics
-                Constraint::Length(2),  // ETA
-                Constraint::Min(1),     // Spacer
-                Constraint::Length(1),  // Help hint
+                Constraint::Length(3), // Current operation
+                Constraint::Length(3), // Progress bar
+                Constraint::Length(3), // Statistics
+                Constraint::Length(2), // ETA
+                Constraint::Min(1),    // Spacer
+                Constraint::Length(1), // Help hint
             ])
             .split(inner);
 
         // Current operation
-        let current_op = progress.current_operation.as_deref().unwrap_or("Preparing...");
-        let current_file = progress.current_file
+        let current_op = progress
+            .current_operation
+            .as_deref()
+            .unwrap_or("Preparing...");
+        let current_file = progress
+            .current_file
             .as_ref()
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .unwrap_or("");
-        
+
         let op_text = if current_file.is_empty() {
             format!("Operation: {}", current_op)
         } else {
             format!("Operation: {} - {}", current_op, current_file)
         };
-        
+
         let op_paragraph = Paragraph::new(op_text)
             .style(Style::default().fg(Color::White))
             .block(Block::default().borders(Borders::NONE));
@@ -307,14 +308,12 @@ pub fn draw_progress_overlay(f: &mut Frame, app: &App, area: Rect) {
         } else {
             0
         };
-        
+
         let progress_label = format!(
             "{}/{} operations ({}%)",
-            progress.processed_files,
-            progress.total_files,
-            percent
+            progress.processed_files, progress.total_files, percent
         );
-        
+
         let gauge = Gauge::default()
             .block(Block::default().borders(Borders::ALL).title(" Progress "))
             .gauge_style(Style::default().fg(Color::Green).bg(Color::DarkGray))
@@ -325,17 +324,15 @@ pub fn draw_progress_overlay(f: &mut Frame, app: &App, area: Rect) {
         // Statistics (T080)
         let stats_text = format!(
             "Success: {}  |  Errors: {}  |  Skipped: {}",
-            progress.success_count,
-            progress.error_count,
-            progress.skip_count
+            progress.success_count, progress.error_count, progress.skip_count
         );
-        
+
         let stats_style = if progress.error_count > 0 {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default().fg(Color::Green)
         };
-        
+
         let stats_paragraph = Paragraph::new(stats_text)
             .style(stats_style)
             .alignment(ratatui::layout::Alignment::Center)
@@ -344,19 +341,20 @@ pub fn draw_progress_overlay(f: &mut Frame, app: &App, area: Rect) {
 
         // ETA
         let elapsed = progress.start_time.elapsed();
-        let eta_text = if progress.processed_files > 0 && progress.total_files > progress.processed_files {
-            let rate = progress.processed_files as f64 / elapsed.as_secs_f64();
-            let remaining = (progress.total_files - progress.processed_files) as f64 / rate;
-            format!(
-                "Elapsed: {:.1}s  |  ETA: {:.1}s  |  Rate: {:.1} ops/s",
-                elapsed.as_secs_f64(),
-                remaining,
-                rate
-            )
-        } else {
-            format!("Elapsed: {:.1}s", elapsed.as_secs_f64())
-        };
-        
+        let eta_text =
+            if progress.processed_files > 0 && progress.total_files > progress.processed_files {
+                let rate = progress.processed_files as f64 / elapsed.as_secs_f64();
+                let remaining = (progress.total_files - progress.processed_files) as f64 / rate;
+                format!(
+                    "Elapsed: {:.1}s  |  ETA: {:.1}s  |  Rate: {:.1} ops/s",
+                    elapsed.as_secs_f64(),
+                    remaining,
+                    rate
+                )
+            } else {
+                format!("Elapsed: {:.1}s", elapsed.as_secs_f64())
+            };
+
         let eta_paragraph = Paragraph::new(eta_text)
             .style(Style::default().fg(Color::Cyan))
             .alignment(ratatui::layout::Alignment::Center);

@@ -2,10 +2,25 @@
 //!
 //! Bridges TUI operations with file_utils functions.
 
-use std::path::{Path, PathBuf};
 use regex::Regex;
+use std::path::{Path, PathBuf};
 
 use super::state::{Operation, OperationType};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedAction {
+    pub kind: String,
+    pub source: Option<PathBuf>,
+    pub target: Option<PathBuf>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationPlan {
+    pub op_type: OperationType,
+    pub actions: Vec<PlannedAction>,
+    pub warnings: Vec<String>,
+}
 
 /// Result of executing an operation
 #[derive(Debug, Clone)]
@@ -51,7 +66,11 @@ impl OperationResult {
     }
 
     /// Create a partial success result with some failures (T100)
-    pub fn partial(op_type: OperationType, affected_files: Vec<PathBuf>, failed_files: Vec<(PathBuf, String)>) -> Self {
+    pub fn partial(
+        op_type: OperationType,
+        affected_files: Vec<PathBuf>,
+        failed_files: Vec<(PathBuf, String)>,
+    ) -> Self {
         let affected_count = affected_files.len();
         let has_failures = !failed_files.is_empty();
         Self {
@@ -80,7 +99,10 @@ pub struct OperationExecutor {
 impl OperationExecutor {
     /// Create a new executor
     pub fn new(source_dir: PathBuf, dry_run: bool) -> Self {
-        Self { source_dir, dry_run }
+        Self {
+            source_dir,
+            dry_run,
+        }
     }
 
     /// Analyze all operations and return affected file counts
@@ -102,6 +124,18 @@ impl OperationExecutor {
         }
 
         results
+    }
+
+    pub async fn plan_operation(&self, op_type: OperationType) -> OperationPlan {
+        match op_type {
+            OperationType::OrganizeByCode => self.plan_organize_by_code().await,
+            OperationType::CleanEmptyDirs => self.plan_clean_empty_dirs().await,
+            OperationType::StandardizeNames => self.plan_standardize_names().await,
+            OperationType::ExtractCodes => self.plan_extract_codes().await,
+            OperationType::CategorizeFiles => self.plan_categorize_files().await,
+            OperationType::MoveOrigin => self.plan_move_origin().await,
+            OperationType::RemoveDuplicates => self.plan_remove_duplicates().await,
+        }
     }
 
     /// Execute a single operation
@@ -151,27 +185,13 @@ impl OperationExecutor {
     /// Run an operation (modifies files)
     async fn run_operation(&self, operation: &Operation) -> OperationResult {
         match operation.op_type {
-            OperationType::OrganizeByCode => {
-                self.execute_organize_by_code().await
-            }
-            OperationType::CleanEmptyDirs => {
-                self.execute_clean_empty_dirs().await
-            }
-            OperationType::StandardizeNames => {
-                self.execute_standardize_names().await
-            }
-            OperationType::ExtractCodes => {
-                self.execute_extract_codes().await
-            }
-            OperationType::CategorizeFiles => {
-                self.execute_categorize_files().await
-            }
-            OperationType::MoveOrigin => {
-                self.execute_move_origin().await
-            }
-            OperationType::RemoveDuplicates => {
-                self.execute_remove_duplicates().await
-            }
+            OperationType::OrganizeByCode => self.execute_organize_by_code().await,
+            OperationType::CleanEmptyDirs => self.execute_clean_empty_dirs().await,
+            OperationType::StandardizeNames => self.execute_standardize_names().await,
+            OperationType::ExtractCodes => self.execute_extract_codes().await,
+            OperationType::CategorizeFiles => self.execute_categorize_files().await,
+            OperationType::MoveOrigin => self.execute_move_origin().await,
+            OperationType::RemoveDuplicates => self.execute_remove_duplicates().await,
         }
     }
 
@@ -183,7 +203,7 @@ impl OperationExecutor {
         let jav_pattern = Regex::new(r"(?i)[A-Z]{2,6}[-_]?\d{2,5}").unwrap();
         let mut matched_files = Vec::new();
 
-        for file in self.collect_video_files_sync(&self.source_dir) {
+        for file in Self::collect_video_files_sync(&self.source_dir) {
             if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
                 if jav_pattern.is_match(name) {
                     matched_files.push(file);
@@ -197,7 +217,7 @@ impl OperationExecutor {
     async fn find_files_to_categorize(&self) -> Vec<PathBuf> {
         let mut files = Vec::new();
 
-        for file in self.collect_video_files_sync(&self.source_dir) {
+        for file in Self::collect_video_files_sync(&self.source_dir) {
             if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
                 let name_upper = name.to_uppercase();
                 // Chinese subtitle patterns: -C, -ch, CH, C_X1080X
@@ -209,8 +229,7 @@ impl OperationExecutor {
                     || name_upper.contains("C_X1080X");
 
                 // Uncensored patterns: -UC, UNCENSORED
-                let is_uncensored = name_upper.contains("-UC")
-                    || name_upper.contains("UNCENSORED");
+                let is_uncensored = name_upper.contains("-UC") || name_upper.contains("UNCENSORED");
 
                 if is_chinese || is_uncensored {
                     files.push(file);
@@ -224,7 +243,7 @@ impl OperationExecutor {
     async fn find_origin_files(&self) -> Vec<PathBuf> {
         let mut files = Vec::new();
 
-        for file in self.collect_video_files_sync(&self.source_dir) {
+        for file in Self::collect_video_files_sync(&self.source_dir) {
             if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
                 let name_upper = name.to_uppercase();
                 // Chinese subtitle patterns
@@ -236,8 +255,7 @@ impl OperationExecutor {
                     || name_upper.contains("C_X1080X");
 
                 // Uncensored patterns
-                let is_uncensored = name_upper.contains("-UC")
-                    || name_upper.contains("UNCENSORED");
+                let is_uncensored = name_upper.contains("-UC") || name_upper.contains("UNCENSORED");
 
                 // Regular files: not Chinese and not Uncensored
                 if !is_chinese && !is_uncensored {
@@ -250,17 +268,17 @@ impl OperationExecutor {
 
     async fn find_empty_directories(&self) -> Vec<PathBuf> {
         let mut empty_dirs = Vec::new();
-        self.find_empty_dirs_recursive(&self.source_dir, &mut empty_dirs);
+        Self::find_empty_dirs_recursive(&self.source_dir, &mut empty_dirs);
         empty_dirs
     }
 
-    fn find_empty_dirs_recursive(&self, dir: &Path, result: &mut Vec<PathBuf>) {
+    fn find_empty_dirs_recursive(dir: &Path, result: &mut Vec<PathBuf>) {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
                     // Recursively check subdirectories first
-                    self.find_empty_dirs_recursive(&path, result);
+                    Self::find_empty_dirs_recursive(&path, result);
                     // Then check if this directory is empty
                     if Self::is_empty_dir(&path) {
                         result.push(path);
@@ -274,11 +292,15 @@ impl OperationExecutor {
         let mut files = Vec::new();
         let prefixes = self.get_prefixes();
 
-        self.find_files_with_prefixes_recursive(&self.source_dir, &prefixes, &mut files);
+        Self::find_files_with_prefixes_recursive(&self.source_dir, &prefixes, &mut files);
         files
     }
 
-    fn find_files_with_prefixes_recursive(&self, dir: &Path, prefixes: &[String], result: &mut Vec<PathBuf>) {
+    fn find_files_with_prefixes_recursive(
+        dir: &Path,
+        prefixes: &[String],
+        result: &mut Vec<PathBuf>,
+    ) {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -289,7 +311,7 @@ impl OperationExecutor {
                         }
                     }
                 } else if path.is_dir() {
-                    self.find_files_with_prefixes_recursive(&path, prefixes, result);
+                    Self::find_files_with_prefixes_recursive(&path, prefixes, result);
                 }
             }
         }
@@ -300,7 +322,7 @@ impl OperationExecutor {
         use std::collections::HashMap;
         let mut size_map: HashMap<u64, Vec<PathBuf>> = HashMap::new();
 
-        for file in self.collect_video_files_sync(&self.source_dir) {
+        for file in Self::collect_video_files_sync(&self.source_dir) {
             if let Ok(metadata) = std::fs::metadata(&file) {
                 let size = metadata.len();
                 // Only consider files > 1MB as potential duplicates
@@ -321,6 +343,183 @@ impl OperationExecutor {
         duplicates
     }
 
+    async fn plan_organize_by_code(&self) -> OperationPlan {
+        let files = self.find_files_with_jav_codes().await;
+        let jav_pattern = Regex::new(r"(?i)([A-Z]{2,6})[-_]?(\d{2,5})").unwrap();
+        let mut actions = Vec::new();
+        let mut warnings = Vec::new();
+
+        for file in files {
+            if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
+                if let Some(captures) = jav_pattern.captures(name) {
+                    let code = format!(
+                        "{}-{}",
+                        captures
+                            .get(1)
+                            .map(|m| m.as_str().to_uppercase())
+                            .unwrap_or_default(),
+                        captures.get(2).map(|m| m.as_str()).unwrap_or_default()
+                    );
+                    let target = self.source_dir.join(&code).join(file.file_name().unwrap());
+                    actions.push(PlannedAction {
+                        kind: "move".to_string(),
+                        source: Some(file),
+                        target: Some(target),
+                        reason: Some(format!("organize into code directory {code}")),
+                    });
+                } else {
+                    warnings.push(format!("Could not derive code for {}", file.display()));
+                }
+            }
+        }
+
+        OperationPlan {
+            op_type: OperationType::OrganizeByCode,
+            actions,
+            warnings,
+        }
+    }
+
+    async fn plan_clean_empty_dirs(&self) -> OperationPlan {
+        let dirs = self.find_empty_directories().await;
+        OperationPlan {
+            op_type: OperationType::CleanEmptyDirs,
+            actions: dirs
+                .into_iter()
+                .map(|dir| PlannedAction {
+                    kind: "delete-dir".to_string(),
+                    source: Some(dir),
+                    target: None,
+                    reason: None,
+                })
+                .collect(),
+            warnings: Vec::new(),
+        }
+    }
+
+    async fn plan_standardize_names(&self) -> OperationPlan {
+        let files = self.find_files_to_standardize().await;
+        let prefixes = self.get_prefixes();
+        let mut actions = Vec::new();
+
+        for file in files {
+            if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
+                if let Some(prefix) = prefixes
+                    .iter()
+                    .find(|prefix| name.starts_with(prefix.as_str()))
+                {
+                    let target = file.with_file_name(name.replacen(prefix, "", 1));
+                    actions.push(PlannedAction {
+                        kind: "rename".to_string(),
+                        source: Some(file),
+                        target: Some(target),
+                        reason: Some("remove known prefix".to_string()),
+                    });
+                }
+            }
+        }
+
+        OperationPlan {
+            op_type: OperationType::StandardizeNames,
+            actions,
+            warnings: Vec::new(),
+        }
+    }
+
+    async fn plan_extract_codes(&self) -> OperationPlan {
+        let files = self.find_files_with_jav_codes().await;
+        let mut actions = Vec::new();
+
+        for file in files {
+            if let Some((target, code)) = Self::extract_code_target(&file) {
+                actions.push(PlannedAction {
+                    kind: "extract-code".to_string(),
+                    source: Some(file),
+                    target: Some(target),
+                    reason: Some(format!(
+                        "normalize filename around detected JAV code {code}"
+                    )),
+                });
+            }
+        }
+
+        OperationPlan {
+            op_type: OperationType::ExtractCodes,
+            actions,
+            warnings: Vec::new(),
+        }
+    }
+
+    async fn plan_categorize_files(&self) -> OperationPlan {
+        let files = self.find_files_to_categorize().await;
+        let mut actions = Vec::new();
+
+        for file in files {
+            if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
+                let target_dir = if Self::is_uncensored_name(name) {
+                    self.source_dir.join("UNCENSORED")
+                } else {
+                    self.source_dir.join("CHINESE")
+                };
+                actions.push(PlannedAction {
+                    kind: "move".to_string(),
+                    source: Some(file.clone()),
+                    target: Some(target_dir.join(file.file_name().unwrap())),
+                    reason: Some("categorize by filename suffix".to_string()),
+                });
+            }
+        }
+
+        OperationPlan {
+            op_type: OperationType::CategorizeFiles,
+            actions,
+            warnings: Vec::new(),
+        }
+    }
+
+    async fn plan_move_origin(&self) -> OperationPlan {
+        let files = self.find_origin_files().await;
+        let origin_dir = self.source_dir.join("ORIGIN");
+        OperationPlan {
+            op_type: OperationType::MoveOrigin,
+            actions: files
+                .into_iter()
+                .map(|file| PlannedAction {
+                    kind: "move".to_string(),
+                    source: Some(file.clone()),
+                    target: Some(origin_dir.join(file.file_name().unwrap())),
+                    reason: Some("move uncategorized video into ORIGIN".to_string()),
+                })
+                .collect(),
+            warnings: Vec::new(),
+        }
+    }
+
+    async fn plan_remove_duplicates(&self) -> OperationPlan {
+        let files = self.find_duplicate_files().await;
+        let mut warnings = Vec::new();
+        if !files.is_empty() {
+            warnings.push(
+                "duplicate detection is size-based only; review preview carefully before apply"
+                    .to_string(),
+            );
+        }
+
+        OperationPlan {
+            op_type: OperationType::RemoveDuplicates,
+            actions: files
+                .into_iter()
+                .map(|file| PlannedAction {
+                    kind: "delete-file".to_string(),
+                    source: Some(file),
+                    target: None,
+                    reason: Some("potential duplicate selected by size heuristic".to_string()),
+                })
+                .collect(),
+            warnings,
+        }
+    }
+
     // === Execution helpers (actually modify files) ===
 
     async fn execute_organize_by_code(&self) -> OperationResult {
@@ -332,8 +531,12 @@ impl OperationExecutor {
         for file in files {
             if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
                 if let Some(captures) = jav_pattern.captures(name) {
-                    let code = format!("{}-{}",
-                        captures.get(1).map(|m| m.as_str().to_uppercase()).unwrap_or_default(),
+                    let code = format!(
+                        "{}-{}",
+                        captures
+                            .get(1)
+                            .map(|m| m.as_str().to_uppercase())
+                            .unwrap_or_default(),
                         captures.get(2).map(|m| m.as_str()).unwrap_or_default()
                     );
                     let target_dir = self.source_dir.join(&code);
@@ -365,7 +568,7 @@ impl OperationExecutor {
 
         // Sort by path length descending to remove deepest directories first
         let mut dirs = dirs;
-        dirs.sort_by(|a, b| b.to_string_lossy().len().cmp(&a.to_string_lossy().len()));
+        dirs.sort_by_key(|path| std::cmp::Reverse(path.to_string_lossy().len()));
 
         for dir in dirs {
             match std::fs::remove_dir(&dir) {
@@ -404,8 +607,29 @@ impl OperationExecutor {
 
     async fn execute_extract_codes(&self) -> OperationResult {
         let files = self.find_files_with_jav_codes().await;
-        // This operation just identifies files with codes, doesn't modify them
-        OperationResult::success(OperationType::ExtractCodes, files)
+        let mut affected = Vec::new();
+        let mut failed = Vec::new();
+
+        for file in files {
+            let Some((target, _code)) = Self::extract_code_target(&file) else {
+                continue;
+            };
+
+            if target.exists() && target != file {
+                failed.push((
+                    file.clone(),
+                    format!("target already exists: {}", target.display()),
+                ));
+                continue;
+            }
+
+            match std::fs::rename(&file, &target) {
+                Ok(_) => affected.push(target),
+                Err(e) => failed.push((file.clone(), e.to_string())),
+            }
+        }
+
+        OperationResult::partial(OperationType::ExtractCodes, affected, failed)
     }
 
     async fn execute_categorize_files(&self) -> OperationResult {
@@ -420,7 +644,8 @@ impl OperationExecutor {
             if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
                 let name_upper = name.to_uppercase();
 
-                let target_dir = if name_upper.contains("-UC") || name_upper.contains("UNCENSORED") {
+                let target_dir = if name_upper.contains("-UC") || name_upper.contains("UNCENSORED")
+                {
                     &uncensored_dir
                 } else {
                     &chinese_dir
@@ -500,8 +725,10 @@ impl OperationExecutor {
         }
     }
 
-    fn collect_video_files_sync(&self, dir: &Path) -> Vec<PathBuf> {
-        let video_extensions = ["mp4", "mkv", "avi", "wmv", "mov", "flv", "webm", "rmvb", "rm"];
+    fn collect_video_files_sync(dir: &Path) -> Vec<PathBuf> {
+        let video_extensions = [
+            "mp4", "mkv", "avi", "wmv", "mov", "flv", "webm", "rmvb", "rm",
+        ];
         let mut files = Vec::new();
 
         if let Ok(entries) = std::fs::read_dir(dir) {
@@ -515,17 +742,13 @@ impl OperationExecutor {
                     }
                 } else if path.is_dir() {
                     // Recursively collect from subdirectories
-                    let sub_files = self.collect_video_files_sync(&path);
+                    let sub_files = Self::collect_video_files_sync(&path);
                     files.extend(sub_files);
                 }
             }
         }
 
         files
-    }
-
-    async fn collect_video_files(&self, dir: &Path) -> Vec<PathBuf> {
-        self.collect_video_files_sync(dir)
     }
 
     fn get_prefixes(&self) -> Vec<String> {
@@ -544,6 +767,37 @@ impl OperationExecutor {
                 "AVAV66.XYZ@".to_string(),
                 "4k2.com@".to_string(),
             ]
+        }
+    }
+
+    fn is_uncensored_name(name: &str) -> bool {
+        let upper = name.to_uppercase();
+        upper.contains("-UC") || upper.contains("UNCENSORED")
+    }
+
+    fn extract_code_target(file: &Path) -> Option<(PathBuf, String)> {
+        let stem = file.file_stem()?.to_str()?;
+        let extension = file.extension().and_then(|ext| ext.to_str());
+        let jav_pattern = Regex::new(r"(?i)([A-Z]{2,6})[-_]?(\d{2,5})").unwrap();
+        let captures = jav_pattern.captures(stem)?;
+        let full_match = captures.get(0)?;
+        let code = format!(
+            "{}-{}",
+            captures.get(1)?.as_str().to_uppercase(),
+            captures.get(2)?.as_str()
+        );
+        let suffix = &stem[full_match.end()..];
+        let new_stem = format!("{code}{suffix}");
+        let new_name = match extension {
+            Some(ext) => format!("{new_stem}.{ext}"),
+            None => new_stem,
+        };
+        let target = file.with_file_name(new_name);
+
+        if target == file {
+            None
+        } else {
+            Some((target, code))
         }
     }
 }

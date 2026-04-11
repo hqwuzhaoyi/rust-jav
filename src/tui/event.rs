@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use color_eyre::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -84,7 +86,9 @@ pub async fn run_app(terminal: &mut Tui, mut app: App) -> Result<()> {
     let executor = super::executor::OperationExecutor::new(app.source_dir.clone(), true);
     let analysis = executor.analyze_operations().await;
     app.operations.update_all_affected(analysis);
-    app.add_log(super::state::LogEntry::success("Operation analysis complete"));
+    app.add_log(super::state::LogEntry::success(
+        "Operation analysis complete",
+    ));
 
     // Initial preview update based on focused panel
     update_preview_for_panel(&mut app);
@@ -112,7 +116,9 @@ pub async fn run_app(terminal: &mut Tui, mut app: App) -> Result<()> {
                 } else {
                     match app.mode {
                         AppMode::Normal => handle_normal_event(&mut app, key.code, key.modifiers),
-                        AppMode::Executing => handle_executing_event(&mut app, key.code, key.modifiers),
+                        AppMode::Executing => {
+                            handle_executing_event(&mut app, key.code, key.modifiers)
+                        }
                         AppMode::Search => handle_search_event(&mut app, key.code),
                         AppMode::Help => handle_help_event(&mut app, key.code),
                     }
@@ -167,7 +173,11 @@ fn handle_dialog_event(app: &mut App, key: KeyCode, _modifiers: KeyModifiers) {
             }
             _ => {}
         },
-        Some(Dialog::Move { selected_target, custom_path, .. }) => match key {
+        Some(Dialog::Move {
+            selected_target,
+            custom_path,
+            ..
+        }) => match key {
             KeyCode::Esc => {
                 app.hide_dialog();
             }
@@ -177,8 +187,11 @@ fn handle_dialog_event(app: &mut App, key: KeyCode, _modifiers: KeyModifiers) {
             }
             KeyCode::Tab => {
                 // T057: Path autocomplete
-                let completions = super::state::PathCompleter::complete(&app.source_dir, custom_path);
-                if let Some(completion) = super::state::PathCompleter::next_completion(&completions, custom_path) {
+                let completions =
+                    super::state::PathCompleter::complete(&app.source_dir, custom_path);
+                if let Some(completion) =
+                    super::state::PathCompleter::next_completion(&completions, custom_path)
+                {
                     *custom_path = completion;
                     *selected_target = None; // Clear preset selection when using custom path
                 }
@@ -208,7 +221,9 @@ fn handle_dialog_event(app: &mut App, key: KeyCode, _modifiers: KeyModifiers) {
             }
             _ => {}
         },
-        Some(Dialog::Conflict { selected_option, .. }) => match key {
+        Some(Dialog::Conflict {
+            selected_option, ..
+        }) => match key {
             KeyCode::Esc => {
                 app.hide_dialog();
             }
@@ -375,11 +390,15 @@ fn handle_executing_event(app: &mut App, key: KeyCode, modifiers: KeyModifiers) 
     match key {
         // Ctrl+C or Esc to interrupt
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.add_log(super::state::LogEntry::warning("Execution cancelled by user"));
+            app.add_log(super::state::LogEntry::warning(
+                "Execution cancelled by user",
+            ));
             app.cancel_execution();
         }
         KeyCode::Esc => {
-            app.add_log(super::state::LogEntry::warning("Execution cancelled by user"));
+            app.add_log(super::state::LogEntry::warning(
+                "Execution cancelled by user",
+            ));
             app.cancel_execution();
         }
         // Scroll preview
@@ -428,7 +447,9 @@ async fn run_execution_step(app: &mut App) {
     }
 
     // Get the current operation to execute
-    let enabled_ops: Vec<_> = app.operations.operations()
+    let enabled_ops: Vec<_> = app
+        .operations
+        .operations()
         .iter()
         .filter(|op| op.enabled)
         .map(|op| op.op_type)
@@ -471,27 +492,25 @@ async fn run_execution_step(app: &mut App) {
     if result.success {
         app.add_log(super::state::LogEntry::success(format!(
             "Completed: {} ({} files affected)",
-            op_name,
-            result.affected_count
+            op_name, result.affected_count
         )));
     } else {
         let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
         app.add_log(super::state::LogEntry::error(format!(
             "Failed: {} - {}",
-            op_name,
-            error_msg
+            op_name, error_msg
         )));
     }
 
     // T100: Log failed files with permission errors
     for (failed_path, error) in &result.failed_files {
-        let file_name = failed_path.file_name()
+        let file_name = failed_path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
         app.add_log(super::state::LogEntry::warning(format!(
             "  Failed: {} - {}",
-            file_name,
-            error
+            file_name, error
         )));
     }
 

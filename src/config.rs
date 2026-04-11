@@ -32,6 +32,7 @@ pub struct CliConfig {
     pub remove_prefixes: bool,
     pub move_chinese: bool,
     pub move_uncensored: bool,
+    pub move_origin: bool,
     pub rename_upper_case: bool,
     pub prefixes: Vec<String>,
     pub patterns: Vec<String>,
@@ -42,7 +43,7 @@ impl CliConfig {
     pub fn should_create_directories(&self) -> bool {
         trace!("should_create_directories is called");
         trace!("output_dir.exists(): {}", self.output_dir.exists());
-        self.output_dir.exists() && (self.move_chinese || self.move_uncensored)
+        self.output_dir.exists() && (self.move_chinese || self.move_uncensored || self.move_origin)
     }
 
     pub fn should_remove_prefixes(&self) -> bool {
@@ -75,9 +76,14 @@ impl CliConfig {
         self.move_uncensored
     }
 
+    pub fn should_move_origin(&self) -> bool {
+        trace!("should_move_origin is called");
+        self.move_origin
+    }
+
     pub fn should_move_dir(&self) -> bool {
         trace!("should_move_dir  is called");
-        self.move_chinese || self.move_uncensored
+        self.move_chinese || self.move_uncensored || self.move_origin
     }
 
     pub fn should_use_all_options(&self) -> bool {
@@ -89,13 +95,14 @@ impl CliConfig {
         trace!("all_options is called");
         self.move_chinese
             && self.move_uncensored
+            && self.move_origin
             && self.delete_ad
             && self.rename_upper_case
             && self.remove_prefixes
     }
 }
 
-const PATTERNS: Lazy<HashSet<String>> = Lazy::new(|| {
+static PATTERNS: Lazy<HashSet<String>> = Lazy::new(|| {
     include_str!("../patterns.txt")
         .lines()
         .map(|s| s.to_string())
@@ -110,6 +117,7 @@ impl From<Cli> for CliConfig {
             delete_ad: cli.delete_ad,
             move_chinese: cli.move_chinese,
             move_uncensored: cli.move_uncensored,
+            move_origin: cli.move_origin,
             rename_upper_case: cli.rename_upper_case,
             remove_prefixes: cli.remove_prefixes,
             prefixes: PREFIXES.iter().map(|s| s.to_string()).collect(),
@@ -164,6 +172,10 @@ pub struct Cli {
     #[arg(long)]
     pub move_uncensored: bool,
 
+    /// Whether to move regular files (not UNCENSORED or CHINESE) to ORIGIN
+    #[arg(long)]
+    pub move_origin: bool,
+
     /// Whether to use the --upper-case flag
     #[arg(long)]
     pub rename_upper_case: bool,
@@ -211,6 +223,7 @@ pub fn default_config_from_cli(mut cli: Cli) -> Cli {
         cli.delete_dir_with_no_video = true;
         cli.move_chinese = true;
         cli.move_uncensored = true;
+        cli.move_origin = true;
         cli.rename_upper_case = true;
         cli.remove_prefixes = true;
     }

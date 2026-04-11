@@ -51,7 +51,10 @@ fn test_execution_progress_is_complete_when_done() {
     assert!(!progress.is_complete());
 
     progress.record_skip();
-    assert!(progress.is_complete(), "Should be complete when processed equals total");
+    assert!(
+        progress.is_complete(),
+        "Should be complete when processed equals total"
+    );
 }
 
 /// Test ExecutionProgress::is_complete() when cancelled
@@ -74,7 +77,10 @@ fn test_execution_progress_is_complete_when_exceeded() {
     progress.record_success();
     progress.record_success(); // One more than total
 
-    assert!(progress.is_complete(), "Should be complete when processed exceeds total");
+    assert!(
+        progress.is_complete(),
+        "Should be complete when processed exceeds total"
+    );
 }
 
 /// Test ExecutionProgress::percentage() calculation
@@ -104,7 +110,11 @@ fn test_execution_progress_percentage() {
 #[test]
 fn test_execution_progress_percentage_zero_files() {
     let progress = ExecutionProgress::new(0);
-    assert_eq!(progress.percentage(), 1.0, "Zero files should be 100% complete");
+    assert_eq!(
+        progress.percentage(),
+        1.0,
+        "Zero files should be 100% complete"
+    );
 }
 
 /// Test ExecutionProgress::percentage_int() calculation

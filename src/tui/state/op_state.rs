@@ -45,7 +45,9 @@ impl OperationType {
             OperationType::StandardizeNames => "Rename files to follow standard naming conventions",
             OperationType::ExtractCodes => "Extract JAV codes from filenames",
             OperationType::CategorizeFiles => "Sort files into CHINESE/UNCENSORED folders",
-            OperationType::MoveOrigin => "Move regular files (not CHINESE or UNCENSORED) to ORIGIN folder",
+            OperationType::MoveOrigin => {
+                "Move regular files (not CHINESE or UNCENSORED) to ORIGIN folder"
+            }
             OperationType::RemoveDuplicates => "Find and remove duplicate files",
         }
     }
@@ -100,7 +102,8 @@ impl Operation {
     pub fn set_affected(&mut self, files: Vec<PathBuf>) {
         self.affected_count = files.len();
         // Calculate total size of affected files
-        self.affected_size = files.iter()
+        self.affected_size = files
+            .iter()
             .filter_map(|p| std::fs::metadata(p).ok())
             .map(|m| m.len())
             .sum();
@@ -146,7 +149,10 @@ impl OperationsState {
     /// Select the previous operation
     pub fn previous(&mut self) {
         if !self.operations.is_empty() {
-            self.selected = self.selected.checked_sub(1).unwrap_or(self.operations.len() - 1);
+            self.selected = self
+                .selected
+                .checked_sub(1)
+                .unwrap_or(self.operations.len() - 1);
         }
     }
 

@@ -108,7 +108,9 @@ impl OperationsComponent {
 
 impl Component for OperationsComponent {
     fn render(&self, f: &mut Frame, area: Rect, focused: bool) {
-        let items: Vec<ListItem> = self.state.operations
+        let items: Vec<ListItem> = self
+            .state
+            .operations
             .iter()
             .enumerate()
             .map(|(idx, op)| {
@@ -146,14 +148,20 @@ impl Component for OperationsComponent {
             .collect();
 
         let border_style = if focused {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::DarkGray)
         };
 
         let enabled_count = self.state.enabled_count();
         let title = if enabled_count > 0 {
-            format!(" Operations [{}/{}] ", enabled_count, self.state.operations.len())
+            format!(
+                " Operations [{}/{}] ",
+                enabled_count,
+                self.state.operations.len()
+            )
         } else {
             " Operations ".to_string()
         };

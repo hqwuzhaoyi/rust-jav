@@ -3,7 +3,7 @@
 //! Contains data structures for file system representation in the TUI.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Status of a file in the tree view
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -93,16 +93,12 @@ pub enum ConflictResolution {
 
 impl MoveConflict {
     /// Check if moving a file would cause a conflict
-    pub fn check(source: &PathBuf, target_dir: &PathBuf) -> Option<Self> {
+    pub fn check(source: &PathBuf, target_dir: &Path) -> Option<Self> {
         if let Some(file_name) = source.file_name() {
             let target = target_dir.join(file_name);
             if target.exists() {
-                let target_size = std::fs::metadata(&target)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                let source_size = std::fs::metadata(source)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                let target_size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+                let source_size = std::fs::metadata(source).map(|m| m.len()).unwrap_or(0);
                 return Some(Self {
                     source: source.clone(),
                     target,
@@ -115,8 +111,9 @@ impl MoveConflict {
     }
 
     /// Check multiple files for conflicts
-    pub fn check_batch(sources: &[PathBuf], target_dir: &PathBuf) -> Vec<Self> {
-        sources.iter()
+    pub fn check_batch(sources: &[PathBuf], target_dir: &Path) -> Vec<Self> {
+        sources
+            .iter()
             .filter_map(|s| Self::check(s, target_dir))
             .collect()
     }
@@ -150,11 +147,10 @@ impl MoveConflict {
     }
 
     /// Generate a unique filename by adding a numeric suffix
-    fn generate_unique_name(path: &PathBuf) -> PathBuf {
-        let stem = path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("file");
-        let ext = path.extension()
+    fn generate_unique_name(path: &Path) -> PathBuf {
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+        let ext = path
+            .extension()
             .and_then(|e| e.to_str())
             .map(|e| format!(".{}", e))
             .unwrap_or_default();
@@ -185,7 +181,7 @@ pub struct PathCompleter;
 
 impl PathCompleter {
     /// Get completions for a partial path relative to base_dir
-    pub fn complete(base_dir: &PathBuf, partial: &str) -> Vec<String> {
+    pub fn complete(base_dir: &Path, partial: &str) -> Vec<String> {
         let mut completions = Vec::new();
 
         // Determine the directory to search and the prefix to match
@@ -194,21 +190,22 @@ impl PathCompleter {
             let path = std::path::Path::new(partial);
             if let Some(parent) = path.parent() {
                 let search = base_dir.join(parent);
-                let prefix = path.file_name()
+                let prefix = path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("")
                     .to_lowercase();
                 (search, prefix)
             } else {
-                (base_dir.clone(), partial.to_lowercase())
+                (base_dir.to_path_buf(), partial.to_lowercase())
             }
         } else {
             // No separator - search in base_dir
-            (base_dir.clone(), partial.to_lowercase())
+            (base_dir.to_path_buf(), partial.to_lowercase())
         };
 
         // Read directory and find matches
-        if let Ok(entries) = std::fs::read_dir(&search_dir) {
+        if let Ok(entries) = std::fs::read_dir(search_dir) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
                 if path.is_dir() {
@@ -236,7 +233,7 @@ impl PathCompleter {
         }
 
         // Sort completions alphabetically
-        completions.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        completions.sort_by_key(|a| a.to_lowercase());
         completions
     }
 

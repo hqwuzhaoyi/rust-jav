@@ -52,7 +52,8 @@ impl LogViewerComponent {
             self.entries.pop_front();
         }
         if self.auto_scroll {
-            self.list_state.select(Some(self.entries.len().saturating_sub(1)));
+            self.list_state
+                .select(Some(self.entries.len().saturating_sub(1)));
         }
     }
 
@@ -101,20 +102,27 @@ impl LogViewerComponent {
 impl Component for LogViewerComponent {
     fn render(&self, f: &mut Frame, area: Rect, focused: bool) {
         let border_style = if focused {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::DarkGray)
         };
 
         let auto_scroll_indicator = if self.auto_scroll { " [AUTO]" } else { "" };
-        let title = format!(" Logs ({} entries){} ", self.entries.len(), auto_scroll_indicator);
+        let title = format!(
+            " Logs ({} entries){} ",
+            self.entries.len(),
+            auto_scroll_indicator
+        );
 
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border_style)
             .title(title);
 
-        let items: Vec<ListItem> = self.entries
+        let items: Vec<ListItem> = self
+            .entries
             .iter()
             .map(|entry| {
                 let timestamp = entry.timestamp.format("%H:%M:%S").to_string();
@@ -142,7 +150,8 @@ impl Component for LogViewerComponent {
                 ];
 
                 if let Some(ref file) = entry.file {
-                    let filename = file.file_name()
+                    let filename = file
+                        .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| file.display().to_string());
                     spans.push(Span::styled(

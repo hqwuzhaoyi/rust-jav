@@ -2,6 +2,8 @@
 //!
 //! Modal dialogs for confirmations, file moves, and conflicts.
 
+use std::path::Path;
+
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -18,10 +20,18 @@ pub fn render_dialog(f: &mut Frame, dialog: &Dialog) {
         Dialog::Confirm { title, message, .. } => {
             render_confirm_dialog(f, title, message);
         }
-        Dialog::Move { source_files, selected_target, custom_path } => {
+        Dialog::Move {
+            source_files,
+            selected_target,
+            custom_path,
+        } => {
             render_move_dialog(f, source_files, *selected_target, custom_path);
         }
-        Dialog::Conflict { source, target, selected_option } => {
+        Dialog::Conflict {
+            source,
+            target,
+            selected_option,
+        } => {
             render_conflict_dialog(f, source, target, *selected_option);
         }
         Dialog::Help { scroll_offset } => {
@@ -48,9 +58,17 @@ fn render_confirm_dialog(f: &mut Frame, title: &str, message: &str) {
         Line::from(""),
         Line::from(""),
         Line::from(vec![
-            Span::styled("[Y]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[Y]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" Yes   "),
-            Span::styled("[N]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[N]",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" No"),
         ]),
     ]);
@@ -83,7 +101,8 @@ fn render_move_dialog(
     // Build content
     let file_count = source_files.len();
     let file_str = if file_count == 1 {
-        source_files[0].file_name()
+        source_files[0]
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "1 file".to_string())
     } else {
@@ -91,33 +110,40 @@ fn render_move_dialog(
     };
 
     // Quick target directories (examples)
-    let quick_targets = vec![
-        "organized/",
-        "sorted/",
-        "archive/",
-        "temp/",
-        "other/",
-    ];
+    let quick_targets = ["organized/", "sorted/", "archive/", "temp/", "other/"];
 
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Moving: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(file_str, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                file_str,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(""),
-        Line::from(Span::styled("Quick targets:", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(
+            "Quick targets:",
+            Style::default().fg(Color::DarkGray),
+        )),
     ];
 
     for (i, target) in quick_targets.iter().enumerate() {
         let selected = selected_target == Some(i);
         let marker = if selected { "▶ " } else { "  " };
         let style = if selected {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
         lines.push(Line::from(vec![
-            Span::styled(format!("{}[{}] ", marker, i + 1), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{}[{}] ", marker, i + 1),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(target.to_string(), style),
         ]));
     }
@@ -126,7 +152,11 @@ fn render_move_dialog(
     lines.push(Line::from(vec![
         Span::styled("Custom path: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            if custom_path.is_empty() { "(type to enter path)" } else { custom_path },
+            if custom_path.is_empty() {
+                "(type to enter path)"
+            } else {
+                custom_path
+            },
             if custom_path.is_empty() {
                 Style::default().fg(Color::DarkGray)
             } else {
@@ -143,20 +173,13 @@ fn render_move_dialog(
     ]));
 
     let text = Text::from(lines);
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
 
     f.render_widget(paragraph, area);
 }
 
 /// Render the conflict resolution dialog
-fn render_conflict_dialog(
-    f: &mut Frame,
-    source: &std::path::PathBuf,
-    target: &std::path::PathBuf,
-    selected_option: usize,
-) {
+fn render_conflict_dialog(f: &mut Frame, source: &Path, target: &Path, selected_option: usize) {
     let area = centered_rect(60, 40, f.area());
 
     // Clear the area behind the dialog
@@ -167,15 +190,17 @@ fn render_conflict_dialog(
         .border_style(Style::default().fg(Color::Red))
         .title(" File Conflict ");
 
-    let source_name = source.file_name()
+    let source_name = source
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| source.display().to_string());
 
-    let target_name = target.file_name()
+    let target_name = target
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| target.display().to_string());
 
-    let options = vec![
+    let options = [
         ("Skip", "Don't move this file"),
         ("Overwrite", "Replace the existing file"),
         ("Rename", "Add suffix to filename"),
@@ -191,7 +216,10 @@ fn render_conflict_dialog(
             Span::styled(target_name, Style::default().fg(Color::Red)),
         ]),
         Line::from(""),
-        Line::from(Span::styled("Choose an action:", Style::default().fg(Color::White))),
+        Line::from(Span::styled(
+            "Choose an action:",
+            Style::default().fg(Color::White),
+        )),
         Line::from(""),
     ];
 
@@ -199,12 +227,17 @@ fn render_conflict_dialog(
         let selected = i == selected_option;
         let marker = if selected { "▶ " } else { "  " };
         let style = if selected {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
         lines.push(Line::from(vec![
-            Span::styled(format!("{}[{}] ", marker, i + 1), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{}[{}] ", marker, i + 1),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(name.to_string(), style),
             Span::styled(format!(" - {}", desc), Style::default().fg(Color::DarkGray)),
         ]));
@@ -219,9 +252,7 @@ fn render_conflict_dialog(
     ]));
 
     let text = Text::from(lines);
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
 
     f.render_widget(paragraph, area);
 }
@@ -239,48 +270,63 @@ fn render_help_dialog(f: &mut Frame, _scroll_offset: usize) {
         .title(" Help (F1 or ? to close) ");
 
     let help_sections = vec![
-        ("Navigation", vec![
-            ("j / ↓", "Move down"),
-            ("k / ↑", "Move up"),
-            ("l / → / Enter", "Expand / Enter"),
-            ("h / ← / Backspace", "Collapse / Back"),
-            ("Tab", "Next panel"),
-            ("Shift+Tab", "Previous panel"),
-        ]),
-        ("File Operations", vec![
-            ("m", "Move selected file(s)"),
-            ("v", "Toggle multi-select mode"),
-            ("Space", "Toggle selection (multi-select)"),
-            ("a", "Select/deselect all files"),
-            ("/", "Search files"),
-        ]),
-        ("Operations Panel", vec![
-            ("Space", "Toggle operation"),
-            ("a", "Toggle all operations"),
-            ("Enter", "Execute enabled operations"),
-        ]),
-        ("Execution Mode", vec![
-            ("Ctrl+C / Esc", "Cancel execution"),
-            ("", "Progress shows in overlay"),
-            ("", "Logs update in real-time"),
-            ("", "Stats: success/error/skip"),
-        ]),
-        ("General", vec![
-            ("q", "Quit (with confirmation)"),
-            ("F1 / ?", "Show/hide help"),
-            ("Esc", "Close dialog / Cancel"),
-        ]),
+        (
+            "Navigation",
+            vec![
+                ("j / ↓", "Move down"),
+                ("k / ↑", "Move up"),
+                ("l / → / Enter", "Expand / Enter"),
+                ("h / ← / Backspace", "Collapse / Back"),
+                ("Tab", "Next panel"),
+                ("Shift+Tab", "Previous panel"),
+            ],
+        ),
+        (
+            "File Operations",
+            vec![
+                ("m", "Move selected file(s)"),
+                ("v", "Toggle multi-select mode"),
+                ("Space", "Toggle selection (multi-select)"),
+                ("a", "Select/deselect all files"),
+                ("/", "Search files"),
+            ],
+        ),
+        (
+            "Operations Panel",
+            vec![
+                ("Space", "Toggle operation"),
+                ("a", "Toggle all operations"),
+                ("Enter", "Execute enabled operations"),
+            ],
+        ),
+        (
+            "Execution Mode",
+            vec![
+                ("Ctrl+C / Esc", "Cancel execution"),
+                ("", "Progress shows in overlay"),
+                ("", "Logs update in real-time"),
+                ("", "Stats: success/error/skip"),
+            ],
+        ),
+        (
+            "General",
+            vec![
+                ("q", "Quit (with confirmation)"),
+                ("F1 / ?", "Show/hide help"),
+                ("Esc", "Close dialog / Cancel"),
+            ],
+        ),
     ];
 
     let mut items: Vec<ListItem> = Vec::new();
 
     for (section, keys) in help_sections {
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(
-                section.to_string(),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            ),
-        ])));
+        items.push(ListItem::new(Line::from(vec![Span::styled(
+            section.to_string(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )])));
         items.push(ListItem::new(Line::from("")));
 
         for (key, desc) in keys {
@@ -293,8 +339,7 @@ fn render_help_dialog(f: &mut Frame, _scroll_offset: usize) {
         items.push(ListItem::new(Line::from("")));
     }
 
-    let list = List::new(items)
-        .block(block);
+    let list = List::new(items).block(block);
 
     f.render_widget(list, area);
 }
