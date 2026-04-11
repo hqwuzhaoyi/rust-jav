@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rust Jav 使用指南"
+  short_description: "讲解 rust-jav 的安全用法"
+  default_prompt: "使用 $rust-jav-guide 说明 rust-jav 该怎么运行、怎样安全 preview/apply，以及给出可直接复制的命令示例。"
