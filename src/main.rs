@@ -1,43 +1,46 @@
 use clap::Parser;
-use env_logger;
-use log::{info, LevelFilter};
-use std::path::PathBuf;
+use color_eyre::Result;
+use tokio::sync::mpsc;
 
-mod config;
-mod file_utils;
-
-use config::{interactive_config, set_config, Cli, CliConfig, LogLevel};
+use rust_jav::cli::Cli;
+use rust_jav::report::OutputFormat;
+use rust_jav::runtime::{resolve_run_request, RunRequest};
+use rust_jav::tui;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
+    // Install color_eyre panic and error hooks
+    color_eyre::install()?;
+
     let cli_args = Cli::parse();
 
-    let log_level: LogLevel = cli_args.log_level.unwrap_or(LogLevel::Info);
-    env_logger::Builder::new()
-        .filter(None, LevelFilter::from(log_level))
-        .init();
-
-    info!("Start to organize files...");
-
-    let dir = cli_args.dir.clone();
-    let cli = interactive_config(cli_args).await?;
-
-    let config = CliConfig {
-        ..cli.into()
-    };
-
-    let output_dir = config.output_dir.clone();
-    let should_create_directories = config.should_create_directories();
-    set_config(config)?;
-
-    info!("should_create_directories: {}", should_create_directories);
-
-    if should_create_directories {
-        info!("Creating category directories...");
-        let path = output_dir.as_path();
-        file_utils::create_dir::create_category_directories(path)?;
+    match resolve_run_request(cli_args).await? {
+        RunRequest::Tui { dir } => {
+            let mut terminal = tui::init_terminal()?;
+            let (action_tx, _action_rx) = mpsc::unbounded_channel();
+            let app = tui::App::new(dir, action_tx);
+            let result = tui::run_app(&mut terminal, app).await;
+            tui::restore_terminal(&mut terminal)?;
+            result
+        }
+        RunRequest::Report {
+            report,
+            format,
+            exit_code,
+        } => {
+            print_report(&report, format);
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+            Ok(())
+        }
     }
+}
 
-    file_utils::traverse_directory(true, dir).await?;
-    Ok(())
+fn print_report(report: &rust_jav::report::CommandReport, format: OutputFormat) {
+    let output = match format {
+        OutputFormat::Text => report.to_text(),
+        OutputFormat::Json => report.to_json(),
+    };
+    println!("{output}");
 }

@@ -1,7 +1,6 @@
 use clap::{Parser, ValueEnum};
-use dialoguer::{theme::ColorfulTheme, Confirm, Input, MultiSelect};
 use log::trace;
-use log::{info, LevelFilter};
+use log::LevelFilter;
 use once_cell::sync::Lazy;
 use once_cell::sync::OnceCell;
 use std::collections::HashSet;
@@ -33,6 +32,7 @@ pub struct CliConfig {
     pub remove_prefixes: bool,
     pub move_chinese: bool,
     pub move_uncensored: bool,
+    pub move_origin: bool,
     pub rename_upper_case: bool,
     pub prefixes: Vec<String>,
     pub patterns: Vec<String>,
@@ -43,7 +43,7 @@ impl CliConfig {
     pub fn should_create_directories(&self) -> bool {
         trace!("should_create_directories is called");
         trace!("output_dir.exists(): {}", self.output_dir.exists());
-        self.output_dir.exists() && (self.move_chinese || self.move_uncensored)
+        self.output_dir.exists() && (self.move_chinese || self.move_uncensored || self.move_origin)
     }
 
     pub fn should_remove_prefixes(&self) -> bool {
@@ -76,9 +76,14 @@ impl CliConfig {
         self.move_uncensored
     }
 
+    pub fn should_move_origin(&self) -> bool {
+        trace!("should_move_origin is called");
+        self.move_origin
+    }
+
     pub fn should_move_dir(&self) -> bool {
         trace!("should_move_dir  is called");
-        self.move_chinese || self.move_uncensored
+        self.move_chinese || self.move_uncensored || self.move_origin
     }
 
     pub fn should_use_all_options(&self) -> bool {
@@ -90,13 +95,14 @@ impl CliConfig {
         trace!("all_options is called");
         self.move_chinese
             && self.move_uncensored
+            && self.move_origin
             && self.delete_ad
             && self.rename_upper_case
             && self.remove_prefixes
     }
 }
 
-const PATTERNS: Lazy<HashSet<String>> = Lazy::new(|| {
+static PATTERNS: Lazy<HashSet<String>> = Lazy::new(|| {
     include_str!("../patterns.txt")
         .lines()
         .map(|s| s.to_string())
@@ -111,6 +117,7 @@ impl From<Cli> for CliConfig {
             delete_ad: cli.delete_ad,
             move_chinese: cli.move_chinese,
             move_uncensored: cli.move_uncensored,
+            move_origin: cli.move_origin,
             rename_upper_case: cli.rename_upper_case,
             remove_prefixes: cli.remove_prefixes,
             prefixes: PREFIXES.iter().map(|s| s.to_string()).collect(),
@@ -165,6 +172,10 @@ pub struct Cli {
     #[arg(long)]
     pub move_uncensored: bool,
 
+    /// Whether to move regular files (not UNCENSORED or CHINESE) to ORIGIN
+    #[arg(long)]
+    pub move_origin: bool,
+
     /// Whether to use the --upper-case flag
     #[arg(long)]
     pub rename_upper_case: bool,
@@ -204,53 +215,17 @@ impl From<LogLevel> for LevelFilter {
     }
 }
 
-pub async fn interactive_config(mut cli: Cli) -> Result<Cli, Box<dyn std::error::Error>> {
-    let theme = ColorfulTheme::default();
-
+/// Get default configuration with all options enabled
+/// This is used when the TUI starts - options are selected in the TUI
+pub fn default_config_from_cli(mut cli: Cli) -> Cli {
     if cli.all {
         cli.delete_ad = true;
         cli.delete_dir_with_no_video = true;
         cli.move_chinese = true;
         cli.move_uncensored = true;
+        cli.move_origin = true;
         cli.rename_upper_case = true;
         cli.remove_prefixes = true;
-    } else {
-        let items = [
-            "删除没有视频文件的文件夹",
-            "移动中文字幕视频",
-            "移动无码视频",
-            "重命名文件夹名为大写",
-            "删除文件名前缀，如 [7sht.me]@",
-            "删除广告文件",
-        ];
-        let default_selections: Vec<bool> = vec![true; items.len()];
-
-        let selections = MultiSelect::with_theme(&theme)
-            .with_prompt("选择要使用的选项（按空格键选择）")
-            .items(&items)
-            // 使用 with_defaults 设置默认全选
-            .defaults(&default_selections)
-            .interact()?;
-
-        for selection in selections {
-            match selection {
-                0 => cli.delete_dir_with_no_video = true,
-                1 => cli.move_chinese = true,
-                2 => cli.move_uncensored = true,
-                3 => cli.rename_upper_case = true,
-                4 => cli.remove_prefixes = true,
-                5 => cli.delete_ad = true,
-                _ => {}
-            }
-        }
     }
-
-    if cli.output_dir.is_none() {
-        let output_dir: String = Input::with_theme(&theme)
-            .with_prompt("输入整理后的目标文件夹")
-            .interact_text()?;
-        cli.output_dir = Some(output_dir);
-    }
-
-    Ok(cli)
+    cli
 }
