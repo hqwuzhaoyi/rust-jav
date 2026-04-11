@@ -43,18 +43,45 @@ pub fn plan_actor_links(source_dir: &Path, actors_root: &Path) -> io::Result<Vec
     for nfo_path in nfo_files {
         let contents = fs::read_to_string(&nfo_path)?;
         let actors = parse_actor_names(&contents);
-        let movie_code = nfo_path
+        let stem = nfo_path
             .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        // When NFO is named "movie.nfo" (nested structure), derive movie_code
+        // from the directory name. If inside a "movie/" subdirectory
+        // (e.g. IPZZ-408/movie/movie.nfo), use the grandparent name ("IPZZ-408").
+        let movie_code = if stem.eq_ignore_ascii_case("movie") {
+            let parent = nfo_path.parent();
+            let parent_name = parent
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            if parent_name.eq_ignore_ascii_case("movie") {
+                parent
+                    .and_then(|p| p.parent())
+                    .and_then(|gp| gp.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(stem)
+                    .to_string()
+            } else {
+                parent_name.to_string()
+            }
+        } else {
+            stem.to_string()
+        };
 
         let mut warnings = Vec::new();
         if actors.is_empty() {
             warnings.push(format!("No actors found in {}", nfo_path.display()));
         }
 
-        let related_files = collect_related_files(&nfo_path)?;
+        let mut related_files = collect_related_files(&nfo_path)?;
+        // Ensure the NFO itself is always included (it may live in a subdirectory
+        // like movie/ and not appear in the grandparent scan).
+        if !related_files.iter().any(|f| f == &nfo_path) {
+            related_files.push(nfo_path.clone());
+            related_files.sort();
+        }
         let mut actions = Vec::new();
 
         for actor in &actors {
@@ -204,13 +231,34 @@ fn collect_related_files(nfo_path: &Path) -> io::Result<Vec<PathBuf>> {
     let parent = nfo_path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "NFO file has no parent"))?;
-    let movie_code = nfo_path
+    let stem = nfo_path
         .file_stem()
-        .and_then(|stem| stem.to_str())
+        .and_then(|s| s.to_str())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "NFO file has no stem"))?;
 
+    // For nested structure (movie.nfo), link ALL sibling files in the relevant
+    // directory since the video and images may have different names
+    // (e.g. IPZZ-408-C.mp4, folder.jpg).
+    // For flat structure (REBD-615.nfo), keep prefix-matching to avoid linking
+    // unrelated files in the same directory.
+    let is_nested = stem.eq_ignore_ascii_case("movie");
+
+    // When movie.nfo is inside a "movie/" subdirectory (e.g. IPZZ-408/movie/movie.nfo),
+    // the actual media files are in the grandparent directory (IPZZ-408/).
+    // Check if parent is a "movie" dir and if so, scan the grandparent instead.
+    let scan_dir = if is_nested {
+        let parent_name = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if parent_name.eq_ignore_ascii_case("movie") {
+            parent.parent().unwrap_or(parent)
+        } else {
+            parent
+        }
+    } else {
+        parent
+    };
+
     let mut files = Vec::new();
-    for entry in fs::read_dir(parent)? {
+    for entry in fs::read_dir(scan_dir)? {
         let entry = entry?;
         let path = entry.path();
         if !path.is_file() {
@@ -219,7 +267,11 @@ fn collect_related_files(nfo_path: &Path) -> io::Result<Vec<PathBuf>> {
         let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if file_name.starts_with(movie_code) {
+        // Skip hidden/system files
+        if file_name.starts_with('.') {
+            continue;
+        }
+        if is_nested || file_name.starts_with(stem) {
             files.push(path);
         }
     }
