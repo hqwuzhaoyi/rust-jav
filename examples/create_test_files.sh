@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 SCENARIOS=(
+  "delete-ad-files"
   "standardize-names"
   "extract-codes"
   "categorize-files"
@@ -34,6 +35,20 @@ mkdir -p "$DIR"
 for scenario in "${SCENARIOS[@]}"; do
   reset_dir "$DIR/$scenario"
 done
+
+# ========================================
+# 0. delete-ad-files
+# ========================================
+touch_file "$DIR/delete-ad-files/新片首发每天更新.txt"
+touch_file "$DIR/delete-ad-files/大平台真人荷官.html"
+touch_file "$DIR/delete-ad-files/乐鱼体育投注.url"
+touch_file "$DIR/delete-ad-files/扫码获取最新地址.jpg"
+touch_file "$DIR/delete-ad-files/SSNI-888/新片首发每天更新.txt"
+touch_file "$DIR/delete-ad-files/SSNI-888/SSNI-888.mkv"
+# video file whose name matches an ad pattern — spec allows deletion
+touch_file "$DIR/delete-ad-files/新片首发每天更新.mp4"
+# regular video — must NOT be matched
+touch_file "$DIR/delete-ad-files/STAR-123.mp4"
 
 # ========================================
 # 1. standardize-names
@@ -94,6 +109,8 @@ for scenario in "${SCENARIOS[@]}"; do
 done
 echo ""
 echo "Suggested smoke commands:"
+echo "  cargo run -- ops --dir $DIR/delete-ad-files --op delete-ad-files --json"
+echo "  cargo run -- ops --dir $DIR/delete-ad-files --op delete-ad-files --apply --json"
 echo "  cargo run -- ops --dir $DIR/standardize-names --op standardize-names --json"
 echo "  cargo run -- ops --dir $DIR/extract-codes --op extract-codes --apply --json"
 echo "  cargo run -- ops --dir $DIR/categorize-files --op categorize-files --apply --json"

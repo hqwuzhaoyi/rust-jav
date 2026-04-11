@@ -428,3 +428,107 @@ fn actor_links_preview_warns_when_nfo_has_no_actor() {
     fs::remove_dir_all(source_dir).unwrap();
     fs::remove_dir_all(actors_root).unwrap();
 }
+
+// ── delete-ad-files tests ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn delete_ad_files_preview_plans_matched_files_without_deleting() {
+    let source_dir = unique_temp_dir("delete-ad-preview");
+    write_file(&source_dir.join("新片首发每天更新.txt"), b"ad");
+    write_file(&source_dir.join("大平台真人荷官.html"), b"ad");
+    write_file(&source_dir.join("STAR-123.mp4"), b"video");
+
+    let report = execute_operations_command(
+        source_dir.clone(),
+        vec![OperationType::DeleteAdFiles],
+        false,
+    )
+    .await;
+
+    assert_eq!(report.mode, OutputMode::Preview);
+    assert_eq!(report.summary.planned_actions, 2, "should plan exactly 2 ad files");
+    assert_eq!(report.summary.applied_actions, 0, "preview must not delete");
+    assert!(source_dir.join("新片首发每天更新.txt").exists());
+    assert!(source_dir.join("大平台真人荷官.html").exists());
+    assert!(source_dir.join("STAR-123.mp4").exists());
+
+    fs::remove_dir_all(source_dir).unwrap();
+}
+
+#[tokio::test]
+async fn delete_ad_files_apply_deletes_matched_and_spares_unmatched() {
+    let source_dir = unique_temp_dir("delete-ad-apply");
+    write_file(&source_dir.join("新片首发每天更新.txt"), b"ad");
+    write_file(&source_dir.join("大平台真人荷官.html"), b"ad");
+    write_file(&source_dir.join("STAR-123.mp4"), b"video");
+
+    let report = execute_operations_command(
+        source_dir.clone(),
+        vec![OperationType::DeleteAdFiles],
+        true,
+    )
+    .await;
+
+    assert_eq!(report.mode, OutputMode::Apply);
+    let applied: Vec<_> = report
+        .actions
+        .iter()
+        .filter(|a| a.status == ActionStatus::Applied)
+        .collect();
+    assert_eq!(applied.len(), 2, "exactly 2 files should be deleted");
+    assert!(!source_dir.join("新片首发每天更新.txt").exists());
+    assert!(!source_dir.join("大平台真人荷官.html").exists());
+    assert!(source_dir.join("STAR-123.mp4").exists());
+
+    fs::remove_dir_all(source_dir).unwrap();
+}
+
+#[tokio::test]
+async fn delete_ad_files_apply_deletes_matching_video_file() {
+    let source_dir = unique_temp_dir("delete-ad-video");
+    write_file(&source_dir.join("新片首发每天更新.mp4"), b"video-ad");
+    write_file(&source_dir.join("PRED-456.mp4"), b"real-video");
+
+    let report = execute_operations_command(
+        source_dir.clone(),
+        vec![OperationType::DeleteAdFiles],
+        true,
+    )
+    .await;
+
+    assert!(
+        report.summary.warning_count > 0,
+        "should warn about matched video files"
+    );
+    assert!(!source_dir.join("新片首发每天更新.mp4").exists(), "ad video deleted");
+    assert!(source_dir.join("PRED-456.mp4").exists(), "real video kept");
+
+    fs::remove_dir_all(source_dir).unwrap();
+}
+
+#[tokio::test]
+async fn delete_ad_files_preview_on_empty_dir_produces_no_actions() {
+    let source_dir = unique_temp_dir("delete-ad-empty");
+
+    let report = execute_operations_command(
+        source_dir.clone(),
+        vec![OperationType::DeleteAdFiles],
+        false,
+    )
+    .await;
+
+    assert_eq!(report.summary.planned_actions, 0);
+    assert_eq!(report.summary.warning_count, 0);
+
+    fs::remove_dir_all(source_dir).unwrap();
+}
+
+#[tokio::test]
+async fn delete_ad_files_runs_before_other_ops_in_full_pipeline() {
+    let all = OperationType::all();
+    assert_eq!(
+        all[0],
+        OperationType::DeleteAdFiles,
+        "DeleteAdFiles must be first so ad files are removed before rename/move ops run"
+    );
+}

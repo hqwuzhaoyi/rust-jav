@@ -7,6 +7,8 @@ use std::path::PathBuf;
 /// Types of batch operations available
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationType {
+    /// Delete files whose names match ad/spam patterns from patterns.txt
+    DeleteAdFiles,
     /// Organize files into folders by code
     OrganizeByCode,
     /// Clean up empty directories
@@ -27,6 +29,7 @@ impl OperationType {
     /// Get human-readable name for the operation
     pub fn name(&self) -> &'static str {
         match self {
+            OperationType::DeleteAdFiles => "Delete Ad Files",
             OperationType::OrganizeByCode => "Organize by Code",
             OperationType::CleanEmptyDirs => "Clean Empty Directories",
             OperationType::StandardizeNames => "Standardize Names",
@@ -40,6 +43,9 @@ impl OperationType {
     /// Get a short description of what this operation does
     pub fn description(&self) -> &'static str {
         match self {
+            OperationType::DeleteAdFiles => {
+                "Delete files whose names match ad/spam patterns from patterns.txt"
+            }
             OperationType::OrganizeByCode => "Move files into folders named by their JAV code",
             OperationType::CleanEmptyDirs => "Remove directories that contain no files",
             OperationType::StandardizeNames => "Rename files to follow standard naming conventions",
@@ -55,6 +61,7 @@ impl OperationType {
     /// Get all available operation types
     pub fn all() -> Vec<OperationType> {
         vec![
+            OperationType::DeleteAdFiles,
             OperationType::OrganizeByCode,
             OperationType::CleanEmptyDirs,
             OperationType::StandardizeNames,

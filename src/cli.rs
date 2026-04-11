@@ -79,6 +79,7 @@ pub struct ActorLinksArgs {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum CliOperation {
+    DeleteAdFiles,
     OrganizeByCode,
     CleanEmptyDirs,
     StandardizeNames,
@@ -91,6 +92,7 @@ pub enum CliOperation {
 impl From<CliOperation> for OperationType {
     fn from(value: CliOperation) -> Self {
         match value {
+            CliOperation::DeleteAdFiles => OperationType::DeleteAdFiles,
             CliOperation::OrganizeByCode => OperationType::OrganizeByCode,
             CliOperation::CleanEmptyDirs => OperationType::CleanEmptyDirs,
             CliOperation::StandardizeNames => OperationType::StandardizeNames,

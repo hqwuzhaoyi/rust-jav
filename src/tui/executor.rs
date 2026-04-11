@@ -112,6 +112,7 @@ impl OperationExecutor {
 
         for op_type in OperationType::all() {
             let affected_files = match op_type {
+                OperationType::DeleteAdFiles => self.find_ad_files().await,
                 OperationType::OrganizeByCode => self.find_files_with_jav_codes().await,
                 OperationType::CleanEmptyDirs => self.find_empty_directories().await,
                 OperationType::StandardizeNames => self.find_files_to_standardize().await,
@@ -128,6 +129,7 @@ impl OperationExecutor {
 
     pub async fn plan_operation(&self, op_type: OperationType) -> OperationPlan {
         match op_type {
+            OperationType::DeleteAdFiles => self.plan_delete_ad_files().await,
             OperationType::OrganizeByCode => self.plan_organize_by_code().await,
             OperationType::CleanEmptyDirs => self.plan_clean_empty_dirs().await,
             OperationType::StandardizeNames => self.plan_standardize_names().await,
@@ -151,6 +153,10 @@ impl OperationExecutor {
     async fn simulate_operation(&self, operation: &Operation) -> OperationResult {
         // In simulation mode, we scan for affected files without modifying them
         match operation.op_type {
+            OperationType::DeleteAdFiles => {
+                let files = self.find_ad_files().await;
+                OperationResult::success(operation.op_type, files)
+            }
             OperationType::OrganizeByCode => {
                 let files = self.find_files_with_jav_codes().await;
                 OperationResult::success(operation.op_type, files)
@@ -185,6 +191,7 @@ impl OperationExecutor {
     /// Run an operation (modifies files)
     async fn run_operation(&self, operation: &Operation) -> OperationResult {
         match operation.op_type {
+            OperationType::DeleteAdFiles => self.execute_delete_ad_files().await,
             OperationType::OrganizeByCode => self.execute_organize_by_code().await,
             OperationType::CleanEmptyDirs => self.execute_clean_empty_dirs().await,
             OperationType::StandardizeNames => self.execute_standardize_names().await,
@@ -342,6 +349,118 @@ impl OperationExecutor {
         }
         duplicates
     }
+
+    // === Ad-file helpers ===
+
+    /// Convert a glob pattern (using * as wildcard) to a case-insensitive Regex anchored to the
+    /// full filename. Each literal segment is regex-escaped so dots and other metacharacters in
+    /// pattern strings (e.g. ".html") are treated literally.
+    fn glob_to_regex(pattern: &str) -> Regex {
+        let regex_str = pattern
+            .split('*')
+            .map(regex::escape)
+            .collect::<Vec<_>>()
+            .join(".*");
+        Regex::new(&format!("(?i)^{regex_str}$")).unwrap()
+    }
+
+    /// Return the list of ad-patterns loaded from the embedded patterns.txt.
+    fn ad_patterns() -> Vec<String> {
+        if let Some(guard) = crate::config::get_config() {
+            guard.patterns.clone()
+        } else {
+            // Fall back to the embedded static patterns when global config is not initialised.
+            include_str!("../../patterns.txt")
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect()
+        }
+    }
+
+    /// Walk `source_dir` recursively and collect every file whose name matches at least one
+    /// ad-pattern.  Video files are **not** excluded — spec decision #6.
+    async fn find_ad_files(&self) -> Vec<PathBuf> {
+        let patterns = Self::ad_patterns();
+        let regexes: Vec<Regex> = patterns
+            .iter()
+            .filter(|p| !p.is_empty())
+            .map(|p| Self::glob_to_regex(p))
+            .collect();
+
+        let mut matches = Vec::new();
+        Self::walk_files_for_ad(&self.source_dir, &regexes, &mut matches);
+        matches
+    }
+
+    fn walk_files_for_ad(dir: &Path, regexes: &[Regex], out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // Skip hidden dirs, build artefacts, and known non-user directories.
+                let skip = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with('.') || n == "target")
+                    .unwrap_or(false);
+                if !skip {
+                    Self::walk_files_for_ad(&path, regexes, out);
+                }
+            } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if regexes.iter().any(|re| re.is_match(name)) {
+                    out.push(path);
+                }
+            }
+        }
+    }
+
+    async fn plan_delete_ad_files(&self) -> OperationPlan {
+        let files = self.find_ad_files().await;
+        let mut warnings = Vec::new();
+        if files.iter().any(|f| {
+            f.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| matches!(e.to_lowercase().as_str(), "mp4" | "mkv" | "avi" | "wmv"))
+                .unwrap_or(false)
+        }) {
+            warnings.push(
+                "some matched ad files are video files — review before applying".to_string(),
+            );
+        }
+        OperationPlan {
+            op_type: OperationType::DeleteAdFiles,
+            actions: files
+                .into_iter()
+                .map(|file| PlannedAction {
+                    kind: "delete-file".to_string(),
+                    source: Some(file),
+                    target: None,
+                    reason: Some("filename matches ad/spam pattern".to_string()),
+                })
+                .collect(),
+            warnings,
+        }
+    }
+
+    async fn execute_delete_ad_files(&self) -> OperationResult {
+        let files = self.find_ad_files().await;
+        let mut affected = Vec::new();
+        let mut failed = Vec::new();
+
+        for file in files {
+            match std::fs::remove_file(&file) {
+                Ok(_) => affected.push(file),
+                Err(e) => failed.push((file, e.to_string())),
+            }
+        }
+
+        OperationResult::partial(OperationType::DeleteAdFiles, affected, failed)
+    }
+
+    // === End ad-file helpers ===
 
     async fn plan_organize_by_code(&self) -> OperationPlan {
         let files = self.find_files_with_jav_codes().await;

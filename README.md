@@ -94,6 +94,7 @@ cargo run -- ops --dir ./examples/test --op standardize-names --op move-origin -
 
 支持的 operation：
 
+- `delete-ad-files` — 删除文件名匹配 `patterns.txt` 广告模式的文件（包括视频，执行前务必 preview）
 - `organize-by-code`
 - `clean-empty-dirs`
 - `standardize-names`
@@ -101,6 +102,8 @@ cargo run -- ops --dir ./examples/test --op standardize-names --op move-origin -
 - `categorize-files`
 - `move-origin`
 - `remove-duplicates`
+
+全量 `ops`（不加 `--op`）时，`delete-ad-files` 始终**最先执行**，确保广告文件在其他操作处理之前被清除。
 
 说明：
 
