@@ -1,11 +1,10 @@
+use log::error;
 use log::info;
 use log::trace;
-use log::error;
 use std::fs;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
-
 
 pub fn move_and_delete_directory<P: AsRef<Path>>(path: P, new_path: P) -> io::Result<()> {
     let path = path.as_ref();
@@ -34,7 +33,10 @@ pub fn remove_nfo_files<P: AsRef<Path>>(path: P) -> io::Result<()> {
                             let path = entry.path();
                             if path.is_dir() {
                                 if let Err(e) = remove_nfo_files(&path) {
-                                    error!("Error removing nfo files in directory {:?}: {}", path, e);
+                                    error!(
+                                        "Error removing nfo files in directory {:?}: {}",
+                                        path, e
+                                    );
                                 }
                             } else if path.is_file() {
                                 if let Some(extension) = path.extension() {
@@ -46,11 +48,11 @@ pub fn remove_nfo_files<P: AsRef<Path>>(path: P) -> io::Result<()> {
                                     }
                                 }
                             }
-                        },
+                        }
                         Err(e) => error!("Error reading entry in directory {:?}: {}", path, e),
                     }
                 }
-            },
+            }
             Err(e) => error!("Error reading directory {:?}: {}", path, e),
         }
     }
@@ -66,7 +68,6 @@ pub fn rename_file(path: &Path, new_path: &PathBuf) -> io::Result<()> {
 
             // 删除new_path文件夹下的nfo文件
             remove_nfo_files(new_path)?;
-
         } else {
             info!(
                 "File with the name {:?} already exists, cannot rename {:?}",
@@ -173,7 +174,10 @@ mod tests {
         rename_files_removing_prefixes(&src, &prefixes).unwrap();
 
         assert!(!src.exists(), "original file should be gone");
-        assert!(dir.join("ABP-123.mp4").exists(), "renamed file should exist");
+        assert!(
+            dir.join("ABP-123.mp4").exists(),
+            "renamed file should exist"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -187,7 +191,10 @@ mod tests {
         let prefixes = vec!["[7sht.me]@".to_string()];
         rename_files_removing_prefixes(&src, &prefixes).unwrap();
 
-        assert!(src.exists(), "file without matching prefix must be unchanged");
+        assert!(
+            src.exists(),
+            "file without matching prefix must be unchanged"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -202,7 +209,10 @@ mod tests {
         rename_files_removing_prefixes(&subdir, &prefixes).unwrap();
 
         // Directory should be untouched (function only handles files)
-        assert!(subdir.exists(), "directory must not be renamed by prefix remover");
+        assert!(
+            subdir.exists(),
+            "directory must not be renamed by prefix remover"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -218,10 +228,7 @@ mod tests {
         // Verify the directory entry is stored with uppercase name.
         // On macOS (case-insensitive FS) we can't rely on exists() returning false
         // for the old lowercase path, so we read the actual directory entry names.
-        let entries: Vec<_> = fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .collect();
+        let entries: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).collect();
         assert_eq!(entries.len(), 1, "should still have exactly one directory");
         assert_eq!(
             entries[0].file_name().to_string_lossy(),
@@ -240,7 +247,10 @@ mod tests {
 
         rename_directories_to_uppercase(&upper_dir).unwrap();
 
-        assert!(upper_dir.exists(), "already-uppercase dir must be unchanged");
+        assert!(
+            upper_dir.exists(),
+            "already-uppercase dir must be unchanged"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -253,7 +263,10 @@ mod tests {
 
         rename_directories_to_uppercase(&file).unwrap();
 
-        assert!(file.exists(), "files must not be touched by uppercase renamer");
+        assert!(
+            file.exists(),
+            "files must not be touched by uppercase renamer"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }

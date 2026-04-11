@@ -1,7 +1,7 @@
 # rust-jav 测试报告
 
-- 报告日期：2026-04-11 16:17:07 CST
-- 范围：AI-first CLI、默认 preview 语义、`actor-links` 能力、README 命令示例对齐
+- 报告日期：2026-04-11 18:31:00 CST
+- 范围：AI-first CLI、默认 preview 语义、`delete-ad-files` 广告清理、`actor-links` 能力、README 命令示例对齐
 
 ## 1. 验证目标
 
@@ -11,6 +11,8 @@
 - 所有文件操作是否默认 `preview`
 - 只有显式 `--apply` 才会真正修改文件系统
 - `ops --op ...` 是否支持按能力选择执行
+- `delete-ad-files` 是否按 `patterns.txt` 规则预览/删除广告文件
+- `delete-ad-files` 是否默认先于其他 `ops` 操作执行
 - `actor-links` 是否基于 NFO `<actor><name>` 建立目录式硬链接
 - README 中示例命令是否与真实实现一致
 
@@ -27,6 +29,11 @@ cargo test --tests --lib --bins
 
 ### 已通过的测试类别
 
+#### 广告模式匹配单元测试
+
+- `embedded_patterns_include_known_entries_and_match_dynamic_filenames`
+- `legacy_delete_helper_uses_same_matching_rules_as_cli_path`
+
 #### actor_links 单元测试
 
 - `parses_actor_names_from_nfo`
@@ -37,12 +44,22 @@ cargo test --tests --lib --bins
 - `parses_tui_command`
 - `parses_actor_links_apply_command`
 - `parses_ops_command_with_default_preview`
+- `parses_delete_ad_files_operation`
+- `delete_ad_files_is_first_in_all_operations`
 
 #### CLI 工作流测试
 
 - `ops_apply_mutates_files_when_explicit`
 - `ops_preview_is_default_and_does_not_mutate_files`
 - `actor_links_preview_warns_when_nfo_has_no_actor`
+- `delete_ad_files_preview_plans_matched_files_without_deleting`
+- `delete_ad_files_apply_deletes_matched_and_spares_unmatched`
+- `delete_ad_files_apply_deletes_matching_video_file`
+- `delete_ad_files_preview_on_empty_dir_produces_no_actions`
+- `delete_ad_files_runs_before_other_ops_in_full_pipeline`
+- `delete_ad_files_does_not_follow_symlinked_directories_outside_root`
+- `delete_ad_files_apply_reports_failures_when_directory_is_not_writable`
+- `delete_ad_files_full_pipeline_deletes_before_later_ops_can_move_or_rename`
 - `categorize_files_preview_and_apply_work`
 - `clean_empty_dirs_preview_and_apply_work`
 - `move_origin_preview_and_apply_work`
@@ -182,6 +199,34 @@ cargo run -- ops --dir <temp> --op extract-codes --apply --json
 - 原文件仍存在
 - 已存在目标文件保持不变
 
+#### 场景 E：`delete-ad-files` 预览与执行
+
+执行：
+
+```bash
+cargo run -- ops --dir <temp>/delete-ad-files --op delete-ad-files --json
+cargo run -- ops --dir <temp>/delete-ad-files --op delete-ad-files --apply --json
+```
+
+结果：
+
+- preview:
+  - `returncode = 0`
+  - `mode = "preview"`
+  - 每个匹配文件都产生一个 `delete-file` planned action
+  - 原始广告文件与普通视频都仍然存在
+- apply:
+  - `returncode = 0`
+  - 匹配 `.txt` / `.html` / `.url` / `.jpg` / `.mp4` 文件会被删除
+  - 未匹配的普通视频仍保留
+  - 若匹配到视频文件，`warnings[]` 会提示需要谨慎预览
+
+#### 场景 F：`delete-ad-files` 边界与顺序保证
+
+- 不会跟随超出 `--dir` 根目录的符号链接目录
+- 全量 `ops` 时，广告清理先执行，后续 rename/move 操作不会再引用已经删除的广告文件
+- 对不可写目录中的匹配文件，action 会标记为 `failed`，整体返回码为非零
+
 ### 4.2 `actor-links` 命令
 
 使用 `REBD-615.nfo` 作为参考输入。
@@ -238,11 +283,13 @@ README 中写到的命令模式已进行真实执行验证：
 - `cargo run -- ops --help`
 - `cargo run -- actor-links --help`
 - `cargo run -- ops --dir ./examples/test --json`
+- `cargo run -- ops --dir ./examples/test/delete-ad-files --op delete-ad-files --json`
+- `cargo run -- ops --dir ./examples/test/delete-ad-files --op delete-ad-files --apply --json`
 - `cargo run -- ops --dir ./examples/test --op standardize-names --op move-origin --apply`
 - `cargo run -- actor-links --source ./examples/test --actors-root ./actors --json`
 - `cargo run -- actor-links --source ./examples/test --actors-root ./actors --apply --json`
 
-结论：README 文档与当前 CLI 实现一致。
+结论：README 文档与当前 CLI 实现一致，其中已明确警告 `delete-ad-files` 在 `--apply` 下可能删除匹配到的视频文件。
 
 ## 6. 新鲜验证快照
 

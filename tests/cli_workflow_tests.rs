@@ -274,7 +274,10 @@ async fn extract_codes_apply_fails_safely_when_target_exists() {
     assert_eq!(apply.summary.failed_actions, 1);
     assert!(apply.actions.iter().any(|action| {
         action.status == ActionStatus::Failed
-            && action.reason.as_deref().is_some_and(|reason| reason.contains("target already exists"))
+            && action
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("target already exists"))
     }));
     assert!(
         source_file.exists(),
@@ -446,7 +449,10 @@ async fn delete_ad_files_preview_plans_matched_files_without_deleting() {
     .await;
 
     assert_eq!(report.mode, OutputMode::Preview);
-    assert_eq!(report.summary.planned_actions, 2, "should plan exactly 2 ad files");
+    assert_eq!(
+        report.summary.planned_actions, 2,
+        "should plan exactly 2 ad files"
+    );
     assert_eq!(report.summary.applied_actions, 0, "preview must not delete");
     assert!(source_dir.join("新片首发每天更新.txt").exists());
     assert!(source_dir.join("大平台真人荷官.html").exists());
@@ -462,12 +468,9 @@ async fn delete_ad_files_apply_deletes_matched_and_spares_unmatched() {
     write_file(&source_dir.join("大平台真人荷官.html"), b"ad");
     write_file(&source_dir.join("STAR-123.mp4"), b"video");
 
-    let report = execute_operations_command(
-        source_dir.clone(),
-        vec![OperationType::DeleteAdFiles],
-        true,
-    )
-    .await;
+    let report =
+        execute_operations_command(source_dir.clone(), vec![OperationType::DeleteAdFiles], true)
+            .await;
 
     assert_eq!(report.mode, OutputMode::Apply);
     let applied: Vec<_> = report
@@ -489,18 +492,18 @@ async fn delete_ad_files_apply_deletes_matching_video_file() {
     write_file(&source_dir.join("新片首发每天更新.mp4"), b"video-ad");
     write_file(&source_dir.join("PRED-456.mp4"), b"real-video");
 
-    let report = execute_operations_command(
-        source_dir.clone(),
-        vec![OperationType::DeleteAdFiles],
-        true,
-    )
-    .await;
+    let report =
+        execute_operations_command(source_dir.clone(), vec![OperationType::DeleteAdFiles], true)
+            .await;
 
     assert!(
         report.summary.warning_count > 0,
         "should warn about matched video files"
     );
-    assert!(!source_dir.join("新片首发每天更新.mp4").exists(), "ad video deleted");
+    assert!(
+        !source_dir.join("新片首发每天更新.mp4").exists(),
+        "ad video deleted"
+    );
     assert!(source_dir.join("PRED-456.mp4").exists(), "real video kept");
 
     fs::remove_dir_all(source_dir).unwrap();
@@ -531,4 +534,105 @@ async fn delete_ad_files_runs_before_other_ops_in_full_pipeline() {
         OperationType::DeleteAdFiles,
         "DeleteAdFiles must be first so ad files are removed before rename/move ops run"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn delete_ad_files_does_not_follow_symlinked_directories_outside_root() {
+    use std::os::unix::fs as unix_fs;
+
+    let source_dir = unique_temp_dir("delete-ad-symlink-root");
+    let outside_dir = unique_temp_dir("delete-ad-symlink-outside");
+    let outside_file = outside_dir.join("新片首发每天更新.txt");
+    write_file(&outside_file, b"outside-ad");
+
+    let escape_link = source_dir.join("escape");
+    unix_fs::symlink(&outside_dir, &escape_link).unwrap();
+
+    let preview = execute_operations_command(
+        source_dir.clone(),
+        vec![OperationType::DeleteAdFiles],
+        false,
+    )
+    .await;
+    assert!(
+        preview.actions.is_empty(),
+        "preview must not traverse symlinked directories outside the requested root"
+    );
+
+    let apply =
+        execute_operations_command(source_dir.clone(), vec![OperationType::DeleteAdFiles], true)
+            .await;
+    assert!(apply.actions.is_empty());
+    assert!(
+        outside_file.exists(),
+        "apply must not delete files reachable only through an external symlink"
+    );
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(outside_dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn delete_ad_files_apply_reports_failures_when_directory_is_not_writable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let source_dir = unique_temp_dir("delete-ad-permission");
+    let locked_dir = source_dir.join("locked");
+    fs::create_dir_all(&locked_dir).unwrap();
+    let ad_file = locked_dir.join("新片首发每天更新.txt");
+    write_file(&ad_file, b"ad");
+
+    let original_mode = fs::metadata(&locked_dir).unwrap().permissions().mode();
+    let mut perms = fs::metadata(&locked_dir).unwrap().permissions();
+    perms.set_mode(0o555);
+    fs::set_permissions(&locked_dir, perms).unwrap();
+
+    let report =
+        execute_operations_command(source_dir.clone(), vec![OperationType::DeleteAdFiles], true)
+            .await;
+
+    let mut cleanup_perms = fs::metadata(&locked_dir).unwrap().permissions();
+    cleanup_perms.set_mode(original_mode);
+    fs::set_permissions(&locked_dir, cleanup_perms).unwrap();
+
+    assert_eq!(report.summary.failed_actions, 1);
+    assert_eq!(report.summary.applied_actions, 0);
+    assert!(report.actions.iter().any(|action| {
+        action.status == ActionStatus::Failed && action.source.as_ref() == Some(&ad_file)
+    }));
+    assert!(
+        ad_file.exists(),
+        "failed delete should keep the original file in place"
+    );
+
+    fs::remove_dir_all(source_dir).unwrap();
+}
+
+#[tokio::test]
+async fn delete_ad_files_full_pipeline_deletes_before_later_ops_can_move_or_rename() {
+    let source_dir = unique_temp_dir("delete-ad-full-pipeline");
+    let ad_video = source_dir.join("新片首发每天更新-C.mp4");
+    write_file(&ad_video, b"ad-video");
+
+    let report = execute_operations_command(source_dir.clone(), OperationType::all(), true).await;
+
+    assert!(report.actions.iter().any(|action| {
+        action.kind == "delete-file"
+            && action.status == ActionStatus::Applied
+            && action.source.as_ref() == Some(&ad_video)
+    }));
+    assert!(
+        !report.actions.iter().any(|action| {
+            action.source.as_ref() == Some(&ad_video) && action.kind != "delete-file"
+        }),
+        "once delete-ad-files removes the file, no later op should reference it"
+    );
+    assert!(
+        !ad_video.exists(),
+        "full pipeline should delete the ad file before later ops run"
+    );
+
+    fs::remove_dir_all(source_dir).unwrap();
 }

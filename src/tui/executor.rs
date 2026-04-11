@@ -5,6 +5,8 @@
 use regex::Regex;
 use std::path::{Path, PathBuf};
 
+use crate::file_utils::ad_patterns;
+
 use super::state::{Operation, OperationType};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,29 +354,13 @@ impl OperationExecutor {
 
     // === Ad-file helpers ===
 
-    /// Convert a glob pattern (using * as wildcard) to a case-insensitive Regex anchored to the
-    /// full filename. Each literal segment is regex-escaped so dots and other metacharacters in
-    /// pattern strings (e.g. ".html") are treated literally.
-    fn glob_to_regex(pattern: &str) -> Regex {
-        let regex_str = pattern
-            .split('*')
-            .map(regex::escape)
-            .collect::<Vec<_>>()
-            .join(".*");
-        Regex::new(&format!("(?i)^{regex_str}$")).unwrap()
-    }
-
     /// Return the list of ad-patterns loaded from the embedded patterns.txt.
     fn ad_patterns() -> Vec<String> {
         if let Some(guard) = crate::config::get_config() {
             guard.patterns.clone()
         } else {
             // Fall back to the embedded static patterns when global config is not initialised.
-            include_str!("../../patterns.txt")
-                .lines()
-                .filter(|l| !l.is_empty())
-                .map(|l| l.to_string())
-                .collect()
+            ad_patterns::embedded_patterns()
         }
     }
 
@@ -382,11 +368,7 @@ impl OperationExecutor {
     /// ad-pattern.  Video files are **not** excluded — spec decision #6.
     async fn find_ad_files(&self) -> Vec<PathBuf> {
         let patterns = Self::ad_patterns();
-        let regexes: Vec<Regex> = patterns
-            .iter()
-            .filter(|p| !p.is_empty())
-            .map(|p| Self::glob_to_regex(p))
-            .collect();
+        let regexes = ad_patterns::compile_patterns(&patterns);
 
         let mut matches = Vec::new();
         Self::walk_files_for_ad(&self.source_dir, &regexes, &mut matches);
@@ -398,8 +380,15 @@ impl OperationExecutor {
             return;
         };
         for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+
             let path = entry.path();
-            if path.is_dir() {
+            if file_type.is_dir() {
                 // Skip hidden dirs, build artefacts, and known non-user directories.
                 let skip = path
                     .file_name()
@@ -409,9 +398,11 @@ impl OperationExecutor {
                 if !skip {
                     Self::walk_files_for_ad(&path, regexes, out);
                 }
-            } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if regexes.iter().any(|re| re.is_match(name)) {
-                    out.push(path);
+            } else if file_type.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if ad_patterns::filename_matches_any_compiled(name, regexes) {
+                        out.push(path);
+                    }
                 }
             }
         }
@@ -426,9 +417,8 @@ impl OperationExecutor {
                 .map(|e| matches!(e.to_lowercase().as_str(), "mp4" | "mkv" | "avi" | "wmv"))
                 .unwrap_or(false)
         }) {
-            warnings.push(
-                "some matched ad files are video files — review before applying".to_string(),
-            );
+            warnings
+                .push("some matched ad files are video files — review before applying".to_string());
         }
         OperationPlan {
             op_type: OperationType::DeleteAdFiles,

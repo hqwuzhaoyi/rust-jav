@@ -1,7 +1,6 @@
 use log::{info, trace};
-use regex::Regex;
-// use std::fs;
-// use std::io::{self};
+
+use super::ad_patterns;
 use async_recursion::async_recursion;
 use std::path::Path;
 use tokio::fs;
@@ -25,16 +24,11 @@ pub async fn delete_files_matching_patterns<P: AsRef<Path>>(
             Some(name) => name.to_string_lossy().into_owned(),
             None => return Ok(false),
         };
-        for pattern in patterns {
-            let regex_pattern = format!("^{}.*$", pattern.replace('*', ".*"));
-            let re = Regex::new(&regex_pattern).unwrap();
-            if re.is_match(&file_name) {
-                info!("will delete file: {:?}", path);
-                // 使用 tokio 的异步删除文件功能
-                fs::remove_file(path).await?;
-                dir_deleted = true;
-                break;
-            }
+        if ad_patterns::filename_matches_any(&file_name, patterns) {
+            info!("will delete file: {:?}", path);
+            // 使用 tokio 的异步删除文件功能
+            fs::remove_file(path).await?;
+            dir_deleted = true;
         }
     }
     Ok(dir_deleted)

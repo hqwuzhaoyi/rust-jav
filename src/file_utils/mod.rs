@@ -7,6 +7,7 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod ad_patterns;
 pub mod create_dir;
 pub mod delete_files;
 pub mod move_files;

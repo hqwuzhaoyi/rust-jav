@@ -359,7 +359,10 @@ mod tests {
 
         assert!(text.contains("command: ops"), "should include command name");
         assert!(text.contains("mode: preview"), "should include mode");
-        assert!(text.contains("source: /source"), "should include source dir");
+        assert!(
+            text.contains("source: /source"),
+            "should include source dir"
+        );
         assert!(
             text.contains("standardize-names"),
             "should include selected ops"

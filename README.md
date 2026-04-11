@@ -95,6 +95,8 @@ cargo run -- ops --dir ./examples/test --op standardize-names --op move-origin -
 支持的 operation：
 
 - `delete-ad-files` — 删除文件名匹配 `patterns.txt` 广告模式的文件（包括视频，执行前务必 preview）
+
+> ⚠️ `delete-ad-files` 在 `--apply` 时会删除匹配到的**视频文件**。请始终先运行 preview / `--json` 检查计划动作。
 - `organize-by-code`
 - `clean-empty-dirs`
 - `standardize-names`
@@ -196,6 +198,7 @@ bash examples/create_test_files.sh ./examples/test
 
 生成后的目录结构为：
 
+- `./examples/test/delete-ad-files`
 - `./examples/test/standardize-names`
 - `./examples/test/extract-codes`
 - `./examples/test/categorize-files`
@@ -207,6 +210,8 @@ bash examples/create_test_files.sh ./examples/test
 ### 单场景验证示例
 
 ```shell
+cargo run -- ops --dir ./examples/test/delete-ad-files --op delete-ad-files --json
+cargo run -- ops --dir ./examples/test/delete-ad-files --op delete-ad-files --apply --json
 cargo run -- ops --dir ./examples/test/extract-codes --op extract-codes --apply --json
 cargo run -- actor-links --source ./examples/test/actor-links --actors-root ./actors --apply --json
 ```
