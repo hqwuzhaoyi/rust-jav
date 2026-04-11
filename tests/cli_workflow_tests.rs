@@ -425,7 +425,12 @@ fn actor_links_preview_warns_when_nfo_has_no_actor() {
 
     let report =
         execute_actor_links_command(source_dir.clone(), actors_root.clone(), false).unwrap();
-    assert_eq!(report.actions.len(), 0);
+    // No-actor movies are placed under "未分类" (uncategorized) folder
+    assert!(report.actions.len() > 0);
+    assert!(report
+        .actions
+        .iter()
+        .all(|a| a.target.as_ref().unwrap().to_str().unwrap().contains("未分类")));
     assert_eq!(report.summary.warning_count, 1);
 
     fs::remove_dir_all(source_dir).unwrap();
