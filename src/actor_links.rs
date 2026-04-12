@@ -36,8 +36,25 @@ pub fn parse_actor_names(nfo_contents: &str) -> Vec<String> {
     actors
 }
 
-pub fn plan_actor_links(source_dir: &Path, actors_root: &Path) -> io::Result<Vec<ActorLinkPlan>> {
-    let nfo_files = collect_nfo_files(source_dir)?;
+pub fn plan_actor_links(
+    source_dir: &Path,
+    actors_root: &Path,
+    exclude_dirs: &[PathBuf],
+) -> io::Result<Vec<ActorLinkPlan>> {
+    // Build effective exclude list: user-provided + auto-detect actors_root inside source
+    let mut excludes: Vec<PathBuf> = exclude_dirs.to_vec();
+    if let Ok(canonical_source) = source_dir.canonicalize() {
+        if let Ok(canonical_actors) = actors_root.canonicalize() {
+            if canonical_actors.starts_with(&canonical_source)
+                && !excludes.iter().any(|e| {
+                    e.canonicalize().ok().as_ref() == Some(&canonical_actors)
+                })
+            {
+                excludes.push(canonical_actors);
+            }
+        }
+    }
+    let nfo_files = collect_nfo_files(source_dir, &excludes)?;
     let mut plans = Vec::new();
 
     for nfo_path in nfo_files {
@@ -127,6 +144,7 @@ pub fn plan_actor_links(source_dir: &Path, actors_root: &Path) -> io::Result<Vec
 pub fn execute_actor_links_command(
     source_dir: PathBuf,
     actors_root: PathBuf,
+    exclude_dirs: Vec<PathBuf>,
     apply: bool,
 ) -> io::Result<CommandReport> {
     let mode = if apply {
@@ -140,7 +158,7 @@ pub fn execute_actor_links_command(
         source_dir.clone(),
         vec!["actor-links".to_string()],
     );
-    let plans = plan_actor_links(&source_dir, &actors_root)?;
+    let plans = plan_actor_links(&source_dir, &actors_root, &exclude_dirs)?;
 
     for plan in plans {
         report.warnings.extend(plan.warnings);
@@ -210,22 +228,41 @@ fn extract_tag(contents: &str, tag: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-fn collect_nfo_files(source_dir: &Path) -> io::Result<Vec<PathBuf>> {
+fn collect_nfo_files(source_dir: &Path, excludes: &[PathBuf]) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    collect_files_with_extension(source_dir, "nfo", &mut files)?;
+    collect_files_with_extension(source_dir, "nfo", excludes, &mut files)?;
     Ok(files)
+}
+
+fn should_exclude(path: &Path, excludes: &[PathBuf]) -> bool {
+    if excludes.is_empty() {
+        return false;
+    }
+    if let Ok(canonical) = path.canonicalize() {
+        excludes.iter().any(|e| {
+            e.canonicalize().ok().as_ref() == Some(&canonical)
+        })
+    } else {
+        false
+    }
 }
 
 fn collect_files_with_extension(
     dir: &Path,
     extension: &str,
+    excludes: &[PathBuf],
     results: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_files_with_extension(&path, extension, results)?;
+            // Skip excluded directories and hidden directories
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if file_name.starts_with('.') || should_exclude(&path, excludes) {
+                continue;
+            }
+            collect_files_with_extension(&path, extension, excludes, results)?;
         } else if path
             .extension()
             .and_then(|ext| ext.to_str())
