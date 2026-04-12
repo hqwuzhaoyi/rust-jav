@@ -36,37 +36,92 @@ pub fn parse_actor_names(nfo_contents: &str) -> Vec<String> {
     actors
 }
 
-pub fn plan_actor_links(source_dir: &Path, actors_root: &Path) -> io::Result<Vec<ActorLinkPlan>> {
-    let nfo_files = collect_nfo_files(source_dir)?;
+pub fn plan_actor_links(
+    source_dir: &Path,
+    actors_root: &Path,
+    exclude_dirs: &[PathBuf],
+) -> io::Result<Vec<ActorLinkPlan>> {
+    // Build effective exclude list: user-provided + auto-detect actors_root inside source
+    let mut excludes: Vec<PathBuf> = exclude_dirs.to_vec();
+    if let Ok(canonical_source) = source_dir.canonicalize() {
+        if let Ok(canonical_actors) = actors_root.canonicalize() {
+            if canonical_actors.starts_with(&canonical_source)
+                && !excludes.iter().any(|e| {
+                    e.canonicalize().ok().as_ref() == Some(&canonical_actors)
+                })
+            {
+                excludes.push(canonical_actors);
+            }
+        }
+    }
+    let nfo_files = collect_nfo_files(source_dir, &excludes)?;
     let mut plans = Vec::new();
 
     for nfo_path in nfo_files {
         let contents = fs::read_to_string(&nfo_path)?;
         let actors = parse_actor_names(&contents);
-        let movie_code = nfo_path
+        let stem = nfo_path
             .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        // When NFO is named "movie.nfo" (nested structure), derive movie_code
+        // from the directory name. If inside a "movie/" subdirectory
+        // (e.g. IPZZ-408/movie/movie.nfo), use the grandparent name ("IPZZ-408").
+        let movie_code = if stem.eq_ignore_ascii_case("movie") {
+            let parent = nfo_path.parent();
+            let parent_name = parent
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            if parent_name.eq_ignore_ascii_case("movie") {
+                parent
+                    .and_then(|p| p.parent())
+                    .and_then(|gp| gp.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(stem)
+                    .to_string()
+            } else {
+                parent_name.to_string()
+            }
+        } else {
+            stem.to_string()
+        };
 
         let mut warnings = Vec::new();
         if actors.is_empty() {
             warnings.push(format!("No actors found in {}", nfo_path.display()));
         }
 
-        let related_files = collect_related_files(&nfo_path)?;
+        let mut related_files = collect_related_files(&nfo_path)?;
+        // Ensure the NFO itself is always included (it may live in a subdirectory
+        // like movie/ and not appear in the grandparent scan).
+        if !related_files.iter().any(|(src, _)| src == &nfo_path) {
+            let relative = nfo_path
+                .file_name()
+                .map(|n| PathBuf::from(n))
+                .unwrap_or_else(|| nfo_path.clone());
+            related_files.push((nfo_path.clone(), relative));
+            related_files.sort_by(|a, b| a.1.cmp(&b.1));
+        }
         let mut actions = Vec::new();
 
-        for actor in &actors {
+        // Movies without actors go into "未分类" folder
+        let actor_list: Vec<String> = if actors.is_empty() {
+            vec!["未分类".to_string()]
+        } else {
+            actors.clone()
+        };
+
+        for actor in &actor_list {
             let actor_dir_name = sanitize_path_component(actor);
-            for file in &related_files {
+            for (source, relative) in &related_files {
                 let target = actors_root
                     .join(&actor_dir_name)
                     .join(&movie_code)
-                    .join(file.file_name().unwrap());
+                    .join(relative);
                 actions.push(ActionItem {
                     kind: "hard-link".to_string(),
-                    source: Some(file.clone()),
+                    source: Some(source.clone()),
                     target: Some(target),
                     status: ActionStatus::Planned,
                     reason: None,
@@ -89,6 +144,7 @@ pub fn plan_actor_links(source_dir: &Path, actors_root: &Path) -> io::Result<Vec
 pub fn execute_actor_links_command(
     source_dir: PathBuf,
     actors_root: PathBuf,
+    exclude_dirs: Vec<PathBuf>,
     apply: bool,
 ) -> io::Result<CommandReport> {
     let mode = if apply {
@@ -102,7 +158,7 @@ pub fn execute_actor_links_command(
         source_dir.clone(),
         vec!["actor-links".to_string()],
     );
-    let plans = plan_actor_links(&source_dir, &actors_root)?;
+    let plans = plan_actor_links(&source_dir, &actors_root, &exclude_dirs)?;
 
     for plan in plans {
         report.warnings.extend(plan.warnings);
@@ -172,22 +228,41 @@ fn extract_tag(contents: &str, tag: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-fn collect_nfo_files(source_dir: &Path) -> io::Result<Vec<PathBuf>> {
+fn collect_nfo_files(source_dir: &Path, excludes: &[PathBuf]) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    collect_files_with_extension(source_dir, "nfo", &mut files)?;
+    collect_files_with_extension(source_dir, "nfo", excludes, &mut files)?;
     Ok(files)
+}
+
+fn should_exclude(path: &Path, excludes: &[PathBuf]) -> bool {
+    if excludes.is_empty() {
+        return false;
+    }
+    if let Ok(canonical) = path.canonicalize() {
+        excludes.iter().any(|e| {
+            e.canonicalize().ok().as_ref() == Some(&canonical)
+        })
+    } else {
+        false
+    }
 }
 
 fn collect_files_with_extension(
     dir: &Path,
     extension: &str,
+    excludes: &[PathBuf],
     results: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_files_with_extension(&path, extension, results)?;
+            // Skip excluded directories and hidden directories
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if file_name.starts_with('.') || should_exclude(&path, excludes) {
+                continue;
+            }
+            collect_files_with_extension(&path, extension, excludes, results)?;
         } else if path
             .extension()
             .and_then(|ext| ext.to_str())
@@ -200,31 +275,69 @@ fn collect_files_with_extension(
     Ok(())
 }
 
-fn collect_related_files(nfo_path: &Path) -> io::Result<Vec<PathBuf>> {
+/// Collect related media files for a given NFO.
+/// Returns (source_path, relative_path_from_scan_dir) pairs so subdirectory
+/// structure (trickplay/, trailers/) is preserved in the target path.
+fn collect_related_files(nfo_path: &Path) -> io::Result<Vec<(PathBuf, PathBuf)>> {
     let parent = nfo_path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "NFO file has no parent"))?;
-    let movie_code = nfo_path
+    let stem = nfo_path
         .file_stem()
-        .and_then(|stem| stem.to_str())
+        .and_then(|s| s.to_str())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "NFO file has no stem"))?;
 
+    let is_nested = stem.eq_ignore_ascii_case("movie");
+
+    // When movie.nfo is inside a "movie/" subdirectory (e.g. IPZZ-408/movie/movie.nfo),
+    // the actual media files are in the grandparent directory (IPZZ-408/).
+    let scan_dir = if is_nested {
+        let parent_name = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if parent_name.eq_ignore_ascii_case("movie") {
+            parent.parent().unwrap_or(parent)
+        } else {
+            parent
+        }
+    } else {
+        parent
+    };
+
     let mut files = Vec::new();
-    for entry in fs::read_dir(parent)? {
+    collect_files_recursive(scan_dir, scan_dir, is_nested, stem, &mut files)?;
+    files.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(files)
+}
+
+fn collect_files_recursive(
+    dir: &Path,
+    scan_root: &Path,
+    is_nested: bool,
+    stem: &str,
+    results: &mut Vec<(PathBuf, PathBuf)>,
+) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if file_name.starts_with(movie_code) {
-            files.push(path);
+        // Skip hidden/system files and trickplay/trailer index files
+        if file_name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            // Recurse into subdirectories (trickplay/, trailers/, etc.)
+            collect_files_recursive(&path, scan_root, is_nested, stem, results)?;
+        } else {
+            let relative = path.strip_prefix(scan_root).unwrap_or(&path).to_path_buf();
+            // For flat structure: only include files matching the stem prefix
+            // For nested structure: include all files
+            if is_nested || file_name.starts_with(stem) {
+                results.push((path, relative));
+            }
         }
     }
-    files.sort();
-    Ok(files)
+    Ok(())
 }
 
 fn sanitize_path_component(component: &str) -> String {

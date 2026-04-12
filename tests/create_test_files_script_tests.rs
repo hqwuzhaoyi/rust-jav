@@ -54,7 +54,11 @@ fn create_test_files_script_generates_expected_scenarios_and_samples() {
     ];
 
     for path in expected_paths {
-        assert!(path.exists(), "expected fixture path to exist: {}", path.display());
+        assert!(
+            path.exists(),
+            "expected fixture path to exist: {}",
+            path.display()
+        );
     }
 
     fs::remove_dir_all(output_dir).unwrap();
@@ -86,7 +90,9 @@ fn create_test_files_script_resets_existing_scenarios_on_rerun() {
         !stale_file.exists(),
         "rerunning the fixture script should reset scenario directories"
     );
-    assert!(output_dir.join("delete-ad-files/新片首发每天更新.txt").exists());
+    assert!(output_dir
+        .join("delete-ad-files/新片首发每天更新.txt")
+        .exists());
     assert!(output_dir.join("actor-links/REBD-615.mp4").exists());
 
     fs::remove_dir_all(output_dir).unwrap();

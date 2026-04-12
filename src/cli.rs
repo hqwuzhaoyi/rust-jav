@@ -68,6 +68,11 @@ pub struct ActorLinksArgs {
     #[arg(long)]
     pub actors_root: PathBuf,
 
+    /// Directories to exclude from scanning (can be repeated)
+    /// If actors_root is inside source, it is auto-excluded
+    #[arg(long)]
+    pub exclude: Vec<PathBuf>,
+
     /// Apply filesystem mutations; otherwise preview is the default
     #[arg(long)]
     pub apply: bool,

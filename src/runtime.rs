@@ -37,7 +37,12 @@ pub async fn resolve_run_request(cli: Cli) -> Result<RunRequest> {
             })
         }
         Command::ActorLinks(args) => {
-            let report = execute_actor_links_command(args.source, args.actors_root, args.apply)?;
+            let report = execute_actor_links_command(
+                args.source,
+                args.actors_root,
+                args.exclude,
+                args.apply,
+            )?;
             Ok(RunRequest::Report {
                 exit_code: report_exit_code(&report),
                 format: if args.json {
