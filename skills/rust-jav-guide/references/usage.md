@@ -96,6 +96,50 @@ cargo run -- ops --dir /path/to/media --op delete-ad-files --apply --json
 cargo run -- actor-links --source /path/to/media --actors-root /path/to/actors --apply --json
 ```
 
+### 检查迁移前后有没有遗漏文件
+
+先对迁移前目录做 snapshot：
+
+```bash
+bash scripts/verify_migration_counts.sh snapshot --dir /path/to/media --output /tmp/media-before.txt
+```
+
+迁移完成后，再比较迁移后目录：
+
+```bash
+bash scripts/verify_migration_counts.sh compare --before /tmp/media-before.txt --after-dir /path/to/media
+```
+
+这个脚本比较的是：
+
+- 总文件数
+- 按扩展名统计的文件数
+
+适合：
+
+- `standardize-names`
+- `extract-codes`
+- `categorize-files`
+- `move-origin`
+- `organize-by-code`
+
+这些主要是 move / rename，预期通常应为 `status=ok`。
+只有 `status=ok`，才适合继续自动迁移或接受迁移结果。
+
+不应直接按“数量必须相等”理解的场景：
+
+- `delete-ad-files`
+- `remove-duplicates`
+
+这些会删文件，出现 `status=mismatch` 可能是预期结果。
+但即使是预期结果，也不应直接继续无人值守迁移；应先人工确认数量变化是否符合预期。
+
+`actor-links` 要单独理解：
+
+- source 目录通常仍应是 `status=ok`
+- `actors-root` 会新增硬链接文件，应单独统计，不要和 source 混在一起比
+- 只有 source / actors-root 各自的目标比对都符合预期，才适合继续后续自动流程
+
 ## 示例 fixtures
 
 如果你想用仓库自带示例快速体验，先重新生成 fixtures：
@@ -122,6 +166,28 @@ cargo run -- ops --dir ./examples/test/delete-ad-files --op delete-ad-files --js
 cargo run -- ops --dir ./examples/test/extract-codes --op extract-codes --apply --json
 cargo run -- actor-links --source ./examples/test/actor-links --actors-root ./actors --apply --json
 ```
+
+也可以直接用这些 fixtures 验证迁移计数脚本：
+
+```bash
+bash examples/create_test_files.sh ./examples/test
+bash scripts/verify_migration_counts.sh snapshot --dir ./examples/test/standardize-names --output /tmp/standardize-before.txt
+cargo run -- ops --dir ./examples/test/standardize-names --op standardize-names --apply --json
+bash scripts/verify_migration_counts.sh compare --before /tmp/standardize-before.txt --after-dir ./examples/test/standardize-names
+```
+
+上面这个 `standardize-names` 场景预期应为 `status=ok`。
+这类结果适合作为自动迁移门禁通过条件。
+
+```bash
+bash examples/create_test_files.sh ./examples/test
+bash scripts/verify_migration_counts.sh snapshot --dir ./examples/test/delete-ad-files --output /tmp/delete-ad-before.txt
+cargo run -- ops --dir ./examples/test/delete-ad-files --op delete-ad-files --apply --json
+bash scripts/verify_migration_counts.sh compare --before /tmp/delete-ad-before.txt --after-dir ./examples/test/delete-ad-files
+```
+
+上面这个 `delete-ad-files` 场景预期应为 `status=mismatch`，因为文件数量会下降。
+这类结果必须转人工确认，不能直接当作自动迁移通过。
 
 ## 关键行为说明
 
