@@ -3,9 +3,11 @@
 ## 查看帮助
 
 ```bash
-cargo run -- --help
-cargo run -- ops --help
-cargo run -- actor-links --help
+rust-jav --help
+rust-jav ops --help
+rust-jav actor-links --help
+rust-jav nfo-check --help
+rust-jav tui --help
 ```
 
 ## 核心命令
@@ -15,7 +17,7 @@ cargo run -- actor-links --help
 适合交互式查看目录、勾选操作、手动浏览状态。
 
 ```bash
-cargo run -- tui --dir ./examples/test
+rust-jav tui --dir ./examples/test
 ```
 
 ### 2. `ops`
@@ -25,33 +27,19 @@ cargo run -- tui --dir ./examples/test
 #### 预览全部操作
 
 ```bash
-cargo run -- ops --dir ./examples/test --json
+rust-jav ops --dir ./examples/test --json
 ```
 
-#### 真正执行全部操作
+#### 真正执行全部操作（自动触发迁移验收）
 
 ```bash
-cargo run -- ops --dir ./examples/test --apply --json
+rust-jav ops --dir ./examples/test --apply --json
 ```
-
-执行后，输出里会附带统一迁移验收摘要：
-
-- `verification.verification_status`
-- `verification.approval_status`
-- `verification.exit_code`
-- `verification.report_path`
-
-退出码语义：
-
-- `0`：技术结果正确，且可继续自动流程
-- `10`：技术结果正确，但 destructive 操作需要人工确认
-- `20`：实际结果与理论目标不一致
-- `30`：验收层自身出错，例如预扫描或报告写入失败
 
 #### 只执行指定操作
 
 ```bash
-cargo run -- ops --dir ./examples/test --op standardize-names --op move-origin --apply
+rust-jav ops --dir ./examples/test --op standardize-names --op move-origin --apply
 ```
 
 支持的 `--op`：
@@ -72,71 +60,103 @@ cargo run -- ops --dir ./examples/test --op standardize-names --op move-origin -
 #### 预览
 
 ```bash
-cargo run -- actor-links --source ./examples/test/actor-links --actors-root ./actors --json
+rust-jav actor-links --source /path/to/media --actors-root /path/to/actors --json
 ```
 
-#### 执行
+#### 执行（自动触发迁移验收）
 
 ```bash
-cargo run -- actor-links --source ./examples/test/actor-links --actors-root ./actors --apply --json
+rust-jav actor-links --source /path/to/media --actors-root /path/to/actors --apply --json
 ```
 
-`actor-links --apply` 的统一迁移验收会同时验证：
+### 4. `nfo-check`
 
-- `source` scope 是否保持不变
-- `actors_root` scope 是否精确等于理论目标
+检查哪些影片目录缺少 NFO 元数据文件。
+
+```bash
+rust-jav nfo-check --dir /path/to/media
+rust-jav nfo-check --dir /path/to/media --codes-only --skip actors --skip organized
+rust-jav nfo-check --dir /path/to/media --json --max-depth 3
+```
+
+参数：
+- `--max-depth <N>`: 检查深度（默认 2）
+- `--skip <DIR>`: 跳过指定目录名（可重复）
+- `--json`: JSON 输出
+- `--codes-only`: 只输出番号，适合管道给其他工具
+
+## 内建迁移验收层
+
+`ops --apply` 和 `actor-links --apply` 会自动触发迁移验收，无需单独命令。
+
+### 验收流程
+
+1. **before manifest**: 执行前扫描文件清单
+2. **expected manifest**: 根据计划动作推导理论目标
+3. **执行迁移动作**
+4. **after manifest**: 执行后扫描文件清单
+5. **清单级比对**: 路径、扩展名、大小、来源追溯
+6. **输出报告**: JSON 写入 `.omx/reports/migrations/`
+
+### 验收状态
+
+- `verification_status`: `ok` | `mismatch` | `error`
+- `approval_status`: `auto_pass` | `manual_confirm_required` | `blocked`
+- 只有 `ok` + `auto_pass` 才能继续自动流程
+
+### actor-links 双 scope 验收
+
+- **source scope**: before/expected/after 必须一致（source 不应被修改）
+- **actors_root scope**: after 必须等于 expected（所有链接应存在）
+- 两个 scope 分开统计，不能混在一起比
+
+### destructive 操作特殊处理
+
+`delete-ad-files` 和 `remove-duplicates` 即使结果符合计划，`approval_status` 也是 `manual_confirm_required`，必须人工确认。
+
+### 报告字段
+
+- `scope_counts`: 各 scope 的 before/expected/after 计数
+- `diffs`: 各 scope 的 missing_files / unexpected_files / mismatched_files
+- `expected_stats`: expected_new_links / expected_existing_links / plan_conflicts
+- `report_path`: 详细 JSON 报告路径
 
 ## 推荐工作流
 
 ### 第一次使用：先预览，再执行
 
 ```bash
-cargo run -- ops --dir /path/to/media --json
+rust-jav ops --dir /path/to/media --json
 ```
 
-先检查计划动作，确认没问题后再执行：
+先检查计划动作，确认没问题后再执行（自动触发验收）：
 
 ```bash
-cargo run -- ops --dir /path/to/media --apply --json
+rust-jav ops --dir /path/to/media --apply --json
 ```
 
 ### 只先试广告文件清理
 
 ```bash
-cargo run -- ops --dir /path/to/media --op delete-ad-files --json
-cargo run -- ops --dir /path/to/media --op delete-ad-files --apply --json
+rust-jav ops --dir /path/to/media --op delete-ad-files --json
+rust-jav ops --dir /path/to/media --op delete-ad-files --apply --json
 ```
 
-注意：`delete-ad-files` 在 `--apply` 下可能删除匹配到的**视频文件**。
+注意：`delete-ad-files` 在 `--apply` 下可能删除匹配到的**视频文件**。且 `approval_status` 会是 `manual_confirm_required`。
 
 ### 整理完成后再生成演员视图
 
 ```bash
-cargo run -- actor-links --source /path/to/media --actors-root /path/to/actors --apply --json
+rust-jav actor-links --source /path/to/media --actors-root /path/to/actors --apply --json
 ```
 
-### 检查迁移前后有没有遗漏文件
+验收层会同时验证 source 不变 + actors_root 完整。
 
-优先看 `--apply --json` 输出里的统一迁移验收结果，而不是先跑外部脚本：
+### 检查哪些目录缺 NFO
 
 ```bash
-cargo run -- ops --dir /path/to/media --apply --json
-cargo run -- actor-links --source /path/to/media --actors-root /path/to/actors --apply --json
+rust-jav nfo-check --dir /path/to/media --codes-only --skip actors --skip organized
 ```
-
-重点字段：
-
-- `verification.verification_status`
-- `verification.approval_status`
-- `verification.report_path`
-
-其中：
-
-- `verification_status=ok`：实际结果与理论目标一致
-- `approval_status=auto_pass`：可继续自动流程
-- `approval_status=manual_confirm_required`：结果技术上正确，但 destructive 操作需要人工确认
-
-详细文件清单 diff 会在 `report_path` 对应的 JSON 报告里。
 
 ## 示例 fixtures
 
@@ -146,31 +166,18 @@ cargo run -- actor-links --source /path/to/media --actors-root /path/to/actors -
 bash examples/create_test_files.sh ./examples/test
 ```
 
-注意：如果你之前已经对 `./examples/test` 跑过 `--apply`，要再次重跑上面的脚本把示例目录重置回初始状态。
-
-会生成这些场景目录：
-
-- `./examples/test/delete-ad-files`
-- `./examples/test/standardize-names`
-- `./examples/test/extract-codes`
-- `./examples/test/categorize-files`
-- `./examples/test/move-origin`
-- `./examples/test/organize-by-code`
-- `./examples/test/clean-empty-dirs`
-- `./examples/test/actor-links`
-
 然后可以这样分别体验：
 
 ```bash
-cargo run -- ops --dir ./examples/test/delete-ad-files --op delete-ad-files --json
-cargo run -- ops --dir ./examples/test/extract-codes --op extract-codes --apply --json
-cargo run -- actor-links --source ./examples/test/actor-links --actors-root ./actors --apply --json
+rust-jav ops --dir ./examples/test/delete-ad-files --op delete-ad-files --json
+rust-jav ops --dir ./examples/test/extract-codes --op extract-codes --apply --json
+rust-jav actor-links --source ./examples/test/actor-links --actors-root ./actors --apply --json
 ```
 
 ## 关键行为说明
 
 - `ops` 和 `actor-links` 默认都是 **preview** 模式。
-- 只有加 `--apply` 才会真正修改文件系统。
+- 只有加 `--apply` 才会真正修改文件系统并触发验收。
 - `--json` 适合脚本、AI 或需要仔细检查输出时使用。
-- `ops` 不加 `--op` 时，会运行完整流程。
-- 完整流程里，`delete-ad-files` 会最先执行。
+- `ops` 不加 `--op` 时，会运行完整流程，`delete-ad-files` 会最先执行。
+- 验收报告自动写入 `.omx/reports/migrations/` 目录。
