@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::migration_verifier::types::{ScopeCountSummary, VerificationSummary};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
     Preview,
@@ -66,6 +68,7 @@ pub struct CommandReport {
     pub source_dir: PathBuf,
     pub selected_ops: Vec<String>,
     pub summary: Summary,
+    pub verification: Option<VerificationSummary>,
     pub actions: Vec<ActionItem>,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
@@ -84,6 +87,7 @@ impl CommandReport {
             source_dir,
             selected_ops,
             summary: Summary::default(),
+            verification: None,
             actions: Vec::new(),
             warnings: Vec::new(),
             errors: Vec::new(),
@@ -179,6 +183,30 @@ impl CommandReport {
             }
         }
 
+        if let Some(verification) = &self.verification {
+            lines.push(format!(
+                "verification: {}",
+                verification.verification_status.as_str()
+            ));
+            lines.push(format!(
+                "approval: {}",
+                verification.approval_status.as_str()
+            ));
+            lines.push(format!("verification_exit_code: {}", verification.exit_code));
+            for scope in &verification.scopes {
+                lines.push(format!(
+                    "  scope {}: before={}, expected={}, after={}",
+                    scope.scope.as_str(),
+                    scope.before_count,
+                    scope.expected_count,
+                    scope.after_count
+                ));
+            }
+            if let Some(path) = verification.report_path.as_ref() {
+                lines.push(format!("report_path: {}", path.display()));
+            }
+        }
+
         lines.join("\n")
     }
 
@@ -186,6 +214,11 @@ impl CommandReport {
         let selected_ops = json_array(self.selected_ops.iter().map(json_string));
         let warnings = json_array(self.warnings.iter().map(json_string));
         let errors = json_array(self.errors.iter().map(json_string));
+        let verification = self
+            .verification
+            .as_ref()
+            .map(verification_json)
+            .unwrap_or_else(|| "null".to_string());
         let actions = json_array(self.actions.iter().map(|action| {
             format!(
                 "{{\"kind\":{},\"source\":{},\"target\":{},\"status\":{},\"reason\":{}}}",
@@ -212,6 +245,7 @@ impl CommandReport {
                 "\"warning_count\":{},",
                 "\"error_count\":{}",
                 "}},",
+                "\"verification\":{},",
                 "\"actions\":{},",
                 "\"warnings\":{},",
                 "\"errors\":{}",
@@ -227,6 +261,7 @@ impl CommandReport {
             self.summary.failed_actions,
             self.summary.warning_count,
             self.summary.error_count,
+            verification,
             actions,
             warnings,
             errors
@@ -262,6 +297,39 @@ fn json_string(value: impl AsRef<str>) -> String {
         .collect::<String>();
 
     format!("\"{}\"", escaped)
+}
+
+fn verification_json(verification: &VerificationSummary) -> String {
+    format!(
+        concat!(
+            "{{",
+            "\"verification_status\":{},",
+            "\"approval_status\":{},",
+            "\"exit_code\":{},",
+            "\"report_path\":{},",
+            "\"scopes\":{}",
+            "}}"
+        ),
+        json_string(verification.verification_status.as_str()),
+        json_string(verification.approval_status.as_str()),
+        verification.exit_code,
+        verification
+            .report_path
+            .as_ref()
+            .map(|path| json_string(path.display().to_string()))
+            .unwrap_or_else(|| "null".to_string()),
+        json_array(verification.scopes.iter().map(scope_count_json))
+    )
+}
+
+fn scope_count_json(summary: &ScopeCountSummary) -> String {
+    format!(
+        "{{\"scope\":{},\"before_count\":{},\"expected_count\":{},\"after_count\":{}}}",
+        json_string(summary.scope.as_str()),
+        summary.before_count,
+        summary.expected_count,
+        summary.after_count
+    )
 }
 
 #[cfg(test)]

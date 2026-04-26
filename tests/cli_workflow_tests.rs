@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rust_jav::actor_links::execute_actor_links_command;
+use rust_jav::migration_verifier::types::{ApprovalStatus, MigrationScope, VerificationStatus};
 use rust_jav::operations::execute_operations_command;
 use rust_jav::report::{ActionStatus, OutputMode};
 use rust_jav::tui::state::OperationType;
@@ -87,6 +88,40 @@ async fn ops_apply_mutates_files_when_explicit() {
     fs::remove_dir_all(source_dir).unwrap();
 }
 
+#[tokio::test]
+async fn ops_apply_adds_verification_summary_and_report_path() {
+    let source_dir = unique_temp_dir("ops-verify");
+    let source_file = source_dir.join("[7sht.me]@ABP-123.mp4");
+    write_file(&source_file, b"video");
+
+    let report = execute_operations_command(
+        source_dir.clone(),
+        vec![OperationType::StandardizeNames],
+        true,
+    )
+    .await;
+
+    let verification = report
+        .verification
+        .as_ref()
+        .expect("apply should include verification summary");
+    assert_eq!(verification.verification_status, VerificationStatus::Ok);
+    assert_eq!(verification.approval_status, ApprovalStatus::AutoPass);
+    assert_eq!(verification.exit_code, 0);
+    assert!(verification
+        .report_path
+        .as_ref()
+        .is_some_and(|path| path.exists()));
+    assert!(verification.scopes.iter().any(|scope| {
+        scope.scope == MigrationScope::Source
+            && scope.before_count == 1
+            && scope.expected_count == 1
+            && scope.after_count == 1
+    }));
+
+    fs::remove_dir_all(source_dir).unwrap();
+}
+
 #[test]
 fn actor_links_preview_does_not_create_targets() {
     let source_dir = unique_temp_dir("actor-preview-source");
@@ -149,6 +184,159 @@ fn actor_links_apply_creates_directory_style_links() {
             fs::metadata(&linked_video).unwrap().ino()
         );
     }
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(actors_root).unwrap();
+}
+
+#[test]
+fn actor_links_apply_adds_dual_scope_verification_summary() {
+    let source_dir = unique_temp_dir("actor-verify-source");
+    let actors_root = unique_temp_dir("actor-verify-target");
+    write_file(&source_dir.join("REBD-615.mp4"), b"video");
+    write_file(
+        &source_dir.join("REBD-615.nfo"),
+        include_str!("../REBD-615.nfo").as_bytes(),
+    );
+    write_file(&source_dir.join("REBD-615-poster.jpg"), b"poster");
+    write_file(&source_dir.join("REBD-615-backdrop.jpg"), b"fanart");
+
+    let report = execute_actor_links_command(source_dir.clone(), actors_root.clone(), true).unwrap();
+    let verification = report
+        .verification
+        .as_ref()
+        .expect("apply should include verification summary");
+
+    assert_eq!(verification.verification_status, VerificationStatus::Ok);
+    assert_eq!(verification.approval_status, ApprovalStatus::AutoPass);
+    assert_eq!(verification.exit_code, 0);
+    assert_eq!(verification.scopes.len(), 2);
+    assert!(verification.scopes.iter().any(|scope| {
+        scope.scope == MigrationScope::Source
+            && scope.before_count == 4
+            && scope.expected_count == 4
+            && scope.after_count == 4
+    }));
+    assert!(verification.scopes.iter().any(|scope| {
+        scope.scope == MigrationScope::ActorsRoot
+            && scope.before_count == 0
+            && scope.expected_count == 4
+            && scope.after_count == 4
+    }));
+    assert!(verification
+        .report_path
+        .as_ref()
+        .is_some_and(|path| path.exists()));
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(actors_root).unwrap();
+}
+
+#[test]
+fn actor_links_apply_detects_wrong_preexisting_targets() {
+    let source_dir = unique_temp_dir("actor-verify-mismatch-source");
+    let actors_root = unique_temp_dir("actor-verify-mismatch-target");
+    write_file(&source_dir.join("REBD-615.mp4"), b"video");
+    write_file(
+        &source_dir.join("REBD-615.nfo"),
+        include_str!("../REBD-615.nfo").as_bytes(),
+    );
+    write_file(&source_dir.join("REBD-615-poster.jpg"), b"poster");
+    write_file(&source_dir.join("REBD-615-backdrop.jpg"), b"fanart");
+
+    let target_dir = actors_root.join("miru").join("REBD-615");
+    write_file(&target_dir.join("REBD-615.mp4"), b"video");
+    write_file(&target_dir.join("REBD-615.nfo"), include_str!("../REBD-615.nfo").as_bytes());
+    write_file(&target_dir.join("REBD-615-poster.jpg"), b"poster");
+    write_file(&target_dir.join("REBD-615-backdrop.jpg"), b"fanart");
+
+    let report = execute_actor_links_command(source_dir.clone(), actors_root.clone(), true).unwrap();
+    let verification = report
+        .verification
+        .as_ref()
+        .expect("apply should include verification summary");
+
+    assert_eq!(verification.verification_status, VerificationStatus::Mismatch);
+    assert_eq!(verification.approval_status, ApprovalStatus::Blocked);
+    assert_eq!(verification.exit_code, 20);
+    let report_path = verification
+        .report_path
+        .as_ref()
+        .expect("mismatch should still write a report");
+    let detailed = fs::read_to_string(report_path).unwrap();
+    assert!(detailed.contains("\"expected_existing_links\":0"));
+    assert!(detailed.contains("\"expected_new_links\":4"));
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(actors_root).unwrap();
+}
+
+#[test]
+fn actor_links_rerun_report_tracks_existing_links() {
+    let source_dir = unique_temp_dir("actor-verify-rerun-source");
+    let actors_root = unique_temp_dir("actor-verify-rerun-target");
+    write_file(&source_dir.join("REBD-615.mp4"), b"video");
+    write_file(
+        &source_dir.join("REBD-615.nfo"),
+        include_str!("../REBD-615.nfo").as_bytes(),
+    );
+    write_file(&source_dir.join("REBD-615-poster.jpg"), b"poster");
+    write_file(&source_dir.join("REBD-615-backdrop.jpg"), b"fanart");
+
+    let first = execute_actor_links_command(source_dir.clone(), actors_root.clone(), true).unwrap();
+    let first_report_path = first
+        .verification
+        .as_ref()
+        .and_then(|verification| verification.report_path.as_ref())
+        .expect("first apply should write a report")
+        .clone();
+    let first_report = fs::read_to_string(&first_report_path).unwrap();
+    assert!(first_report.contains("\"expected_new_links\":4"));
+    assert!(first_report.contains("\"expected_existing_links\":0"));
+
+    let second = execute_actor_links_command(source_dir.clone(), actors_root.clone(), true).unwrap();
+    let second_report_path = second
+        .verification
+        .as_ref()
+        .and_then(|verification| verification.report_path.as_ref())
+        .expect("second apply should write a report")
+        .clone();
+    let second_report = fs::read_to_string(&second_report_path).unwrap();
+    assert!(second_report.contains("\"expected_new_links\":0"));
+    assert!(second_report.contains("\"expected_existing_links\":4"));
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(actors_root).unwrap();
+}
+
+#[test]
+fn actor_links_report_records_duplicate_target_plan_conflicts() {
+    let source_dir = unique_temp_dir("actor-verify-conflict-source");
+    let actors_root = unique_temp_dir("actor-verify-conflict-target");
+
+    for subdir in ["disc-a", "disc-b"] {
+        let movie_dir = source_dir.join(subdir);
+        write_file(&movie_dir.join("REBD-615.mp4"), b"video");
+        write_file(
+            &movie_dir.join("REBD-615.nfo"),
+            include_str!("../REBD-615.nfo").as_bytes(),
+        );
+        write_file(&movie_dir.join("REBD-615-poster.jpg"), b"poster");
+        write_file(&movie_dir.join("REBD-615-backdrop.jpg"), b"fanart");
+    }
+
+    let report = execute_actor_links_command(source_dir.clone(), actors_root.clone(), true).unwrap();
+    let verification = report
+        .verification
+        .as_ref()
+        .expect("apply should include verification summary");
+    assert_eq!(verification.verification_status, VerificationStatus::Mismatch);
+    let report_path = verification
+        .report_path
+        .as_ref()
+        .expect("conflict should still write a report");
+    let detailed = fs::read_to_string(report_path).unwrap();
+    assert!(detailed.contains("duplicate actor-link target"));
 
     fs::remove_dir_all(source_dir).unwrap();
     fs::remove_dir_all(actors_root).unwrap();
@@ -505,6 +693,30 @@ async fn delete_ad_files_apply_deletes_matching_video_file() {
         "ad video deleted"
     );
     assert!(source_dir.join("PRED-456.mp4").exists(), "real video kept");
+
+    fs::remove_dir_all(source_dir).unwrap();
+}
+
+#[tokio::test]
+async fn delete_ad_files_apply_requires_manual_confirmation_when_verified() {
+    let source_dir = unique_temp_dir("delete-ad-manual-confirm");
+    write_file(&source_dir.join("新片首发每天更新.txt"), b"ad");
+    write_file(&source_dir.join("PRED-456.mp4"), b"real-video");
+
+    let report =
+        execute_operations_command(source_dir.clone(), vec![OperationType::DeleteAdFiles], true)
+            .await;
+
+    let verification = report
+        .verification
+        .as_ref()
+        .expect("destructive apply should include verification summary");
+    assert_eq!(verification.verification_status, VerificationStatus::Ok);
+    assert_eq!(
+        verification.approval_status,
+        ApprovalStatus::ManualConfirmRequired
+    );
+    assert_eq!(verification.exit_code, 10);
 
     fs::remove_dir_all(source_dir).unwrap();
 }

@@ -86,6 +86,14 @@ cargo run -- ops --dir ./examples/test --json
 cargo run -- ops --dir ./examples/test --apply
 ```
 
+`--apply` 现在会在命令输出里额外给出统一迁移验收摘要：
+
+- `verification_status`
+- `approval_status`
+- `exit_code`
+- `report_path`
+- 每个 scope 的 `before / expected / after`
+
 ### `ops`：只执行指定操作
 
 ```shell
@@ -112,6 +120,7 @@ cargo run -- ops --dir ./examples/test --op standardize-names --op move-origin -
 - `extract-codes` 会把文件名规范化为“提取出的 JAV 编号 + 原后缀片段”
 - 例如：`sample__abp123-C.mp4` 会变成 `ABP-123-C.mp4`
 - 推荐先 preview，再决定是否 `--apply`
+- 对于 `delete-ad-files` / `remove-duplicates` 这类 destructive 操作，即使迁移结果符合理论目标，`approval_status` 也会是 `manual_confirm_required`
 
 ### `actor-links`：基于 NFO 演员建立硬链接
 
@@ -122,6 +131,11 @@ cargo run -- actor-links --source ./examples/test --actors-root ./actors --json
 # 执行
 cargo run -- actor-links --source ./examples/test --actors-root ./actors --apply
 ```
+
+`actor-links --apply` 也会输出统一迁移验收摘要，但会同时验证两个 scope：
+
+- `source`：理论上应保持不变
+- `actors_root`：理论上应精确等于计划生成的演员链接结果
 
 硬链接输出结构为：
 
@@ -166,6 +180,24 @@ cargo run -- ops --dir ./examples/test --apply --json
 cargo run -- actor-links --source ./examples/test --actors-root ./actors --apply --json
 ```
 
+### 4. 查看统一迁移验收结果
+
+无论是 `ops --apply` 还是 `actor-links --apply`，机器可读输出里都可以直接读取：
+
+- `verification.verification_status`
+- `verification.approval_status`
+- `verification.exit_code`
+- `verification.report_path`
+
+详细清单级 diff 会落盘到 `report_path` 指向的 JSON 报告文件中。
+
+退出码约定：
+
+- `0`：`verification_status=ok` 且 `approval_status=auto_pass`
+- `10`：`verification_status=ok` 但 `approval_status=manual_confirm_required`
+- `20`：`verification_status=mismatch`
+- `30`：`verification_status=error`
+
 ## Build
 
 编译：
@@ -195,6 +227,8 @@ CROSS_CONTAINER_OPTS="--platform linux/amd64" cross build --target x86_64-unknow
 ```shell
 bash examples/create_test_files.sh ./examples/test
 ```
+
+> 注意：`./examples/test` 在执行过 `--apply` 后会变脏。做命令验证前，先重新运行一次 fixture 生成脚本，确保示例目录回到初始状态。
 
 生成后的目录结构为：
 
