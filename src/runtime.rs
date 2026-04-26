@@ -83,6 +83,10 @@ pub async fn resolve_run_request(cli: Cli) -> Result<RunRequest> {
 }
 
 fn report_exit_code(report: &CommandReport) -> i32 {
+    if let Some(verification) = report.verification.as_ref() {
+        return verification.exit_code;
+    }
+
     if report.summary.failed_actions > 0 || report.summary.error_count > 0 {
         1
     } else {

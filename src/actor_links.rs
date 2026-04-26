@@ -2,6 +2,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::migration_verifier::types::{
+    MigrationAction, MigrationActionKind, MigrationScope,
+};
+use crate::migration_verifier::fs_scan::scan_scope;
+use crate::migration_verifier::{summary_from_error, verify_actor_links};
 use crate::report::{ActionItem, ActionStatus, CommandReport, OutputMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,10 +107,52 @@ pub fn execute_actor_links_command(
         source_dir.clone(),
         vec!["actor-links".to_string()],
     );
-    let plans = plan_actor_links(&source_dir, &actors_root)?;
+    let before_source = if apply {
+        match scan_scope(&source_dir, MigrationScope::Source, false) {
+            Ok(scope) => Some(scope),
+            Err(error) => {
+                report.errors.push(format!("verification pre-scan failed: {error}"));
+                report.verification = Some(summary_from_error());
+                report.finalize();
+                return Ok(report);
+            }
+        }
+    } else {
+        None
+    };
+    let before_actors = if apply {
+        match scan_scope(&actors_root, MigrationScope::ActorsRoot, true) {
+            Ok(scope) => Some(scope),
+            Err(error) => {
+                report.errors.push(format!("verification pre-scan failed: {error}"));
+                report.verification = Some(summary_from_error());
+                report.finalize();
+                return Ok(report);
+            }
+        }
+    } else {
+        None
+    };
+    let plans = match plan_actor_links(&source_dir, &actors_root) {
+        Ok(plans) => plans,
+        Err(error) => {
+            report.errors.push(format!("actor-links planning failed: {error}"));
+            report.verification = Some(summary_from_error());
+            report.finalize();
+            return Ok(report);
+        }
+    };
+    let mut migration_actions = Vec::new();
+    let mut action_counter = 0usize;
 
     for plan in plans {
         report.warnings.extend(plan.warnings);
+        for action in &plan.actions {
+            action_counter += 1;
+            if let Some(migration_action) = action_item_to_migration_action(action, action_counter) {
+                migration_actions.push(migration_action);
+            }
+        }
         if !apply {
             report.actions.extend(plan.actions);
             continue;
@@ -160,6 +207,24 @@ pub fn execute_actor_links_command(
     }
 
     report.finalize();
+    if apply {
+        match verify_actor_links(
+            source_dir,
+            actors_root,
+            before_source.expect("apply flow must have pre-scanned source"),
+            before_actors.expect("apply flow must have pre-scanned actors root"),
+            migration_actions,
+            report.summary.failed_actions,
+            report.warnings.clone(),
+            report.errors.clone(),
+        ) {
+            Ok((summary, _detailed)) => report.verification = Some(summary),
+            Err(error) => {
+                report.errors.push(format!("verification failed: {error}"));
+                report.verification = Some(summary_from_error());
+            }
+        }
+    }
     Ok(report)
 }
 
@@ -186,9 +251,15 @@ fn collect_files_with_extension(
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
+        let metadata = fs::symlink_metadata(&path)?;
+        let file_type = metadata.file_type();
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             collect_files_with_extension(&path, extension, results)?;
-        } else if path
+        } else if file_type.is_file()
+            && path
             .extension()
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.eq_ignore_ascii_case(extension))
@@ -213,7 +284,9 @@ fn collect_related_files(nfo_path: &Path) -> io::Result<Vec<PathBuf>> {
     for entry in fs::read_dir(parent)? {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_file() {
+        let metadata = fs::symlink_metadata(&path)?;
+        let file_type = metadata.file_type();
+        if file_type.is_symlink() || !file_type.is_file() {
             continue;
         }
         let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
@@ -235,6 +308,20 @@ fn sanitize_path_component(component: &str) -> String {
             other => other,
         })
         .collect()
+}
+
+fn action_item_to_migration_action(action: &ActionItem, counter: usize) -> Option<MigrationAction> {
+    Some(MigrationAction {
+        action_id: format!("act-{counter:04}"),
+        kind: match action.kind.as_str() {
+            "hard-link" => MigrationActionKind::HardLink,
+            _ => return None,
+        },
+        scope: MigrationScope::ActorsRoot,
+        source: action.source.clone(),
+        target: action.target.clone(),
+        reason: action.reason.clone(),
+    })
 }
 
 #[cfg(test)]

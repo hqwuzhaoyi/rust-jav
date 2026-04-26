@@ -7,6 +7,7 @@ pub mod cli;
 pub mod config;
 pub mod file_utils;
 pub mod nfo_check;
+pub mod migration_verifier;
 pub mod operations;
 pub mod report;
 pub mod runtime;

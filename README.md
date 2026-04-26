@@ -86,6 +86,14 @@ cargo run -- ops --dir ./examples/test --json
 cargo run -- ops --dir ./examples/test --apply
 ```
 
+`--apply` 现在会在命令输出里额外给出统一迁移验收摘要：
+
+- `verification_status`
+- `approval_status`
+- `exit_code`
+- `report_path`
+- 每个 scope 的 `before / expected / after`
+
 ### `ops`：只执行指定操作
 
 ```shell
@@ -112,6 +120,7 @@ cargo run -- ops --dir ./examples/test --op standardize-names --op move-origin -
 - `extract-codes` 会把文件名规范化为“提取出的 JAV 编号 + 原后缀片段”
 - 例如：`sample__abp123-C.mp4` 会变成 `ABP-123-C.mp4`
 - 推荐先 preview，再决定是否 `--apply`
+- 对于 `delete-ad-files` / `remove-duplicates` 这类 destructive 操作，即使迁移结果符合理论目标，`approval_status` 也会是 `manual_confirm_required`
 
 ### `actor-links`：基于 NFO 演员建立硬链接
 
@@ -122,6 +131,11 @@ cargo run -- actor-links --source ./examples/test --actors-root ./actors --json
 # 执行
 cargo run -- actor-links --source ./examples/test --actors-root ./actors --apply
 ```
+
+`actor-links --apply` 也会输出统一迁移验收摘要，但会同时验证两个 scope：
+
+- `source`：理论上应保持不变
+- `actors_root`：理论上应精确等于计划生成的演员链接结果
 
 硬链接输出结构为：
 
@@ -166,6 +180,24 @@ cargo run -- ops --dir ./examples/test --apply --json
 cargo run -- actor-links --source ./examples/test --actors-root ./actors --apply --json
 ```
 
+### 4. 查看统一迁移验收结果
+
+无论是 `ops --apply` 还是 `actor-links --apply`，机器可读输出里都可以直接读取：
+
+- `verification.verification_status`
+- `verification.approval_status`
+- `verification.exit_code`
+- `verification.report_path`
+
+详细清单级 diff 会落盘到 `report_path` 指向的 JSON 报告文件中。
+
+退出码约定：
+
+- `0`：`verification_status=ok` 且 `approval_status=auto_pass`
+- `10`：`verification_status=ok` 但 `approval_status=manual_confirm_required`
+- `20`：`verification_status=mismatch`
+- `30`：`verification_status=error`
+
 ## Build
 
 编译：
@@ -196,6 +228,8 @@ CROSS_CONTAINER_OPTS="--platform linux/amd64" cross build --target x86_64-unknow
 bash examples/create_test_files.sh ./examples/test
 ```
 
+> 注意：`./examples/test` 在执行过 `--apply` 后会变脏。做命令验证前，先重新运行一次 fixture 生成脚本，确保示例目录回到初始状态。
+
 生成后的目录结构为：
 
 - `./examples/test/delete-ad-files`
@@ -215,87 +249,6 @@ cargo run -- ops --dir ./examples/test/delete-ad-files --op delete-ad-files --ap
 cargo run -- ops --dir ./examples/test/extract-codes --op extract-codes --apply --json
 cargo run -- actor-links --source ./examples/test/actor-links --actors-root ./actors --apply --json
 ```
-
-### 迁移前后文件数校验
-
-如果你想检查迁移脚本有没有遗漏文件，推荐在迁移前先做一次 snapshot：
-
-```shell
-bash scripts/verify_migration_counts.sh snapshot --dir /path/to/media --output /tmp/media-before.txt
-```
-
-迁移完成后，再对比迁移后目录：
-
-```shell
-bash scripts/verify_migration_counts.sh compare --before /tmp/media-before.txt --after-dir /path/to/media
-```
-
-脚本会比较两项：
-
-- 总文件数
-- 按扩展名统计的文件数（如 `mp4` `nfo` `jpg`）
-
-注意：
-
-- 这个脚本适合检查 move / rename 类迁移有没有遗漏文件。
-- 如果你执行了 `delete-ad-files` 或 `remove-duplicates`，计数下降可能是预期行为。
-- `actor-links` 会在另一个目录树里创建硬链接，应该单独统计，不要和源目录混在一起比。
-- 把它当作迁移门禁更合适：只有 `compare` 返回 `status=ok` 时，才继续自动迁移或接受迁移结果；如果返回 `status=mismatch`，就停止并转人工确认。
-
-### 用 fixtures 验证计数校验脚本
-
-`examples/create_test_files.sh` 生成的场景可以直接用来验证迁移前后计数对比是否符合预期。
-
-#### 适合通过的场景：move / rename 不改总数
-
-例如 `standardize-names`：
-
-```shell
-bash examples/create_test_files.sh ./examples/test
-bash scripts/verify_migration_counts.sh snapshot --dir ./examples/test/standardize-names --output /tmp/standardize-before.txt
-cargo run -- ops --dir ./examples/test/standardize-names --op standardize-names --apply --json
-bash scripts/verify_migration_counts.sh compare --before /tmp/standardize-before.txt --after-dir ./examples/test/standardize-names
-```
-
-例如 `organize-by-code`：
-
-```shell
-bash examples/create_test_files.sh ./examples/test
-bash scripts/verify_migration_counts.sh snapshot --dir ./examples/test/organize-by-code --output /tmp/organize-before.txt
-cargo run -- ops --dir ./examples/test/organize-by-code --op organize-by-code --apply --json
-bash scripts/verify_migration_counts.sh compare --before /tmp/organize-before.txt --after-dir ./examples/test/organize-by-code
-```
-
-这两类场景预期是 `status=ok`，因为它们主要是移动或重命名，不应改变源目录文件总数。
-只有这种结果，才适合继续自动迁移流程。
-
-#### 适合报 mismatch 的场景：显式删除文件
-
-例如 `delete-ad-files`：
-
-```shell
-bash examples/create_test_files.sh ./examples/test
-bash scripts/verify_migration_counts.sh snapshot --dir ./examples/test/delete-ad-files --output /tmp/delete-ad-before.txt
-cargo run -- ops --dir ./examples/test/delete-ad-files --op delete-ad-files --apply --json
-bash scripts/verify_migration_counts.sh compare --before /tmp/delete-ad-before.txt --after-dir ./examples/test/delete-ad-files
-```
-
-这个场景预期是 `status=mismatch`，因为它会删除广告文件，迁移后总文件数本来就应该下降。
-这类结果不应直接继续自动迁移，必须先人工确认“数量变化是否符合预期”。
-
-#### `actor-links` 的计数口径
-
-`actor-links` 不会减少 source 目录文件数，但会在 `actors-root` 下额外创建硬链接文件：
-
-```shell
-bash examples/create_test_files.sh ./examples/test
-bash scripts/verify_migration_counts.sh snapshot --dir ./examples/test/actor-links --output /tmp/actor-links-before.txt
-cargo run -- actor-links --source ./examples/test/actor-links --actors-root ./actors --apply --json
-bash scripts/verify_migration_counts.sh compare --before /tmp/actor-links-before.txt --after-dir ./examples/test/actor-links
-```
-
-这里 source 目录预期仍然是 `status=ok`。如果你想检查演员视图目录，应单独对 `./actors` 再做一次 snapshot / compare。
-同样，只有 source 或目标目录各自比对为 `status=ok`，才适合继续无人值守流程。
 
 ### 全部操作（显式 apply）
 
