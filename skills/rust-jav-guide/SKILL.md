@@ -58,5 +58,6 @@ description: 讲解如何使用 rust-jav 通过 `tui`、`ops`、`actor-links`、
 ## 已知陷阱
 
 - **NFS 跨文件系统硬链接失败**：如果 source 目录和 actors_root 在不同文件系统（如 NFS mount），硬链接会报 `Operation not permitted (os error 1)`。确保两个目录在同一文件系统上。
+- **NFS root_squash 导致硬链接失败**：TrueNAS 默认启用 `root_squash`，root 所有的文件无法被普通用户硬链接。症状：`Operation not permitted (os error 1)`，但文件确实在同一 NFS 挂载上。修复：在 NFS 服务器上 `chown` 这些文件为客户端用户（如 `prajna:prajna`），或在 TrueNAS NFS 共享设置中关闭 `root_squash`。
 - **验证报告路径**：`--apply` 后的详细 JSON 报告写入 `.omx/reports/migrations/` 目录，stdout 只输出摘要。
 - **plan_conflicts**：`actor-links` 中多个源文件指向同一目标路径时会产生 `duplicate actor-link target` 警告，这些链接会被跳过。
