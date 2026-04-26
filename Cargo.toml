@@ -31,3 +31,6 @@ dirs = "5.0"
 [[example]]
 name = "create"
 path = "examples/create.rs"
+
+[dev-dependencies]
+tempfile = "3.27.0"

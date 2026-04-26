@@ -20,6 +20,8 @@ pub enum Command {
     Ops(OpsArgs),
     /// Preview or apply actor directory hard links derived from NFO metadata
     ActorLinks(ActorLinksArgs),
+    /// Check which movie directories are missing NFO metadata files
+    NfoCheck(NfoCheckArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -75,6 +77,29 @@ pub struct ActorLinksArgs {
     /// Emit machine-readable JSON output
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct NfoCheckArgs {
+    /// Source directory containing movie subdirectories
+    #[arg(short = 'd', long)]
+    pub dir: PathBuf,
+
+    /// Only check top-level subdirectories (default: 2 levels deep)
+    #[arg(long, default_value_t = 2)]
+    pub max_depth: usize,
+
+    /// Skip directories matching these names (can be repeated)
+    #[arg(long)]
+    pub skip: Vec<String>,
+
+    /// Emit machine-readable JSON output
+    #[arg(long)]
+    pub json: bool,
+
+    /// Output movie codes only (one per line), useful for piping to other tools
+    #[arg(long)]
+    pub codes_only: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]

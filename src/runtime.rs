@@ -4,6 +4,7 @@ use color_eyre::Result;
 
 use crate::actor_links::execute_actor_links_command;
 use crate::cli::{Cli, Command};
+use crate::nfo_check::execute_nfo_check_command;
 use crate::operations::execute_operations_command;
 use crate::report::{CommandReport, OutputFormat};
 
@@ -38,6 +39,36 @@ pub async fn resolve_run_request(cli: Cli) -> Result<RunRequest> {
         }
         Command::ActorLinks(args) => {
             let report = execute_actor_links_command(args.source, args.actors_root, args.apply)?;
+            Ok(RunRequest::Report {
+                exit_code: report_exit_code(&report),
+                format: if args.json {
+                    OutputFormat::Json
+                } else {
+                    OutputFormat::Text
+                },
+                report,
+            })
+        }
+        Command::NfoCheck(args) => {
+            if args.codes_only {
+                // Special mode: just print movie codes, one per line
+                match crate::nfo_check::missing_codes_only(
+                    &args.dir,
+                    args.max_depth,
+                    &args.skip,
+                ) {
+                    Ok(codes) => {
+                        println!("{codes}");
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            let report =
+                execute_nfo_check_command(args.dir, args.max_depth, args.skip);
             Ok(RunRequest::Report {
                 exit_code: report_exit_code(&report),
                 format: if args.json {
