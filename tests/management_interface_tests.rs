@@ -3,10 +3,13 @@ use std::time::Duration;
 use axum::body::{to_bytes, Body};
 use http::{header, Request, StatusCode};
 use rust_jav::management::{
-    app, init_administrator, password_secrets, AppState, Clock, ManagementConfig, SecretsStore,
+    app, init_administrator, password_secrets, AppState, Clock, DownloadError, ManagementConfig,
+    RuleDownloader, SecretsStore,
 };
+use std::{future::Future, pin::Pin};
 use tempfile::TempDir;
 use tower::ServiceExt;
+use url::Url;
 
 #[derive(Clone)]
 struct TestClock(u64);
@@ -17,6 +20,26 @@ impl Clock for TestClock {
     }
 }
 
+struct FakeDownloader(Result<String, DownloadError>);
+
+impl RuleDownloader for FakeDownloader {
+    fn download<'a>(
+        &'a self,
+        _url: &'a Url,
+        _timeout: Duration,
+        _max_bytes: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<String, DownloadError>> + Send + 'a>> {
+        Box::pin(async move {
+            match &self.0 {
+                Ok(yaml) => Ok(yaml.clone()),
+                Err(DownloadError::TooLarge) => Err(DownloadError::TooLarge),
+                Err(DownloadError::InvalidText) => Err(DownloadError::InvalidText),
+                Err(DownloadError::Request) => Err(DownloadError::Request),
+            }
+        })
+    }
+}
+
 fn fixture() -> (TempDir, ManagementConfig) {
     let dir = tempfile::tempdir().unwrap();
     let config = ManagementConfig {
@@ -24,8 +47,268 @@ fn fixture() -> (TempDir, ManagementConfig) {
         container: false,
         session_ttl: Duration::from_secs(60),
         secrets_file: dir.path().join("management.secrets.yaml"),
+        active_rule_set_file: dir.path().join("active-rules.yaml"),
+        rule_source_hosts: vec!["raw.githubusercontent.com".to_owned()],
+        rule_download_timeout: Duration::from_secs(5),
+        rule_download_max_bytes: 1024,
     };
     (dir, config)
+}
+
+async fn authenticated_fixture() -> (TempDir, AppState, String) {
+    let (dir, config) = fixture();
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let login = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/auth/login",
+        r#"{"password":"a strong password"}"#,
+        None,
+    )
+    .await;
+    let cookie = login.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    (dir, state, cookie)
+}
+
+async fn login_cookie(state: &AppState) -> String {
+    let login = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/auth/login",
+        r#"{"password":"a strong password"}"#,
+        None,
+    )
+    .await;
+    login.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn authenticated_administrator_can_view_validate_and_atomically_activate_yaml() {
+    let (dir, state, cookie) = authenticated_fixture().await;
+    let current = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/rules/active",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(current.status(), StatusCode::OK);
+    let body = to_bytes(current.into_body(), usize::MAX).await.unwrap();
+    assert!(std::str::from_utf8(&body).unwrap().contains("version: 1"));
+
+    let invalid = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/rules/validate",
+        r#"{"yaml":"version: 1\nrules:\n  - enabled: true\n"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let overreaching = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/rules/validate",
+        r#"{"yaml":"version: 1\nroots: ['/media']\ndelete: true\nrules: []\n"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(overreaching.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let unchanged = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/rules/active",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let unchanged_body = to_bytes(unchanged.into_body(), usize::MAX).await.unwrap();
+    assert!(std::str::from_utf8(&unchanged_body)
+        .unwrap()
+        .contains("version: 1"));
+
+    let replacement = "version: 1\nrules:\n  - pattern: '*.tracker'\n";
+    let save = json_request(
+        app(state.clone()),
+        "PUT",
+        "/api/v1/rules/active",
+        &serde_json::json!({"yaml": replacement, "confirm_empty": false}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(save.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("active-rules.yaml")).unwrap(),
+        replacement
+    );
+
+    let active = json_request(app(state), "GET", "/api/v1/rules/active", "", Some(&cookie)).await;
+    let active_body = to_bytes(active.into_body(), usize::MAX).await.unwrap();
+    assert!(std::str::from_utf8(&active_body)
+        .unwrap()
+        .contains("*.tracker"));
+}
+
+#[tokio::test]
+async fn empty_activation_requires_separate_confirmation() {
+    let (_dir, state, cookie) = authenticated_fixture().await;
+    let yaml = "version: 1\nrules: []\n";
+    let rejected = json_request(
+        app(state.clone()),
+        "PUT",
+        "/api/v1/rules/active",
+        &serde_json::json!({"yaml": yaml, "confirm_empty": false}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::CONFLICT);
+    let accepted = json_request(
+        app(state),
+        "PUT",
+        "/api/v1/rules/active",
+        &serde_json::json!({"yaml": yaml, "confirm_empty": true}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn download_rejects_non_https_and_hosts_outside_allowlist_without_changing_active_rules() {
+    let (_dir, state, cookie) = authenticated_fixture().await;
+    for url in [
+        "http://raw.githubusercontent.com/org/repo/main/rules.yaml",
+        "https://example.com/rules.yaml",
+    ] {
+        let response = json_request(
+            app(state.clone()),
+            "POST",
+            "/api/v1/rules/download",
+            &serde_json::json!({"url": url}).to_string(),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    let active = json_request(app(state), "GET", "/api/v1/rules/active", "", Some(&cookie)).await;
+    assert_eq!(active.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn successful_download_returns_only_a_proposal_and_failed_download_preserves_active_rules() {
+    let (dir, config) = fixture();
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let proposed = "version: 1\nrules:\n  - pattern: '*.proposal'\n";
+    let state = AppState::with_downloader(
+        config.clone(),
+        TestClock(100),
+        FakeDownloader(Ok(proposed.to_owned())),
+    )
+    .unwrap();
+    let cookie = login_cookie(&state).await;
+    let downloaded = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/rules/download",
+        r#"{"url":"https://raw.githubusercontent.com/acme/rules/main/rules.yaml"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(downloaded.status(), StatusCode::OK);
+    let body = to_bytes(downloaded.into_body(), usize::MAX).await.unwrap();
+    assert!(std::str::from_utf8(&body).unwrap().contains("*.proposal"));
+    assert!(!config.active_rule_set_file.exists());
+
+    let failing = AppState::with_downloader(
+        config,
+        TestClock(100),
+        FakeDownloader(Err(DownloadError::Request)),
+    )
+    .unwrap();
+    let failing_cookie = login_cookie(&failing).await;
+    let failure = json_request(
+        app(failing.clone()),
+        "POST",
+        "/api/v1/rules/download",
+        r#"{"url":"https://raw.githubusercontent.com/acme/rules/main/rules.yaml"}"#,
+        Some(&failing_cookie),
+    )
+    .await;
+    assert_eq!(failure.status(), StatusCode::BAD_GATEWAY);
+    let active = json_request(
+        app(failing),
+        "GET",
+        "/api/v1/rules/active",
+        "",
+        Some(&failing_cookie),
+    )
+    .await;
+    let active_body = to_bytes(active.into_body(), usize::MAX).await.unwrap();
+    assert!(!std::str::from_utf8(&active_body)
+        .unwrap()
+        .contains("*.proposal"));
+    drop(dir);
+}
+
+#[tokio::test]
+async fn oversized_download_is_rejected_and_rule_endpoints_never_expose_secrets() {
+    let (_dir, config) = fixture();
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::with_downloader(
+        config,
+        TestClock(100),
+        FakeDownloader(Err(DownloadError::TooLarge)),
+    )
+    .unwrap();
+    let cookie = login_cookie(&state).await;
+    let response = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/rules/download",
+        r#"{"url":"https://raw.githubusercontent.com/acme/rules/main/rules.yaml"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let active = json_request(app(state), "GET", "/api/v1/rules/active", "", Some(&cookie)).await;
+    let body = String::from_utf8(
+        to_bytes(active.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(!body.contains("password"));
+    assert!(!body.contains("secret"));
+    assert!(!body.contains("root"));
 }
 
 async fn json_request(
