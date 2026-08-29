@@ -443,7 +443,11 @@ export function App() {
     setPassword("");
     if (!r.ok) {
       setMessage(
-        r.status === 401 ? "Incorrect password." : "Request rejected.",
+        r.status === 401
+          ? "Incorrect password."
+          : init && r.status === 400
+            ? "Password must be at least 6 characters."
+            : "Request rejected.",
       );
       return;
     }
@@ -546,7 +550,7 @@ export function App() {
           <input
             id="password"
             type="password"
-            minLength={12}
+            minLength={6}
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}

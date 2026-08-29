@@ -32,6 +32,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
 
+const MIN_PASSWORD_LENGTH: usize = 6;
+
 use crate::active_rules::{ActiveRuleSet, ActiveRuleSetError};
 use std::convert::Infallible;
 
@@ -72,7 +74,7 @@ pub enum Error {
     },
     #[error("Administrator is already configured")]
     AlreadyConfigured,
-    #[error("{PASSWORD_ENV} must contain at least 12 characters")]
+    #[error("{PASSWORD_ENV} must contain at least 6 characters")]
     InvalidPassword,
     #[error("{PASSWORD_ENV} is required for a local password reset")]
     MissingPassword,
@@ -439,7 +441,7 @@ fn token_hash(token: &str) -> String {
 }
 
 fn hash_password(password: &str) -> Result<String, Error> {
-    if password.len() < 12 {
+    if password.len() < MIN_PASSWORD_LENGTH {
         return Err(Error::InvalidPassword);
     }
     let salt = SaltString::generate(&mut OsRng);

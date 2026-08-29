@@ -784,6 +784,35 @@ async fn one_time_initialization_configures_exactly_one_administrator() {
 }
 
 #[tokio::test]
+async fn administrator_password_accepts_six_characters_and_rejects_five() {
+    let (_short_dir, short_config) = fixture();
+    let short_store = SecretsStore::new(short_config.secrets_file.clone());
+    let short_token = init_administrator(&short_store).unwrap();
+    let rejected = json_request(
+        app(AppState::new(short_config, TestClock(100)).unwrap()),
+        "POST",
+        "/api/v1/auth/initialize",
+        &format!(r#"{{"token":"{short_token}","password":"12345"}}"#),
+        None,
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+
+    let (_valid_dir, valid_config) = fixture();
+    let valid_store = SecretsStore::new(valid_config.secrets_file.clone());
+    let valid_token = init_administrator(&valid_store).unwrap();
+    let accepted = json_request(
+        app(AppState::new(valid_config, TestClock(100)).unwrap()),
+        "POST",
+        "/api/v1/auth/initialize",
+        &format!(r#"{{"token":"{valid_token}","password":"123456"}}"#),
+        None,
+    )
+    .await;
+    assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 async fn login_issues_secure_session_and_authorizes_versioned_api() {
     let (_dir, config) = fixture();
     password_secrets(
