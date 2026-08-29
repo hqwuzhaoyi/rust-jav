@@ -1,0 +1,15 @@
+# Native Linux/macOS example. Relative paths resolve beside this file.
+port: 9317
+container: false
+session_ttl_seconds: 43200
+secrets_file: management.secrets.yaml
+active_rule_set_file: active-rules.yaml
+rule_source_hosts:
+  - raw.githubusercontent.com
+rule_download_timeout_seconds: 10
+rule_download_max_bytes: 1048576
+database_file: management.sqlite3
+artwork_cache_root: artwork-cache
+media_roots:
+  - /srv/media/jav
+actor_view_root: /srv/media/actors

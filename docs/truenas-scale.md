@@ -56,13 +56,27 @@ For Rollback, stop the app and restore the previous image digest plus the matchi
 
 Record the SCALE version, image digest, UID/GID, dataset names, and results.
 
+Use disposable media and a disposable Jellyfin library. The complete sign-off matrix and evidence fields are in [the release acceptance record](release-acceptance.md); the real-server Jellyfin steps are in [the Jellyfin acceptance procedure](jellyfin-acceptance.md).
+
+### Authentication acceptance
+
+Initialize through the local container command and prove that the bootstrap URL works once. Log in and out, then reset the password locally and confirm every previous session becomes unauthorized. Restart the App and confirm the new credential remains usable. Never capture the bootstrap token, cookie, password, or Jellyfin API key in evidence.
+
 ### Installation and permissions acceptance
 
 Install from Compose, confirm the container is not root with `docker exec rust-jav id`, and verify `/health/live`, `/health/ready`, and `/health/mounts` return success. Confirm an asset scan can read and write the Media Root, SQLite persists under `/state`, secrets persist under `/config`, and cache output can be created under `/cache`. Temporarily remove write ACL access from a disposable test path and confirm restart fails with the path and UID/GID; restore the ACL before continuing.
 
+Run a full Asset Index rebuild, add/change/remove a disposable asset, and run incremental reconciliation. Confirm search, NFO details, artwork, actor details, and exceptions reflect the changes. Restart and confirm the rebuilt index persists. Remove read access temporarily and confirm the root degrades with an actionable permission report rather than crashing the service.
+
+### Rules failure acceptance
+
+Activate a known valid disposable Rule Set. Attempt downloads with invalid YAML, a non-HTTPS URL, a host outside `rule_source_hosts`, an oversized response, and an unreachable/timeout source. Confirm every failure is visible and the prior active Rules remain byte-for-byte unchanged. Confirm an empty set requires its separate acknowledgement.
+
 ### Restart acceptance
 
 Initialize and configure Jellyfin, create a management task, restart the app from TrueNAS, and confirm login, task history, asset index, Actor Folders, and Jellyfin settings survive. Confirm all local health layers recover without requiring Jellyfin to be online.
+
+For interruption behavior, start a disposable destructive task and restart while it is running. The durable record must become `interrupted`, must not be automatically replayed, and must expose its final snapshot/audit after reconnect. Re-preview current filesystem state before any retry.
 
 ### Update acceptance
 
@@ -71,6 +85,8 @@ Take backups and dataset snapshots, note the old digest, deploy a newer pinned d
 ### Host Path deletion acceptance
 
 Use disposable datasets only. Stop the app, rename or unmount one test Host Path (do not destroy source media), then start it and confirm startup refuses service with an actionable mount/ACL diagnostic. Restore the exact path and permissions and confirm recovery. This validates failure behavior without trusting hidden app storage.
+
+Then use disposable files to exercise permanent deletion: review candidates, create a fresh plan, compare selected-only versus discovered-hard-links scope, type the confirmation phrase, and execute. Confirm expired or replaced files are rejected, other paths continue after a partial failure, and the audit retains per-path outcomes. Never use production media for this acceptance step.
 
 ### ZFS hard-link acceptance
 

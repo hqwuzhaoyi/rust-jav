@@ -58,6 +58,8 @@ cargo run -- serve --config management.yaml
 
 TrueNAS SCALE 24.10+ users can deploy the published multi-architecture container with the checked-in Compose example; see [the TrueNAS deployment and acceptance guide](docs/truenas-scale.md).
 
+Release operators should also read the [migration and compatibility guide](docs/migration-and-compatibility.md), [OpenAPI/generated-client workflow](docs/openapi-and-generated-client.md), and [issue 20 acceptance record](docs/release-acceptance.md). Native and TrueNAS sample configuration and secrets structures live under `deploy/native` and `deploy/truenas`; example secrets files contain no usable credentials.
+
 打开 `administrator init` 输出的一次性链接并设置至少 12 个字符的密码。也可以通过环境变量完成无人值守初始化；该变量只在尚未配置管理员时生效：
 
 ```shell
