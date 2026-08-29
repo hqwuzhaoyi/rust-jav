@@ -6,6 +6,8 @@
 use std::io;
 use std::path::PathBuf;
 
+#[cfg(unix)]
+use crate::deletion_plan::PermanentDeletionPlanner;
 use crate::migration_verifier::types::{
     MigrationAction, MigrationScope, ScopeManifest, VerificationReport, VerificationSummary,
 };
@@ -35,6 +37,14 @@ impl ApplicationServices {
 
     pub fn verification(&self) -> VerificationService {
         VerificationService
+    }
+
+    #[cfg(unix)]
+    pub fn permanent_deletion(
+        &self,
+        hard_link_search_roots: Vec<PathBuf>,
+    ) -> PermanentDeletionPlanner {
+        PermanentDeletionPlanner::new(hard_link_search_roots)
     }
 }
 
