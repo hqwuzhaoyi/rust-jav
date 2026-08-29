@@ -344,6 +344,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/assets", get(list_assets))
         .route("/api/v1/assets/health", get(asset_health))
         .route("/api/v1/assets/scan", post(scan_assets))
+        .route("/api/v1/assets/:asset_id", get(asset_detail))
         .route("/api/v1/assets/:asset_id/artwork", get(indexed_artwork))
         .route("/api/v1/media-roots/health", get(media_root_health))
         .route(
@@ -606,6 +607,21 @@ async fn indexed_artwork(
         .into_response()
 }
 
+async fn asset_detail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(asset_id): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    match state.assets.detail(&asset_id) {
+        Ok(Some(detail)) => Json(detail).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 fn authorized(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
     let secrets = state
         .store
@@ -844,6 +860,7 @@ fn openapi_document() -> serde_json::Value {
             "/api/v1/assets": {"get":{"summary":"Search date-grouped Media Assets","parameters":[
                 {"name":"q","in":"query","schema":{"type":"string"}},{"name":"state","in":"query","schema":{"type":"string","enum":["normal","synchronizing","exception"]}},{"name":"page","in":"query","schema":{"type":"integer","minimum":1}},{"name":"per_page","in":"query","schema":{"type":"integer","minimum":1,"maximum":200}}
             ],"responses":{"200":{"description":"Paginated assets","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AssetPage"}}}}}}},
+            "/api/v1/assets/{asset_id}":{"get":{"summary":"Get parsed NFO and Actor information for a Media Asset","parameters":[{"name":"asset_id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Asset detail","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AssetDetail"}}}},"404":{"description":"Media Asset not found"}}}},
             "/api/v1/assets/health":{"get":{"summary":"Get Asset Index reconciliation health","responses":{"200":{"description":"Index health"}}}},
             "/api/v1/assets/scan":{"post":{"summary":"Run manual or incremental reconciliation","requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ScanAssetsRequest"}}}},"responses":{"200":{"description":"Reconciled"},"422":{"description":"Filesystem scan failed"}}}},
             "/api/v1/assets/{asset_id}/artwork":{"get":{"summary":"Serve artwork belonging to an indexed Media Asset","parameters":[{"name":"asset_id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Indexed image","content":{"image/jpeg":{},"image/png":{},"image/webp":{}}},"404":{"description":"No indexed artwork"}}}},
@@ -856,6 +873,8 @@ fn openapi_document() -> serde_json::Value {
             "TaskItem": {"type":"object","required":["id","kind","status"],"properties":{"id":{"type":"integer"},"kind":{"type":"string"},"path":{"type":["string","null"]},"status":{"type":"string"},"message":{"type":["string","null"]}}},
             "ScanAssetsRequest":{"type":"object","required":["mode"],"properties":{"mode":{"type":"string","enum":["manual","incremental"]},"media_root":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}}}},
             "MediaAsset":{"type":"object","required":["id","media_root","path","device","inode","observed_at","captured_date","state"],"properties":{"id":{"type":"string"},"media_root":{"type":"string"},"path":{"type":"string"},"device":{"type":"integer"},"inode":{"type":"integer"},"jav_code":{"type":["string","null"]},"title":{"type":["string","null"]},"nfo_path":{"type":["string","null"]},"artwork_url":{"type":["string","null"]},"observed_at":{"type":"integer"},"captured_date":{"type":"string","format":"date"},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]}}},
+            "AssetActor":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"poster_url":{"type":["string","null"]},"actor_folder_url":{"type":["string","null"]}}},
+            "AssetDetail":{"type":"object","required":["id","path","actors","tags","parse_status","state"],"properties":{"id":{"type":"string"},"path":{"type":"string"},"title":{"type":["string","null"]},"actors":{"type":"array","items":{"$ref":"#/components/schemas/AssetActor"}},"studio":{"type":["string","null"]},"release_date":{"type":["string","null"],"format":"date"},"runtime_minutes":{"type":["integer","null"]},"director":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"plot":{"type":["string","null"]},"parse_status":{"type":"string","enum":["valid","missing","invalid"]},"source_path":{"type":["string","null"]},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]}}},
             "AssetPage":{"type":"object","required":["items","groups","page","per_page","total","total_pages"],"properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/MediaAsset"}},"groups":{"type":"array","items":{"type":"object","properties":{"date":{"type":"string","format":"date"},"count":{"type":"integer"}}}},"page":{"type":"integer"},"per_page":{"type":"integer"},"total":{"type":"integer"},"total_pages":{"type":"integer"}}},
             "ManagementTask": {"type":"object","required":["id","task_type","media_root","kind","status","created_at","items"],"properties":{
                 "id":{"type":"string"},"task_type":{"type":"string"},"media_root":{"type":"string"},"kind":{"type":"string","enum":["preview","mutation"]},"status":{"type":"string","enum":["queued","running","completed","failed","interrupted"]},"created_at":{"type":"integer"},"started_at":{"type":["integer","null"]},"finished_at":{"type":["integer","null"]},"error":{"type":["string","null"]},"items":{"type":"array","items":{"$ref":"#/components/schemas/TaskItem"}}

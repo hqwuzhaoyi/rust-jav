@@ -75,6 +75,43 @@ pub struct MediaAsset {
     pub exception: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssetActor {
+    pub name: String,
+    pub poster_url: Option<String>,
+    pub actor_folder_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetDetail {
+    pub id: String,
+    pub path: String,
+    pub title: Option<String>,
+    pub actors: Vec<AssetActor>,
+    pub studio: Option<String>,
+    pub release_date: Option<String>,
+    pub runtime_minutes: Option<u32>,
+    pub director: Option<String>,
+    pub tags: Vec<String>,
+    pub plot: Option<String>,
+    pub parse_status: String,
+    pub source_path: Option<String>,
+    pub state: AssetState,
+    pub exception: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ParsedNfo {
+    title: Option<String>,
+    actors: Vec<String>,
+    studio: Option<String>,
+    release_date: Option<String>,
+    runtime_minutes: Option<u32>,
+    director: Option<String>,
+    tags: Vec<String>,
+    plot: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AssetQuery {
     pub query: Option<String>,
@@ -236,19 +273,15 @@ impl AssetIndex {
             .map(|c| format!("{}-{}", c[1].to_uppercase(), &c[2]));
         let nfo = sibling(path, &["nfo"]);
         let artwork = sibling(path, &["jpg", "jpeg", "png", "webp"]);
-        let title = nfo
+        let parsed = nfo.as_deref().map(parse_nfo);
+        let title = parsed
             .as_ref()
-            .and_then(|p| fs::read_to_string(p).ok())
-            .and_then(|s| {
-                Regex::new(r"(?is)<title>\s*(.*?)\s*</title>")
-                    .unwrap()
-                    .captures(&s)
-                    .map(|c| c[1].trim().to_owned())
-            });
-        let (state, exception) = if nfo.is_some() {
-            (AssetState::Normal, None)
-        } else {
-            (AssetState::Exception, Some("NFO metadata is missing"))
+            .and_then(|result| result.as_ref().ok())
+            .and_then(|nfo| nfo.title.clone());
+        let (state, exception) = match &parsed {
+            None => (AssetState::Exception, Some("NFO metadata is missing. Add a sibling .nfo file and reconcile the Asset Index.".to_owned())),
+            Some(Err(reason)) => (AssetState::Exception, Some(format!("Fix invalid NFO metadata and reconcile the Asset Index: {reason}"))),
+            Some(Ok(_)) => (AssetState::Normal, None),
         };
         let captured_date =
             DateTime::<Utc>::from(metadata.modified().unwrap_or(std::time::UNIX_EPOCH))
@@ -330,6 +363,49 @@ impl AssetIndex {
         Ok(value
             .map(PathBuf::from)
             .filter(|p| p.is_file() && is_artwork(p)))
+    }
+
+    pub fn detail(&self, id: &str) -> Result<Option<AssetDetail>, Error> {
+        let asset = self.connection()?.query_row(
+            "SELECT id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,observed_at,captured_date,state,exception FROM media_assets WHERE id=?1",
+            [id], asset_from_row,
+        ).optional()?;
+        let Some(asset) = asset else { return Ok(None) };
+        let parsed = asset.nfo_path.as_deref().map(Path::new).map(parse_nfo);
+        let (metadata, parse_status) = match parsed {
+            Some(Ok(metadata)) => (metadata, "valid"),
+            Some(Err(_)) => (ParsedNfo::default(), "invalid"),
+            None => (ParsedNfo::default(), "missing"),
+        };
+        let actor_poster = asset.artwork_url.clone();
+        let actors = metadata
+            .actors
+            .into_iter()
+            .map(|name| AssetActor {
+                actor_folder_url: Some(format!(
+                    "/actors/{}",
+                    URL_SAFE_NO_PAD.encode(name.as_bytes())
+                )),
+                name,
+                poster_url: actor_poster.clone(),
+            })
+            .collect();
+        Ok(Some(AssetDetail {
+            id: asset.id,
+            path: asset.path,
+            title: metadata.title.or(asset.title),
+            actors,
+            studio: metadata.studio,
+            release_date: metadata.release_date,
+            runtime_minutes: metadata.runtime_minutes,
+            director: metadata.director,
+            tags: metadata.tags,
+            plot: metadata.plot,
+            parse_status: parse_status.to_owned(),
+            source_path: asset.nfo_path,
+            state: asset.state,
+            exception: asset.exception,
+        }))
     }
 
     pub fn root_health(&self, path: &Path) -> RootHealth {
@@ -458,5 +534,60 @@ fn asset_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MediaAsset> {
         captured_date: row.get(10)?,
         state: AssetState::parse(&row.get::<_, String>(11)?),
         exception: row.get(12)?,
+    })
+}
+
+fn parse_nfo(path: &Path) -> Result<ParsedNfo, String> {
+    let xml = fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let document = roxmltree::Document::parse(&xml)
+        .map_err(|error| format!("{} ({error})", path.display()))?;
+    let movie = document
+        .descendants()
+        .find(|node| node.has_tag_name("movie"))
+        .ok_or_else(|| format!("{} does not contain a <movie> element", path.display()))?;
+    let text = |tag: &str| {
+        movie
+            .children()
+            .find(|node| node.has_tag_name(tag))
+            .and_then(|node| node.text())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let mut tags = Vec::new();
+    for tag in ["genre", "tag"] {
+        tags.extend(
+            movie
+                .children()
+                .filter(|node| node.has_tag_name(tag))
+                .filter_map(|node| node.text())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    let actors = movie
+        .children()
+        .filter(|node| node.has_tag_name("actor"))
+        .filter_map(|actor| actor.children().find(|node| node.has_tag_name("name")))
+        .filter_map(|node| node.text())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let runtime_minutes =
+        text("runtime").and_then(|value| value.split_whitespace().next()?.parse().ok());
+    Ok(ParsedNfo {
+        title: text("title"),
+        actors,
+        studio: text("studio"),
+        release_date: text("premiered")
+            .or_else(|| text("releasedate"))
+            .or_else(|| text("date")),
+        runtime_minutes,
+        director: text("director"),
+        tags,
+        plot: text("plot"),
     })
 }
