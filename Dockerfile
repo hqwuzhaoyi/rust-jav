@@ -9,6 +9,7 @@ RUN npm run build
 FROM rust:1.85-bookworm AS builder
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
+COPY rules.yaml ./rules.yaml
 COPY src ./src
 COPY --from=frontend /src/frontend/dist ./frontend/dist
 RUN cargo build --locked --release
