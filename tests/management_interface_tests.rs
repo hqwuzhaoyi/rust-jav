@@ -108,6 +108,78 @@ async fn startup_scan_and_versioned_asset_search_expose_grouped_paginated_states
 }
 
 #[tokio::test]
+async fn authenticated_asset_detail_api_exposes_nfo_and_rejects_anonymous_access() {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("ABC-123.mp4"), b"video").unwrap();
+    std::fs::write(root.join("ABC-123.jpg"), b"poster").unwrap();
+    std::fs::write(root.join("ABC-123.nfo"), r#"<movie><title>Blue Room</title><studio>Example</studio><actor><name>miru</name></actor><plot>Local plot</plot></movie>"#).unwrap();
+    config.media_roots.push(root);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let login = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/auth/login",
+        r#"{"password":"a strong password"}"#,
+        None,
+    )
+    .await;
+    let cookie = login.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let listed = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/assets",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let id = body["items"][0]["id"].as_str().unwrap();
+
+    let anonymous = json_request(
+        app(state.clone()),
+        "GET",
+        &format!("/api/v1/assets/{id}"),
+        "",
+        None,
+    )
+    .await;
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    let response = json_request(
+        app(state),
+        "GET",
+        &format!("/api/v1/assets/{id}"),
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let detail: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(detail["title"], "Blue Room");
+    assert_eq!(detail["studio"], "Example");
+    assert_eq!(detail["parse_status"], "valid");
+    assert_eq!(detail["actors"][0]["name"], "miru");
+    assert!(detail["actors"][0]["actor_folder_url"]
+        .as_str()
+        .unwrap()
+        .starts_with("/actors/"));
+}
+
+#[tokio::test]
 async fn manual_and_incremental_scan_endpoints_reconcile_and_report_root_permissions() {
     let (dir, mut config) = fixture();
     let root = dir.path().join("media");
@@ -777,6 +849,11 @@ async fn embedded_browser_shell_has_asset_search_state_filters_and_responsive_na
     assert!(javascript.contains("All Assets"));
     assert!(javascript.contains("/api/v1/assets"));
     assert!(javascript.contains("Synchronizing"));
+    assert!(javascript.contains("Overview"));
+    assert!(javascript.contains("NFO"));
+    assert!(javascript.contains("Actor Folder"));
+    assert!(javascript.contains("/api/v1/assets/"));
+    assert!(javascript.contains("dialog"));
     let css = app(state)
         .oneshot(
             Request::builder()
@@ -791,6 +868,10 @@ async fn embedded_browser_shell_has_asset_search_state_filters_and_responsive_na
     assert!(css.contains("grid-template-columns:repeat(2"));
     assert!(css.contains("bottom-nav"));
     assert!(css.contains("sidebar"));
+    assert!(css.contains("asset-inspector"));
+    assert!(css.contains("aspect-ratio:2/3"));
+    assert!(css.contains("max-height:86vh"));
+    assert!(css.contains("width:360px"));
 }
 
 #[tokio::test]
@@ -902,6 +983,11 @@ async fn generated_openapi_describes_task_rest_and_sse_contracts() {
         "id"
     );
     assert!(document["paths"]["/api/v1/assets"]["get"].is_object());
+    assert!(document["paths"]["/api/v1/assets/{asset_id}"]["get"].is_object());
+    assert_eq!(
+        document["components"]["schemas"]["AssetDetail"]["properties"]["parse_status"]["enum"][0],
+        "valid"
+    );
     assert!(document["paths"]["/api/v1/assets/scan"]["post"].is_object());
     assert!(document["paths"]["/api/v1/assets/{asset_id}/artwork"]["get"].is_object());
     assert_eq!(
