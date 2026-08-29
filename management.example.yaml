@@ -6,3 +6,9 @@ secrets_file: management.secrets.yaml
 # Non-overlapping TrueNAS Host Paths or native filesystem trees.
 media_roots:
   - /media/jav
+
+# Configure Jellyfin after sign-in under Settings. For a TrueNAS SCALE App,
+# use the Jellyfin App's reachable DNS name and port on the shared App network
+# (for example http://jellyfin:8096), not localhost. The URL and selected
+# library IDs are stored in management.sqlite3; the API key is stored only in
+# the owner-readable secrets file and is never returned to the browser.

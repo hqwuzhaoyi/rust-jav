@@ -11,6 +11,7 @@ pub mod config;
 #[cfg(unix)]
 pub mod deletion_plan;
 pub mod file_utils;
+pub mod jellyfin;
 pub mod management;
 pub mod management_tasks;
 pub mod migration_verifier;

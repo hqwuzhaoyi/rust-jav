@@ -132,7 +132,7 @@ async fn authenticated_asset_detail_api_exposes_nfo_and_rejects_anonymous_access
     .await;
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
     let response = json_request(
-        app(state),
+        app(state.clone()),
         "GET",
         &format!("/api/v1/assets/{id}"),
         "",
@@ -737,4 +737,195 @@ async fn generated_openapi_describes_task_rest_and_sse_contracts() {
         document["components"]["schemas"]["MediaAsset"]["properties"]["state"]["enum"][2],
         "exception"
     );
+}
+
+#[tokio::test]
+async fn jellyfin_configuration_connection_association_and_manual_refresh_are_server_side() {
+    use axum::{
+        routing::{get, post},
+        Json, Router,
+    };
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let refreshes = Arc::new(AtomicUsize::new(0));
+    let count = refreshes.clone();
+    let jellyfin = Router::new()
+        .route("/System/Info", get(|| async { Json(serde_json::json!({"ServerName":"TrueNAS Jellyfin","Version":"10.11","Id":"server"})) }))
+        .route("/Library/MediaFolders", get(|| async { Json(serde_json::json!({"Items":[{"Id":"jav","Name":"JAV","Path":"/media/jav"}]})) }))
+        .route("/Items", get(|| async { Json(serde_json::json!({"Items":[{"Id":"jf-1","Name":"ABC-123","Path":"/media/jav/ABC-123.mp4","ProviderIds":{},"UserData":{"Played":true,"PlayCount":1,"PlaybackPositionTicks":0}}]})) }))
+        .route("/Library/Refresh", post(move || { let count=count.clone(); async move { count.fetch_add(1, Ordering::SeqCst); StatusCode::NO_CONTENT } }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let jellyfin_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, jellyfin).await.unwrap() });
+
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media/jav");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("ABC-123.mp4"), b"video").unwrap();
+    std::fs::write(
+        root.join("ABC-123.nfo"),
+        "<movie><title>ABC-123</title></movie>",
+    )
+    .unwrap();
+    config.media_roots.push(root);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config.clone(), TestClock(100)).unwrap();
+    let login = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/auth/login",
+        r#"{"password":"a strong password"}"#,
+        None,
+    )
+    .await;
+    let cookie = login.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let configured = json_request(app(state.clone()), "PUT", "/api/v1/jellyfin/config", &serde_json::json!({"url":jellyfin_url,"library_ids":["jav"],"api_key":"server-only-secret"}).to_string(), Some(&cookie)).await;
+    assert_eq!(configured.status(), StatusCode::NO_CONTENT);
+    let returned = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/jellyfin/config",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let returned: serde_json::Value =
+        serde_json::from_slice(&to_bytes(returned.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(returned["url"], jellyfin_url);
+    assert_eq!(returned["api_key_configured"], true);
+    assert!(returned.get("api_key").is_none());
+    let secrets = std::fs::read_to_string(config.secrets_file).unwrap();
+    assert!(secrets.contains("server-only-secret"));
+
+    let connection = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/jellyfin/test",
+        "{}",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(connection.status(), StatusCode::OK);
+    let listed = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/assets",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let listed: serde_json::Value =
+        serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let id = listed["items"][0]["id"].as_str().unwrap();
+    let detail = json_request(
+        app(state.clone()),
+        "GET",
+        &format!("/api/v1/assets/{id}"),
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let detail: serde_json::Value =
+        serde_json::from_slice(&to_bytes(detail.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(detail["jellyfin"]["status"], "played");
+    assert_eq!(detail["jellyfin"]["confidence"], "uncertain_metadata");
+    assert_eq!(detail["jellyfin"]["may_authorize_deletion"], false);
+    assert!(detail["jellyfin"]["open_url"]
+        .as_str()
+        .unwrap()
+        .contains("web/#/details?id=jf-1"));
+
+    let refresh = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/jellyfin/refresh",
+        "{}",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(refresh.status(), StatusCode::OK);
+    assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+    let status = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/jellyfin/refresh",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let status: serde_json::Value =
+        serde_json::from_slice(&to_bytes(status.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(status["status"], "completed");
+    assert_eq!(status["attempts"], 1);
+
+    let task = serde_json::json!({
+        "task_type":"operations",
+        "media_root":dir.path().join("media/jav"),
+        "mode":"apply",
+        "operations":["delete_ad_files"]
+    });
+    let created = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &task.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::ACCEPTED);
+    for _ in 0..100 {
+        if refreshes.load(Ordering::SeqCst) == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        refreshes.load(Ordering::SeqCst),
+        2,
+        "one automatic refresh for the whole applied batch"
+    );
+}
+
+#[tokio::test]
+async fn embedded_ui_preserves_library_and_tasks_while_adding_jellyfin_controls() {
+    let (_dir, config) = fixture();
+    let javascript = app(AppState::new(config, TestClock(100)).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/assets/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let javascript = to_bytes(javascript.into_body(), usize::MAX).await.unwrap();
+    let javascript = std::str::from_utf8(&javascript).unwrap();
+    for text in [
+        "All Assets",
+        "Management Tasks",
+        "Overview",
+        "NFO",
+        "Jellyfin",
+        "Open in Jellyfin",
+        "Test connection",
+        "Refresh Jellyfin",
+    ] {
+        assert!(
+            javascript.contains(text),
+            "missing preserved or new UI text: {text}"
+        );
+    }
 }
