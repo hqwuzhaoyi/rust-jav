@@ -41,6 +41,7 @@ use crate::{
         DeletionOutcomeStatus, FileType as DeletionFileType, PermanentDeletionPlan,
         PermanentDeletionPlanner, RelatedHardLink,
     },
+    jellyfin::{associate, JellyfinClient, JellyfinConfig, RefreshOutcome, RetryPolicy},
     management_tasks::{NewTask, TaskCoordinator, TaskKind, TaskStore},
     tui::state::OperationType,
 };
@@ -203,6 +204,8 @@ struct Secrets {
     password_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bootstrap_token_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jellyfin_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -331,6 +334,7 @@ pub struct AppState {
     coordinator: TaskCoordinator,
     assets: AssetIndex,
     deletion_plans: Arc<Mutex<HashMap<String, StoredDeletionPlan>>>,
+    database: PathBuf,
 }
 
 #[derive(Clone)]
@@ -437,6 +441,14 @@ impl AppState {
         let database = config.secrets_file.with_file_name("management.sqlite3");
         let tasks = TaskStore::open(&database)?;
         let assets = AssetIndex::open(&database)?;
+        let integration =
+            rusqlite::Connection::open(&database).map_err(crate::asset_index::Error::from)?;
+        integration.execute_batch("CREATE TABLE IF NOT EXISTS jellyfin_config (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), url TEXT NOT NULL, library_ids TEXT NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS jellyfin_refresh (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), status TEXT NOT NULL, attempts INTEGER NOT NULL, error TEXT
+          );").map_err(crate::asset_index::Error::from)?;
         // A missing or incorrectly-permissioned TrueNAS mount degrades the
         // rebuildable index; it must not prevent the diagnostic API starting.
         let _ = assets.reconcile(&config.media_roots, ScanMode::Startup, now);
@@ -452,6 +464,7 @@ impl AppState {
             coordinator: TaskCoordinator::new(),
             assets,
             deletion_plans: Arc::new(Mutex::new(HashMap::new())),
+            database,
         })
     }
     pub fn set_clock(&self, clock: impl Clock) {
@@ -521,6 +534,15 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/v1/rules/validate", post(validate_rules))
         .route("/api/v1/rules/download", post(download_rules))
+        .route(
+            "/api/v1/jellyfin/config",
+            get(get_jellyfin_config).put(put_jellyfin_config),
+        )
+        .route("/api/v1/jellyfin/test", post(test_jellyfin))
+        .route(
+            "/api/v1/jellyfin/refresh",
+            get(jellyfin_refresh_status).post(refresh_jellyfin),
+        )
         .route(
             "/assets/app.js",
             get(|| async { asset("application/javascript; charset=utf-8", APP_JS) }),
@@ -1200,7 +1222,43 @@ async fn asset_detail(
         return status.into_response();
     }
     match state.assets.detail(&asset_id) {
-        Ok(Some(detail)) => Json(detail).into_response(),
+        Ok(Some(detail)) => {
+            let mut value = serde_json::to_value(&detail).unwrap_or_default();
+            if let Ok(Some(client)) = jellyfin_client(&state) {
+                if let Ok(items) = client.selected_items().await {
+                    if let Some(association) = associate(
+                        &detail.path,
+                        detail.jav_code.as_deref(),
+                        detail.title.as_deref(),
+                        &items,
+                    ) {
+                        let status = if association.played {
+                            "played"
+                        } else if association.playback_position_ticks > 0 {
+                            "in_progress"
+                        } else {
+                            "unplayed"
+                        };
+                        value["jellyfin"] = serde_json::json!({
+                            "status": status,
+                            "confidence": association.confidence,
+                            "reason": association.reason,
+                            "play_count": association.play_count,
+                            "playback_position_ticks": association.playback_position_ticks,
+                            "open_url": client.open_url(&association.item_id),
+                            "may_authorize_deletion": association.may_authorize_deletion()
+                        });
+                    } else {
+                        value["jellyfin"] = serde_json::json!({"status":"not_found"});
+                    }
+                } else {
+                    value["jellyfin"] = serde_json::json!({"status":"offline"});
+                }
+            } else {
+                value["jellyfin"] = serde_json::json!({"status":"not_configured"});
+            }
+            Json(value).into_response()
+        }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -1376,6 +1434,182 @@ async fn run_actor_removal_task(
                 .tasks
                 .mark_failed(&task_id, state.now(), &error.to_string());
         }
+    }
+}
+#[derive(Debug, Deserialize)]
+struct PutJellyfinConfig {
+    url: String,
+    library_ids: Vec<String>,
+    api_key: String,
+}
+
+fn load_jellyfin_config(state: &AppState) -> Result<Option<JellyfinConfig>, StatusCode> {
+    use rusqlite::OptionalExtension;
+    let connection = rusqlite::Connection::open(&state.database)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    connection
+        .query_row(
+            "SELECT url,library_ids FROM jellyfin_config WHERE singleton=1",
+            [],
+            |row| {
+                let ids: String = row.get(1)?;
+                let library_ids = serde_json::from_str(&ids).unwrap_or_default();
+                Ok(JellyfinConfig {
+                    url: row.get(0)?,
+                    library_ids,
+                })
+            },
+        )
+        .optional()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn jellyfin_client(state: &AppState) -> Result<Option<JellyfinClient>, StatusCode> {
+    let Some(config) = load_jellyfin_config(state)? else {
+        return Ok(None);
+    };
+    let secrets = state
+        .store
+        .load()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(key) = secrets.jellyfin_api_key else {
+        return Ok(None);
+    };
+    JellyfinClient::new(config, key)
+        .map(Some)
+        .map_err(|_| StatusCode::BAD_REQUEST)
+}
+
+async fn put_jellyfin_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<PutJellyfinConfig>,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status;
+    }
+    if input.library_ids.is_empty()
+        || input.api_key.trim().is_empty()
+        || JellyfinClient::new(
+            JellyfinConfig {
+                url: input.url.clone(),
+                library_ids: input.library_ids.clone(),
+            },
+            input.api_key.clone(),
+        )
+        .is_err()
+    {
+        return StatusCode::BAD_REQUEST;
+    }
+    let Ok(connection) = rusqlite::Connection::open(&state.database) else {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    };
+    let ids = serde_json::to_string(&input.library_ids).unwrap();
+    if connection.execute("INSERT INTO jellyfin_config(singleton,url,library_ids) VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET url=excluded.url,library_ids=excluded.library_ids", rusqlite::params![input.url.trim_end_matches('/'), ids]).is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+    let Ok(mut secrets) = state.store.load() else {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    };
+    secrets.jellyfin_api_key = Some(input.api_key);
+    if state.store.save(&secrets).is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+    StatusCode::NO_CONTENT
+}
+
+async fn get_jellyfin_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    let Ok(config) = load_jellyfin_config(&state) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let configured = state
+        .store
+        .load()
+        .ok()
+        .and_then(|s| s.jellyfin_api_key)
+        .is_some();
+    Json(match config {
+        Some(config) => serde_json::json!({"url":config.url,"library_ids":config.library_ids,"api_key_configured":configured}),
+        None => serde_json::json!({"url":null,"library_ids":[],"api_key_configured":false}),
+    }).into_response()
+}
+
+async fn test_jellyfin(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    let Ok(Some(client)) = jellyfin_client(&state) else {
+        return (StatusCode::BAD_REQUEST, "Configure Jellyfin first").into_response();
+    };
+    match client.test_connection().await {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => (StatusCode::BAD_GATEWAY, error.to_string()).into_response(),
+    }
+}
+
+fn save_refresh(
+    state: &AppState,
+    status: &str,
+    attempts: u8,
+    error: Option<&str>,
+) -> Result<(), ()> {
+    let connection = rusqlite::Connection::open(&state.database).map_err(|_| ())?;
+    connection.execute("INSERT INTO jellyfin_refresh(singleton,status,attempts,error) VALUES(1,?1,?2,?3) ON CONFLICT(singleton) DO UPDATE SET status=excluded.status,attempts=excluded.attempts,error=excluded.error", rusqlite::params![status, attempts, error]).map_err(|_| ())?;
+    Ok(())
+}
+
+async fn refresh_jellyfin(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    let Ok(Some(client)) = jellyfin_client(&state) else {
+        return (StatusCode::BAD_REQUEST, "Configure Jellyfin first").into_response();
+    };
+    let _ = save_refresh(&state, "retrying", 0, None);
+    let outcome = client.refresh_batch(RetryPolicy::default()).await;
+    match outcome {
+        RefreshOutcome::Completed { attempts } => {
+            let _ = save_refresh(&state, "completed", attempts, None);
+            Json(serde_json::json!({"status":"completed","attempts":attempts})).into_response()
+        }
+        RefreshOutcome::ManualRetryRequired { attempts } => {
+            let _ = save_refresh(
+                &state,
+                "manual_retry_required",
+                attempts,
+                Some("Jellyfin remained offline after five attempts"),
+            );
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"status":"manual_retry_required","attempts":attempts})),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn jellyfin_refresh_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    use rusqlite::OptionalExtension;
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    let Ok(connection) = rusqlite::Connection::open(&state.database) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let value = connection.query_row("SELECT status,attempts,error FROM jellyfin_refresh WHERE singleton=1", [], |row| Ok(serde_json::json!({"status":row.get::<_,String>(0)?,"attempts":row.get::<_,u8>(1)?,"error":row.get::<_,Option<String>>(2)?}))).optional();
+    match value {
+        Ok(Some(value)) => Json(value).into_response(),
+        Ok(None) => Json(serde_json::json!({"status":"idle","attempts":0})).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 fn authorized(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
@@ -1630,6 +1864,27 @@ async fn run_operations_task(
         let _ = state.tasks.mark_failed(&task_id, now, message);
     } else {
         let _ = state.tasks.mark_completed(&task_id, now);
+        if kind == TaskKind::Mutation {
+            // A Management Task is the batch boundary: regardless of how many
+            // files changed, enqueue exactly one Jellyfin library refresh.
+            if let Ok(Some(client)) = jellyfin_client(&state) {
+                let _ = save_refresh(&state, "retrying", 0, None);
+                let outcome = client.refresh_batch(RetryPolicy::default()).await;
+                match outcome {
+                    RefreshOutcome::Completed { attempts } => {
+                        let _ = save_refresh(&state, "completed", attempts, None);
+                    }
+                    RefreshOutcome::ManualRetryRequired { attempts } => {
+                        let _ = save_refresh(
+                            &state,
+                            "manual_retry_required",
+                            attempts,
+                            Some("Jellyfin remained offline after five attempts"),
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1766,7 +2021,10 @@ fn openapi_document() -> serde_json::Value {
             "/api/v1/deletion-audits":{"get":{"summary":"List indefinite permanent-deletion audit records","responses":{"200":{"description":"Audit records"}}}},
             "/api/v1/actors":{"get":{"summary":"Browse derived Actor Folders with inode-aware storage metrics","responses":{"200":{"description":"Actor Folders","content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/ActorFolder"}}}}}}}},
             "/api/v1/actors/{actor_name}":{"get":{"summary":"Recompute Actor Folder removal confirmation","responses":{"200":{"description":"Fresh confirmation metrics"}}},"delete":{"summary":"Remove derived paths as a Management Task","responses":{"202":{"description":"Accepted Management Task"},"404":{"description":"Actor Folder not found"}}}},
-            "/api/v1/media-roots/health":{"get":{"summary":"Report TrueNAS Host Path access and process UID/GID","responses":{"200":{"description":"Media Root permission reports"}}}}
+            "/api/v1/media-roots/health":{"get":{"summary":"Report TrueNAS Host Path access and process UID/GID","responses":{"200":{"description":"Media Root permission reports"}}}},
+            "/api/v1/jellyfin/config":{"get":{"summary":"Get non-secret Jellyfin configuration","responses":{"200":{"description":"Configuration without API key"}}},"put":{"summary":"Store Jellyfin configuration and server-only API key","responses":{"204":{"description":"Saved"}}}},
+            "/api/v1/jellyfin/test":{"post":{"summary":"Test Jellyfin connectivity and selected libraries","responses":{"200":{"description":"Connected"},"502":{"description":"Jellyfin unavailable"}}}},
+            "/api/v1/jellyfin/refresh":{"get":{"summary":"Get separately tracked refresh status","responses":{"200":{"description":"Refresh status"}}},"post":{"summary":"Manually refresh once with bounded retries","responses":{"200":{"description":"Completed"},"502":{"description":"Manual retry required"}}}}
         },
         "components": {"schemas": {
             "CreateTaskRequest": {"type":"object","required":["task_type","mode"],"properties":{
@@ -1777,7 +2035,7 @@ fn openapi_document() -> serde_json::Value {
             "MediaAsset":{"type":"object","required":["id","media_root","path","device","inode","observed_at","captured_date","state"],"properties":{"id":{"type":"string"},"media_root":{"type":"string"},"path":{"type":"string"},"device":{"type":"integer"},"inode":{"type":"integer"},"jav_code":{"type":["string","null"]},"title":{"type":["string","null"]},"nfo_path":{"type":["string","null"]},"artwork_url":{"type":["string","null"]},"observed_at":{"type":"integer"},"captured_date":{"type":"string","format":"date"},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]}}},
             "AssetActor":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"poster_url":{"type":["string","null"]},"actor_folder_url":{"type":["string","null"]}}},
             "ActorFolder":{"type":"object","required":["name","movie_count","hard_link_count","logical_size","reclaimable_space"],"properties":{"name":{"type":"string"},"movie_count":{"type":"integer"},"hard_link_count":{"type":"integer"},"logical_size":{"type":"integer"},"reclaimable_space":{"type":"integer"},"poster_url":{"type":["string","null"]}}},
-            "AssetDetail":{"type":"object","required":["id","path","actors","tags","parse_status","state"],"properties":{"id":{"type":"string"},"path":{"type":"string"},"title":{"type":["string","null"]},"actors":{"type":"array","items":{"$ref":"#/components/schemas/AssetActor"}},"studio":{"type":["string","null"]},"release_date":{"type":["string","null"],"format":"date"},"runtime_minutes":{"type":["integer","null"]},"director":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"plot":{"type":["string","null"]},"parse_status":{"type":"string","enum":["valid","missing","invalid"]},"source_path":{"type":["string","null"]},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]}}},
+            "AssetDetail":{"type":"object","required":["id","path","actors","tags","parse_status","state"],"properties":{"id":{"type":"string"},"path":{"type":"string"},"title":{"type":["string","null"]},"actors":{"type":"array","items":{"$ref":"#/components/schemas/AssetActor"}},"studio":{"type":["string","null"]},"release_date":{"type":["string","null"],"format":"date"},"runtime_minutes":{"type":["integer","null"]},"director":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"plot":{"type":["string","null"]},"parse_status":{"type":"string","enum":["valid","missing","invalid"]},"source_path":{"type":["string","null"]},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]},"jellyfin":{"type":"object","description":"Read-only association, playback state, and Jellyfin web URL; uncertain metadata matches never authorize deletion."}}},
             "AssetPage":{"type":"object","required":["items","groups","page","per_page","total","total_pages"],"properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/MediaAsset"}},"groups":{"type":"array","items":{"type":"object","properties":{"date":{"type":"string","format":"date"},"count":{"type":"integer"}}}},"page":{"type":"integer"},"per_page":{"type":"integer"},"total":{"type":"integer"},"total_pages":{"type":"integer"}}},
             "ManagementTask": {"type":"object","required":["id","task_type","media_root","kind","status","created_at","items"],"properties":{
                 "id":{"type":"string"},"task_type":{"type":"string"},"media_root":{"type":"string"},"kind":{"type":"string","enum":["preview","mutation"]},"status":{"type":"string","enum":["queued","running","completed","failed","interrupted"]},"created_at":{"type":"integer"},"started_at":{"type":["integer","null"]},"finished_at":{"type":["integer","null"]},"error":{"type":["string","null"]},"plan_expires_at":{"type":["integer","null"]},"operation_plan":{"type":["object","null"]},"report":{"type":["object","null"]},"items":{"type":"array","items":{"$ref":"#/components/schemas/TaskItem"}}

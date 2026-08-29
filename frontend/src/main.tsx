@@ -14,9 +14,24 @@ type Asset = {
   state: AssetState;
   exception: string | null;
 };
+type JellyfinAssociation = {
+  status:
+    | "played"
+    | "in_progress"
+    | "unplayed"
+    | "not_found"
+    | "offline"
+    | "not_configured";
+  confidence?: "certain_path" | "uncertain_metadata";
+  reason?: string;
+  play_count?: number;
+  open_url?: string;
+  may_authorize_deletion?: boolean;
+};
 type AssetDetail = {
   id: string;
   path: string;
+  jav_code: string | null;
   title: string | null;
   actors: Array<{
     name: string;
@@ -33,6 +48,7 @@ type AssetDetail = {
   source_path: string | null;
   state: AssetState;
   exception: string | null;
+  jellyfin?: JellyfinAssociation;
 };
 type Page = {
   items: Asset[];
@@ -144,6 +160,9 @@ export function App() {
   const [editing, setEditing] = useState(false);
   const [validation, setValidation] = useState<Validation>(null);
   const [rulesMessage, setRulesMessage] = useState("");
+  const [jfUrl, setJfUrl] = useState("");
+  const [jfLibraries, setJfLibraries] = useState("");
+  const [jfKey, setJfKey] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]),
     [selected, setSelected] = useState<string[]>([]),
     [plan, setPlan] = useState<DeletionPlan | null>(null),
@@ -169,10 +188,68 @@ export function App() {
   }, [view, query, filter, page]);
   useEffect(() => {
     if (nav === "tasks") void loadTasks();
-    if (nav === "settings") void loadRules();
+    if (nav === "settings") {
+      void loadRules();
+      void loadJellyfinConfig();
+    }
     if (nav === "deletion") void loadCandidates();
     if (nav === "actors") void loadActors();
   }, [nav]);
+  async function loadJellyfinConfig() {
+    const response = await fetch("/api/v1/jellyfin/config");
+    if (response.ok) {
+      const config = (await response.json().catch(() => null)) as {
+        url?: string;
+        library_ids?: string[];
+      } | null;
+      if (!config) return;
+      setJfUrl(config.url ?? "");
+      setJfLibraries((config.library_ids ?? []).join(", "));
+    }
+  }
+  async function saveJellyfin(event: FormEvent) {
+    event.preventDefault();
+    const response = await fetch("/api/v1/jellyfin/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: jfUrl,
+        library_ids: jfLibraries
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+        api_key: jfKey,
+      }),
+    });
+    setMessage(
+      response.ok ? "Jellyfin configuration saved." : await response.text(),
+    );
+    if (response.ok) setJfKey("");
+  }
+  async function testJellyfin() {
+    const response = await fetch("/api/v1/jellyfin/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    setMessage(
+      response.ok
+        ? `Connected to ${((await response.json()) as { server_name: string }).server_name}.`
+        : await response.text(),
+    );
+  }
+  async function refreshJellyfin() {
+    const response = await fetch("/api/v1/jellyfin/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    setMessage(
+      response.ok
+        ? "Jellyfin library refresh completed."
+        : await response.text(),
+    );
+  }
   async function loadActors() {
     const response = await fetch("/api/v1/actors");
     if (response.ok) setActors((await response.json()) as ActorFolder[]);
@@ -785,82 +862,134 @@ export function App() {
           </section>
         )}
         {nav === "settings" && (
-          <section className="rules-settings">
-            <p className="eyebrow">DELETION RULES</p>
-            <h2>Active Rule Set</h2>
-            <p>
-              Remote YAML is only a proposal. The server validates and
-              atomically activates it; rules cannot select roots or authorize
-              deletion.
-            </p>
-            <label htmlFor="rule-source">Rule Source URL</label>
-            <div className="rule-actions">
-              <input
-                id="rule-source"
-                type="url"
-                placeholder="https://raw.githubusercontent.com/…"
-                value={sourceUrl}
-                onChange={(event) => setSourceUrl(event.target.value)}
-              />
-              <button
-                type="button"
-                disabled={!sourceUrl}
-                onClick={downloadProposal}
-              >
-                Download proposal
-              </button>
-            </div>
-            <label htmlFor="rules-yaml">Active Rule Set YAML</label>
-            <textarea
-              id="rules-yaml"
-              rows={18}
-              readOnly={!editing}
-              value={yaml}
-              onChange={(event) => updateYaml(event.target.value)}
-            />
-            <div className="rule-actions">
-              {!editing && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditing(true);
-                    setValidation(null);
-                  }}
-                >
-                  Edit
-                </button>
-              )}
-              {editing && (
-                <button type="button" onClick={validateRules}>
-                  Validate
-                </button>
-              )}
-              {editing && !validation?.empty && (
-                <button
-                  type="button"
-                  disabled={!validation || validation.yaml !== yaml}
-                  onClick={() => saveRules(false)}
-                >
-                  Save Active Rule Set
-                </button>
-              )}
-              {editing && validation?.empty && (
-                <button
-                  type="button"
-                  className="danger"
-                  disabled={validation.yaml !== yaml}
-                  onClick={() => saveRules(true)}
-                >
-                  Confirm empty and save
-                </button>
-              )}
-            </div>
-            {rulesMessage && (
-              <p role="status" className="notice">
-                {rulesMessage}
+          <div className="settings-stack">
+            <section className="rules-settings">
+              <p className="eyebrow">DELETION RULES</p>
+              <h2>Active Rule Set</h2>
+              <p>
+                Remote YAML is only a proposal. The server validates and
+                atomically activates it; rules cannot select roots or authorize
+                deletion.
               </p>
-            )}
-          </section>
+              <label htmlFor="rule-source">Rule Source URL</label>
+              <div className="rule-actions">
+                <input
+                  id="rule-source"
+                  type="url"
+                  placeholder="https://raw.githubusercontent.com/…"
+                  value={sourceUrl}
+                  onChange={(event) => setSourceUrl(event.target.value)}
+                />
+                <button
+                  type="button"
+                  disabled={!sourceUrl}
+                  onClick={downloadProposal}
+                >
+                  Download proposal
+                </button>
+              </div>
+              <label htmlFor="rules-yaml">Active Rule Set YAML</label>
+              <textarea
+                id="rules-yaml"
+                rows={18}
+                readOnly={!editing}
+                value={yaml}
+                onChange={(event) => updateYaml(event.target.value)}
+              />
+              <div className="rule-actions">
+                {!editing && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditing(true);
+                      setValidation(null);
+                    }}
+                  >
+                    Edit
+                  </button>
+                )}
+                {editing && (
+                  <button type="button" onClick={validateRules}>
+                    Validate
+                  </button>
+                )}
+                {editing && !validation?.empty && (
+                  <button
+                    type="button"
+                    disabled={!validation || validation.yaml !== yaml}
+                    onClick={() => saveRules(false)}
+                  >
+                    Save Active Rule Set
+                  </button>
+                )}
+                {editing && validation?.empty && (
+                  <button
+                    type="button"
+                    className="danger"
+                    disabled={validation.yaml !== yaml}
+                    onClick={() => saveRules(true)}
+                  >
+                    Confirm empty and save
+                  </button>
+                )}
+              </div>
+              {rulesMessage && (
+                <p role="status" className="notice">
+                  {rulesMessage}
+                </p>
+              )}
+            </section>
+            <section className="task-create jellyfin-settings">
+              <p className="eyebrow">MEDIA SERVER</p>
+              <h2>Jellyfin</h2>
+              <p>
+                Connect one server and select multiple library IDs. The API key
+                stays on this server.
+              </p>
+              <form className="task-form" onSubmit={saveJellyfin}>
+                <label htmlFor="jellyfin-url">Server URL</label>
+                <input
+                  id="jellyfin-url"
+                  type="url"
+                  value={jfUrl}
+                  onChange={(event) => setJfUrl(event.target.value)}
+                  placeholder="http://jellyfin:8096"
+                  required
+                />
+                <label htmlFor="jellyfin-libraries">Library IDs</label>
+                <input
+                  id="jellyfin-libraries"
+                  value={jfLibraries}
+                  onChange={(event) => setJfLibraries(event.target.value)}
+                  placeholder="movies, jav"
+                  required
+                />
+                <label htmlFor="jellyfin-key">Server API key</label>
+                <input
+                  id="jellyfin-key"
+                  type="password"
+                  autoComplete="off"
+                  value={jfKey}
+                  onChange={(event) => setJfKey(event.target.value)}
+                  required
+                />
+                <button type="submit">Save Jellyfin</button>
+              </form>
+              <div className="jellyfin-actions">
+                <button onClick={() => void testJellyfin()}>
+                  Test connection
+                </button>
+                <button onClick={() => void refreshJellyfin()}>
+                  Refresh Jellyfin
+                </button>
+              </div>
+              {message && (
+                <p className="notice" role="status">
+                  {message}
+                </p>
+              )}
+            </section>
+          </div>
         )}
       </main>
       {inspectedAsset && (
@@ -1129,15 +1258,31 @@ function AssetInspector({
 }
 function StateBanner({ detail }: { detail: AssetDetail }) {
   return (
-    <div className={`state-banner ${detail.state}`}>
-      <b>{labels[detail.state]} Asset</b>
-      <span>
-        {detail.exception ??
-          (detail.state === "synchronizing"
-            ? "Automatic reconciliation is in progress."
-            : "Local metadata is valid.")}
-      </span>
-    </div>
+    <>
+      <div className={`state-banner ${detail.state}`}>
+        <b>{labels[detail.state]} Asset</b>
+        <span>
+          {detail.exception ??
+            (detail.state === "synchronizing"
+              ? "Automatic reconciliation is in progress."
+              : "Local metadata is valid.")}
+        </span>
+      </div>
+      <div className="jellyfin-status">
+        <b>Jellyfin</b>
+        <span>
+          {detail.jellyfin?.status?.replace("_", " ") ?? "not configured"}
+          {detail.jellyfin?.confidence === "uncertain_metadata"
+            ? " · uncertain metadata match"
+            : ""}
+        </span>
+        {detail.jellyfin?.open_url && (
+          <a href={detail.jellyfin.open_url} target="_blank" rel="noreferrer">
+            Open in Jellyfin ↗
+          </a>
+        )}
+      </div>
+    </>
   );
 }
 function Info({ k, v }: { k: string; v: string | null }) {

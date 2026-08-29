@@ -855,6 +855,47 @@ input {
     color: var(--blue);
   }
 }
+.settings-stack {
+  display: grid;
+  gap: 18px;
+}
+.jellyfin-settings {
+  width: min(850px, 100%);
+}
+.jellyfin-settings > p {
+  color: #6e6e73;
+  font-size: 12px;
+}
+.jellyfin-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+.jellyfin-actions button,
+.jellyfin-status a {
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 10px;
+  color: #2453a6;
+  background: #e8efff;
+  font-weight: 700;
+  text-decoration: none;
+}
+.jellyfin-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: #f4f7fb;
+}
+.jellyfin-status span {
+  flex: 1;
+  color: #667085;
+  text-transform: capitalize;
+}
 .actor-folder-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
