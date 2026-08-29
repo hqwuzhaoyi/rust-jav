@@ -1,14 +1,9 @@
 use regex::Regex;
 use std::path::Path;
 
-/// Load the repository's embedded ad/spam filename patterns.
+/// Load enabled patterns from the embedded migrated Active Rule Set.
 pub fn embedded_patterns() -> Vec<String> {
-    include_str!("../../patterns.txt")
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
+    crate::active_rules::ActiveRuleSet::embedded().enabled_patterns()
 }
 
 /// Convert a glob-like pattern (where `*` means “any run of characters”) into a

@@ -48,6 +48,14 @@ pub struct OpsArgs {
     /// Limit execution to one or more specific operations
     #[arg(long = "op", value_enum)]
     pub ops: Vec<CliOperation>,
+
+    /// Load the Active Rule Set from a versioned YAML document
+    #[arg(long)]
+    pub rules: Option<PathBuf>,
+
+    /// Explicitly allow an Active Rule Set with no enabled rules
+    #[arg(long, requires = "rules")]
+    pub confirm_empty_rules: bool,
 }
 
 impl OpsArgs {

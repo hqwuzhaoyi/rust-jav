@@ -102,7 +102,7 @@ cargo run -- ops --dir ./examples/test --op standardize-names --op move-origin -
 
 支持的 operation：
 
-- `delete-ad-files` — 删除文件名匹配 `patterns.txt` 广告模式的文件（包括视频，执行前务必 preview）
+- `delete-ad-files` — 删除文件名匹配当前 YAML Active Rule Set 的文件（包括视频，执行前务必 preview）
 
 > ⚠️ `delete-ad-files` 在 `--apply` 时会删除匹配到的**视频文件**。请始终先运行 preview / `--json` 检查计划动作。
 - `organize-by-code`
@@ -114,6 +114,29 @@ cargo run -- ops --dir ./examples/test --op standardize-names --op move-origin -
 - `remove-duplicates`
 
 全量 `ops`（不加 `--op`）时，`delete-ad-files` 始终**最先执行**，确保广告文件在其他操作处理之前被清除。
+
+### YAML Active Rule Set
+
+默认规则位于 `rules.yaml`。也可以为 preview 和 apply 显式加载另一个版本化规则文件：
+
+```shell
+cargo run -- ops --dir ./examples/test --op delete-ad-files --rules ./my-rules.yaml --json
+cargo run -- ops --dir ./examples/test --op delete-ad-files --rules ./my-rules.yaml --apply
+```
+
+规则格式：
+
+```yaml
+version: 1
+rules:
+  - pattern: "广告*.html" # 必填；只有 * 是通配符
+    enabled: true         # 可选，默认 true
+    note: "来源说明"       # 可选
+```
+
+匹配继续采用原有语义：对完整 basename 大小写不敏感匹配，只有 `*` 表示任意字符，其余字符均按字面量处理。YAML、版本或规则无效时，候选内容不会成为 Active Rule Set，操作也不会开始。空规则集必须额外传入 `--confirm-empty-rules` 明确确认。
+
+从旧版迁移时，将 `patterns.txt` 的每个非空行按原样写成一个 `rules[].pattern`。仓库内原有模式已逐项迁移至 `rules.yaml`；`patterns.txt` 仅保留为迁移对照，不再作为运行时规则来源。
 
 说明：
 

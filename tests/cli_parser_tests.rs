@@ -84,6 +84,31 @@ fn parses_delete_ad_files_operation() {
 }
 
 #[test]
+fn parses_yaml_rule_set_options() {
+    let cli = Cli::try_parse_from([
+        "rust-jav",
+        "ops",
+        "--dir",
+        "./examples/test",
+        "--rules",
+        "./rules.yaml",
+        "--confirm-empty-rules",
+    ])
+    .unwrap();
+
+    match cli.command {
+        Command::Ops(args) => {
+            assert_eq!(
+                args.rules.as_deref(),
+                Some(std::path::Path::new("./rules.yaml"))
+            );
+            assert!(args.confirm_empty_rules);
+        }
+        other => panic!("expected ops command, got {other:?}"),
+    }
+}
+
+#[test]
 fn delete_ad_files_is_first_in_all_operations() {
     use rust_jav::tui::state::OperationType;
     let all = OperationType::all();

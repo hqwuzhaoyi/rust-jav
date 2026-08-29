@@ -27,6 +27,8 @@ futures = "0.3"
 color-eyre = "0.6"
 chrono = "0.4"
 dirs = "5.0"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
 
 [[example]]
 name = "create"

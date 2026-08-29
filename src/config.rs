@@ -103,9 +103,9 @@ impl CliConfig {
 }
 
 static PATTERNS: Lazy<HashSet<String>> = Lazy::new(|| {
-    include_str!("../patterns.txt")
-        .lines()
-        .map(|s| s.to_string())
+    crate::active_rules::ActiveRuleSet::embedded()
+        .enabled_patterns()
+        .into_iter()
         .collect()
 });
 

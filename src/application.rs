@@ -6,6 +6,7 @@
 use std::io;
 use std::path::PathBuf;
 
+use crate::active_rules::ActiveRuleSet;
 use crate::migration_verifier::types::{
     MigrationAction, MigrationScope, ScopeManifest, VerificationReport, VerificationSummary,
 };
@@ -107,6 +108,7 @@ pub struct OperationsRequest {
     pub source_dir: PathBuf,
     pub selected_ops: Vec<OperationType>,
     pub apply: bool,
+    pub active_rules: ActiveRuleSet,
 }
 
 impl OperationsRequest {
@@ -115,6 +117,7 @@ impl OperationsRequest {
             source_dir,
             selected_ops,
             apply: false,
+            active_rules: ActiveRuleSet::embedded(),
         }
     }
 
@@ -123,6 +126,33 @@ impl OperationsRequest {
             source_dir,
             selected_ops,
             apply: true,
+            active_rules: ActiveRuleSet::embedded(),
+        }
+    }
+
+    pub fn preview_with_rules(
+        source_dir: PathBuf,
+        selected_ops: Vec<OperationType>,
+        active_rules: ActiveRuleSet,
+    ) -> Self {
+        Self {
+            source_dir,
+            selected_ops,
+            apply: false,
+            active_rules,
+        }
+    }
+
+    pub fn apply_with_rules(
+        source_dir: PathBuf,
+        selected_ops: Vec<OperationType>,
+        active_rules: ActiveRuleSet,
+    ) -> Self {
+        Self {
+            source_dir,
+            selected_ops,
+            apply: true,
+            active_rules,
         }
     }
 }
@@ -136,6 +166,7 @@ impl OperationsService {
             request.source_dir,
             request.selected_ops,
             request.apply,
+            request.active_rules,
         )
         .await
     }

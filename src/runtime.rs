@@ -26,10 +26,16 @@ pub async fn resolve_run_request(cli: Cli) -> Result<RunRequest> {
         Command::Tui(args) => Ok(RunRequest::Tui { dir: args.dir }),
         Command::Ops(args) => {
             let selected_operations = args.selected_operations();
+            let active_rules = match args.rules.as_deref() {
+                Some(path) => {
+                    crate::active_rules::ActiveRuleSet::load(path, args.confirm_empty_rules)?
+                }
+                None => crate::active_rules::ActiveRuleSet::embedded(),
+            };
             let request = if args.apply {
-                OperationsRequest::apply(args.dir, selected_operations)
+                OperationsRequest::apply_with_rules(args.dir, selected_operations, active_rules)
             } else {
-                OperationsRequest::preview(args.dir, selected_operations)
+                OperationsRequest::preview_with_rules(args.dir, selected_operations, active_rules)
             };
             let report = services.operations().run(request).await;
             Ok(RunRequest::Report {
