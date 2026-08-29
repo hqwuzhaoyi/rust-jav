@@ -264,7 +264,7 @@ describe("BeUI Photos presentation", () => {
     expect(screen.getByLabelText("Media Root")).toHaveValue("/media");
     await userEvent.click(screen.getAllByRole("button", { name: "Settings" })[0]);
     expect(screen.getByLabelText("Rule Source URL")).toHaveValue(
-      "https://raw.githubusercontent.com/hqwuzhaoyi/rust-jav/main/rules.yaml",
+      "https://raw.githubusercontent.com/hqwuzhaoyi/rust-jav/feature/web-jellyfin-truenas/rules.yaml",
     );
   });
 

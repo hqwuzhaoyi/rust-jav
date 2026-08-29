@@ -22,7 +22,7 @@ import { BeUITab, BeUITabPanel, BeUITabs, BeUITabsList } from "./beui-tabs";
 import "./style.css";
 type View = "loading" | "initialize" | "login" | "ready";
 const DEFAULT_RULE_SOURCE =
-  "https://raw.githubusercontent.com/hqwuzhaoyi/rust-jav/main/rules.yaml";
+  "https://raw.githubusercontent.com/hqwuzhaoyi/rust-jav/feature/web-jellyfin-truenas/rules.yaml";
 type Validation = { valid: true; empty: boolean; yaml: string } | null;
 type AssetState = "normal" | "synchronizing" | "exception";
 type Asset = {
@@ -1123,7 +1123,7 @@ export function App() {
                   value={jfUrl}
                   onChange={(event) => setJfUrl(event.target.value)}
                   placeholder="http://jellyfin:8096"
-                  required={!jfKeyConfigured}
+                  required
                 />
                 <label htmlFor="jellyfin-libraries">Library IDs</label>
                 <input
@@ -1140,7 +1140,7 @@ export function App() {
                   autoComplete="off"
                   value={jfKey}
                   onChange={(event) => setJfKey(event.target.value)}
-                  required
+                  required={!jfKeyConfigured}
                 />
                 <button type="submit">Save Jellyfin</button>
               </form>
@@ -1775,7 +1775,7 @@ function TaskPanel({
                       </p>
                     ))}
                     <ul>
-                      {task.operation_plan.actions.map((action, index) => (
+                      {task.operation_plan.actions.slice(0, 50).map((action, index) => (
                         <li
                           className={action.destructive ? "destructive" : ""}
                           key={index}
@@ -1786,6 +1786,11 @@ function TaskPanel({
                           <code>{action.path ?? "—"}</code>
                         </li>
                       ))}
+                      {task.operation_plan.actions.length > 50 && (
+                        <li className="task-truncated">
+                          {task.operation_plan.actions.length - 50} more planned actions in the final report
+                        </li>
+                      )}
                     </ul>
                     {task.status === "completed" &&
                       Date.now() / 1000 <= task.plan_expires_at! && (
@@ -1797,7 +1802,7 @@ function TaskPanel({
                 )}
                 {task.items.length > 0 && (
                   <ul className="task-items">
-                    {task.items.map((item) => (
+                    {task.items.slice(0, 50).map((item) => (
                       <li key={item.id}>
                         <span>{item.status}</span>
                         <b>{item.kind}</b>
@@ -1805,6 +1810,11 @@ function TaskPanel({
                         {item.message && <small>{item.message}</small>}
                       </li>
                     ))}
+                    {task.items.length > 50 && (
+                      <li className="task-truncated">
+                        {task.items.length - 50} more item outcomes in the final report
+                      </li>
+                    )}
                   </ul>
                 )}
                 {task.report && (
