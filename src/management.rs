@@ -13,16 +13,27 @@ use argon2::{
 };
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Path as AxumPath, State},
     http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri},
-    response::IntoResponse,
+    response::{
+        sse::{Event, KeepAlive},
+        IntoResponse, Sse,
+    },
     routing::{get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use futures::stream;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::convert::Infallible;
+
+use crate::{
+    application::{ApplicationServices, OperationsRequest},
+    management_tasks::{NewTask, TaskCoordinator, TaskKind, TaskStore},
+    tui::state::OperationType,
+};
 
 const PASSWORD_ENV: &str = "RUST_JAV_ADMIN_PASSWORD";
 const COOKIE_NAME: &str = "rust_jav_session";
@@ -57,6 +68,8 @@ pub enum Error {
     PasswordHash,
     #[error("server failed: {0}")]
     Server(#[from] std::io::Error),
+    #[error(transparent)]
+    Tasks(#[from] crate::management_tasks::Error),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -251,6 +264,8 @@ pub struct AppState {
     store: SecretsStore,
     sessions: Arc<RwLock<HashMap<String, Session>>>,
     clock: Arc<RwLock<Box<dyn Clock>>>,
+    tasks: TaskStore,
+    coordinator: TaskCoordinator,
 }
 
 #[derive(Clone)]
@@ -261,11 +276,17 @@ struct Session {
 
 impl AppState {
     pub fn new(config: ManagementConfig, clock: impl Clock) -> Result<Self, Error> {
+        let now = clock.unix_seconds();
+        let database = config.secrets_file.with_file_name("management.sqlite3");
+        let tasks = TaskStore::open(&database)?;
+        tasks.interrupt_running_destructive(now)?;
         Ok(Self {
             store: SecretsStore::new(config.secrets_file.clone()),
             config,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             clock: Arc::new(RwLock::new(Box::new(clock))),
+            tasks,
+            coordinator: TaskCoordinator::new(),
         })
     }
     pub fn set_clock(&self, clock: impl Clock) {
@@ -292,6 +313,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/status", get(status))
+        .route("/api/v1/openapi.json", get(openapi))
+        .route("/api/v1/tasks", post(create_task).get(list_tasks))
+        .route("/api/v1/tasks/:task_id", get(get_task))
+        .route("/api/v1/tasks/:task_id/events", get(task_events))
         .route(
             "/assets/app.js",
             get(|| async { asset("application/javascript; charset=utf-8", APP_JS) }),
@@ -398,6 +423,254 @@ async fn status(State(state): State<AppState>, headers: HeaderMap) -> impl IntoR
         return StatusCode::UNAUTHORIZED.into_response();
     }
     Json(serde_json::json!({"version": env!("CARGO_PKG_VERSION")})).into_response()
+}
+
+fn authorized(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
+    let secrets = state
+        .store
+        .load()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let password_hash = secrets
+        .password_hash
+        .as_deref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    if authenticated(state, headers, password_hash) {
+        Ok(())
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateTaskRequest {
+    task_type: String,
+    media_root: PathBuf,
+    mode: String,
+    #[serde(default)]
+    operations: Vec<String>,
+}
+
+async fn create_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<CreateTaskRequest>,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    if input.task_type != "operations" || !matches!(input.mode.as_str(), "preview" | "apply") {
+        return (
+            StatusCode::BAD_REQUEST,
+            "task_type must be operations and mode must be preview or apply",
+        )
+            .into_response();
+    }
+    let operations = match input
+        .operations
+        .iter()
+        .map(|value| parse_operation(value))
+        .collect::<Option<Vec<_>>>()
+    {
+        Some(operations) if !operations.is_empty() => operations,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "operations must contain known operation names",
+            )
+                .into_response()
+        }
+    };
+    let media_root = input.media_root.display().to_string();
+    let kind = if input.mode == "apply" {
+        TaskKind::Mutation
+    } else {
+        TaskKind::Preview
+    };
+    let new_task = if kind == TaskKind::Mutation {
+        NewTask::mutation(&input.task_type, &media_root)
+    } else {
+        NewTask::preview(&input.task_type, &media_root)
+    };
+    let task = match state.tasks.create(new_task, state.now()) {
+        Ok(task) => task,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let task_id = task.id.clone();
+    tokio::spawn(run_operations_task(
+        state,
+        task_id,
+        input.media_root,
+        operations,
+        kind,
+    ));
+    (StatusCode::ACCEPTED, Json(task)).into_response()
+}
+
+async fn run_operations_task(
+    state: AppState,
+    task_id: String,
+    media_root: PathBuf,
+    operations: Vec<OperationType>,
+    kind: TaskKind,
+) {
+    let _lease = if kind == TaskKind::Mutation {
+        Some(
+            state
+                .coordinator
+                .mutation(&media_root.display().to_string())
+                .await,
+        )
+    } else {
+        state
+            .coordinator
+            .preview(&media_root.display().to_string())
+            .await;
+        None
+    };
+    if state.tasks.mark_running(&task_id, state.now()).is_err() {
+        return;
+    }
+    let request = if kind == TaskKind::Mutation {
+        OperationsRequest::apply(media_root, operations)
+    } else {
+        OperationsRequest::preview(media_root, operations)
+    };
+    let report = ApplicationServices::new().operations().run(request).await;
+    for action in &report.actions {
+        let path = action
+            .source
+            .as_ref()
+            .or(action.target.as_ref())
+            .map(|path| path.display().to_string());
+        if state
+            .tasks
+            .finish_item(
+                &task_id,
+                &action.kind,
+                path.as_deref(),
+                action.status.as_str(),
+                action.reason.as_deref(),
+            )
+            .is_err()
+        {
+            return;
+        }
+    }
+    let now = state.now();
+    if report.summary.failed_actions > 0 || !report.errors.is_empty() {
+        let message = report
+            .errors
+            .first()
+            .map(String::as_str)
+            .unwrap_or("one or more task items failed");
+        let _ = state.tasks.mark_failed(&task_id, now, message);
+    } else {
+        let _ = state.tasks.mark_completed(&task_id, now);
+    }
+}
+
+async fn list_tasks(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    match state.tasks.list() {
+        Ok(tasks) => Json(tasks).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn get_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(task_id): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    match state.tasks.get(&task_id) {
+        Ok(Some(task)) => Json(task).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn task_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(task_id): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    if !matches!(state.tasks.get(&task_id), Ok(Some(_))) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let events = stream::unfold(
+        Some((state.tasks.clone(), task_id, true)),
+        |stream_state| async move {
+            let (store, id, first) = stream_state?;
+            if !first {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            let task = store.get(&id).ok().flatten()?;
+            let terminal = task.status.is_terminal();
+            let data = serde_json::to_string(&task).ok()?;
+            let event = Event::default()
+                .event("task")
+                .id(task.id.clone())
+                .data(data);
+            let next = (!terminal).then_some((store, id, false));
+            Some((Ok::<_, Infallible>(event), next))
+        },
+    );
+    Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+fn parse_operation(value: &str) -> Option<OperationType> {
+    Some(match value {
+        "delete_ad_files" => OperationType::DeleteAdFiles,
+        "organize_by_code" => OperationType::OrganizeByCode,
+        "clean_empty_dirs" => OperationType::CleanEmptyDirs,
+        "standardize_names" => OperationType::StandardizeNames,
+        "extract_codes" => OperationType::ExtractCodes,
+        "categorize_files" => OperationType::CategorizeFiles,
+        "move_origin" => OperationType::MoveOrigin,
+        "remove_duplicates" => OperationType::RemoveDuplicates,
+        _ => return None,
+    })
+}
+
+async fn openapi(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    Json(openapi_document()).into_response()
+}
+
+fn openapi_document() -> serde_json::Value {
+    serde_json::json!({
+        "openapi": "3.1.0",
+        "info": {"title": "rust-jav Management API", "version": env!("CARGO_PKG_VERSION")},
+        "paths": {
+            "/api/v1/tasks": {
+                "get": {"summary": "List Management Tasks", "responses": {"200": {"description": "Tasks", "content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/ManagementTask"}}}}}}},
+                "post": {"summary": "Create a Management Task", "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CreateTaskRequest"}}}}, "responses": {"202": {"description": "Accepted", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ManagementTask"}}}}, "400": {"description": "Invalid task"}}}
+            },
+            "/api/v1/tasks/{task_id}": {"get": {"summary": "Get a Management Task", "parameters": [{"name":"task_id","in":"path","required":true,"schema":{"type":"string"}}], "responses":{"200":{"description":"Task","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ManagementTask"}}}},"404":{"description":"Not found"}}}},
+            "/api/v1/tasks/{task_id}/events": {"get": {"summary": "Stream Management Task lifecycle", "parameters": [{"name":"task_id","in":"path","required":true,"schema":{"type":"string"}}], "responses":{"200":{"description":"Task snapshots","content":{"text/event-stream":{"schema":{"type":"string"}}}},"404":{"description":"Not found"}}}}
+        },
+        "components": {"schemas": {
+            "CreateTaskRequest": {"type":"object","required":["task_type","media_root","mode","operations"],"properties":{
+                "task_type":{"type":"string","const":"operations"},"media_root":{"type":"string"},"mode":{"type":"string","enum":["preview","apply"]},"operations":{"type":"array","minItems":1,"items":{"type":"string"}}
+            }},
+            "TaskItem": {"type":"object","required":["id","kind","status"],"properties":{"id":{"type":"integer"},"kind":{"type":"string"},"path":{"type":["string","null"]},"status":{"type":"string"},"message":{"type":["string","null"]}}},
+            "ManagementTask": {"type":"object","required":["id","task_type","media_root","kind","status","created_at","items"],"properties":{
+                "id":{"type":"string"},"task_type":{"type":"string"},"media_root":{"type":"string"},"kind":{"type":"string","enum":["preview","mutation"]},"status":{"type":"string","enum":["queued","running","completed","failed","interrupted"]},"created_at":{"type":"integer"},"started_at":{"type":["integer","null"]},"finished_at":{"type":["integer","null"]},"error":{"type":["string","null"]},"items":{"type":"array","items":{"$ref":"#/components/schemas/TaskItem"}}
+            }}
+        }}
+    })
 }
 
 fn session_cookie(headers: &HeaderMap) -> Option<String> {

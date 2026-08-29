@@ -11,6 +11,7 @@ pub mod config;
 pub mod deletion_plan;
 pub mod file_utils;
 pub mod management;
+pub mod management_tasks;
 pub mod migration_verifier;
 pub mod nfo_check;
 pub mod operations;
