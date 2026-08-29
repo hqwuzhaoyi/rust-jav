@@ -24,10 +24,29 @@ fn fixture() -> (TempDir, ManagementConfig) {
         container: false,
         session_ttl: Duration::from_secs(60),
         secrets_file: dir.path().join("management.secrets.yaml"),
+        database_file: dir.path().join("management.sqlite3"),
+        artwork_cache_root: None,
         media_roots: Vec::new(),
         actor_view_root: None,
     };
     (dir, config)
+}
+
+#[tokio::test]
+async fn layered_health_keeps_local_readiness_independent_from_jellyfin() {
+    let (_dir, config) = fixture();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+
+    let live = json_request(app(state.clone()), "GET", "/health/live", "", None).await;
+    assert_eq!(live.status(), StatusCode::OK);
+    let ready = json_request(app(state.clone()), "GET", "/health/ready", "", None).await;
+    assert_eq!(ready.status(), StatusCode::OK);
+    let jellyfin = json_request(app(state), "GET", "/health/jellyfin", "", None).await;
+    assert_eq!(jellyfin.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(jellyfin.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["available"], false);
+    assert_eq!(body["affects_local_readiness"], false);
 }
 
 #[tokio::test]

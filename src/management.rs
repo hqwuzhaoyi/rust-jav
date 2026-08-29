@@ -1,3 +1,4 @@
+use std::os::unix::fs::MetadataExt;
 use std::{
     collections::HashMap,
     fs,
@@ -74,6 +75,8 @@ pub enum Error {
     Tasks(#[from] crate::management_tasks::Error),
     #[error(transparent)]
     Assets(#[from] crate::asset_index::Error),
+    #[error("TrueNAS deployment validation failed: {0}")]
+    Deployment(String),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,6 +86,8 @@ struct ManagementYaml {
     container: bool,
     session_ttl_seconds: u64,
     secrets_file: PathBuf,
+    database_file: PathBuf,
+    artwork_cache_root: Option<PathBuf>,
     media_roots: Vec<PathBuf>,
     actor_view_root: Option<PathBuf>,
 }
@@ -94,6 +99,8 @@ impl Default for ManagementYaml {
             container: false,
             session_ttl_seconds: 43_200,
             secrets_file: PathBuf::from("management.secrets.yaml"),
+            database_file: PathBuf::from("management.sqlite3"),
+            artwork_cache_root: None,
             media_roots: Vec::new(),
             actor_view_root: None,
         }
@@ -106,6 +113,8 @@ pub struct ManagementConfig {
     pub container: bool,
     pub session_ttl: Duration,
     pub secrets_file: PathBuf,
+    pub database_file: PathBuf,
+    pub artwork_cache_root: Option<PathBuf>,
     pub media_roots: Vec<PathBuf>,
     pub actor_view_root: Option<PathBuf>,
 }
@@ -127,6 +136,18 @@ impl ManagementConfig {
         } else {
             parent.join(raw.secrets_file)
         };
+        let database_file = if raw.database_file.is_absolute() {
+            raw.database_file
+        } else {
+            parent.join(raw.database_file)
+        };
+        let artwork_cache_root = raw.artwork_cache_root.map(|root| {
+            if root.is_absolute() {
+                root
+            } else {
+                parent.join(root)
+            }
+        });
         let media_roots = raw
             .media_roots
             .into_iter()
@@ -150,6 +171,8 @@ impl ManagementConfig {
             container: raw.container,
             session_ttl: Duration::from_secs(raw.session_ttl_seconds),
             secrets_file,
+            database_file,
+            artwork_cache_root,
             media_roots,
             actor_view_root,
         })
@@ -163,6 +186,148 @@ impl ManagementConfig {
         };
         SocketAddr::new(IpAddr::V4(ip), self.port)
     }
+
+    pub fn validate_truenas_mounts(&self) -> Result<DeploymentReport, Error> {
+        let config_root = self.secrets_file.parent().unwrap_or_else(|| Path::new("."));
+        let state_root = self
+            .database_file
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        let cache_root = self.artwork_cache_root.as_deref().ok_or_else(|| {
+            Error::Deployment("artwork_cache_root must use a distinct Host Path".into())
+        })?;
+        let actor_root = self.actor_view_root.as_deref().ok_or_else(|| {
+            Error::Deployment("actor_view_root must use a distinct Host Path".into())
+        })?;
+        if self.media_roots.is_empty() {
+            return Err(Error::Deployment(
+                "at least one Media Root is required".into(),
+            ));
+        }
+        let mut paths = vec![config_root, state_root, cache_root, actor_root];
+        paths.extend(self.media_roots.iter().map(PathBuf::as_path));
+        for (index, left) in paths.iter().enumerate() {
+            for right in paths.iter().skip(index + 1) {
+                if left == right || left.starts_with(right) || right.starts_with(left) {
+                    return Err(Error::Deployment(format!("configuration, SQLite, artwork/cache, Media Roots, and Actor View must use distinct Host Paths; '{}' overlaps '{}'", left.display(), right.display())));
+                }
+            }
+        }
+        let media_mounts = self
+            .media_roots
+            .iter()
+            .map(|path| inspect_mount(path, MountRole::MediaRoot))
+            .collect::<Result<Vec<_>, _>>()?;
+        let actor_device = fs::metadata(actor_root)
+            .map_err(|error| mount_error(actor_root, &error))?
+            .dev();
+        if !media_mounts
+            .iter()
+            .all(|mount| mount.device == actor_device)
+        {
+            return Err(Error::Deployment("Actor View and every Media Root must be on the same filesystem/ZFS dataset for hard links".into()));
+        }
+        let mut mounts = vec![
+            inspect_mount(config_root, MountRole::Configuration)?,
+            inspect_mount(state_root, MountRole::Sqlite)?,
+            inspect_mount(cache_root, MountRole::ArtworkCache)?,
+        ];
+        mounts.extend(media_mounts);
+        let mut actor = inspect_mount(actor_root, MountRole::ActorView)?;
+        actor.same_filesystem_as_media = Some(true);
+        mounts.push(actor);
+        rusqlite::Connection::open(&self.database_file).map_err(|error| {
+            Error::Deployment(format!(
+                "SQLite state '{}' is not ready for UID {} / GID {}: {error}",
+                self.database_file.display(),
+                unsafe { libc::geteuid() },
+                unsafe { libc::getegid() }
+            ))
+        })?;
+        Ok(DeploymentReport {
+            uid: unsafe { libc::geteuid() },
+            gid: unsafe { libc::getegid() },
+            database_ready: true,
+            mounts,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MountRole {
+    Configuration,
+    Sqlite,
+    ArtworkCache,
+    MediaRoot,
+    ActorView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MountReport {
+    pub role: MountRole,
+    pub path: PathBuf,
+    pub readable: bool,
+    pub writable: bool,
+    pub device: u64,
+    pub same_filesystem_as_media: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeploymentReport {
+    pub uid: u32,
+    pub gid: u32,
+    pub database_ready: bool,
+    pub mounts: Vec<MountReport>,
+}
+
+fn inspect_mount(path: &Path, role: MountRole) -> Result<MountReport, Error> {
+    let metadata = fs::metadata(path).map_err(|error| mount_error(path, &error))?;
+    if !metadata.is_dir() {
+        return Err(Error::Deployment(format!(
+            "Host Path '{}' for {role:?} is not a directory",
+            path.display()
+        )));
+    }
+    let readable = fs::read_dir(path).is_ok();
+    let probe = path.join(format!(".rust-jav-write-check-{}", std::process::id()));
+    let writable = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(probe);
+            true
+        }
+        Err(_) => false,
+    };
+    if !readable || !writable {
+        return Err(Error::Deployment(format!(
+            "Host Path '{}' is not {} for container UID {} / GID {}; update its TrueNAS ACL",
+            path.display(),
+            if !readable { "readable" } else { "writable" },
+            unsafe { libc::geteuid() },
+            unsafe { libc::getegid() }
+        )));
+    }
+    Ok(MountReport {
+        role,
+        path: path.to_owned(),
+        readable,
+        writable,
+        device: metadata.dev(),
+        same_filesystem_as_media: None,
+    })
+}
+
+fn mount_error(path: &Path, error: &std::io::Error) -> Error {
+    Error::Deployment(format!(
+        "Host Path '{}' is unavailable to container UID {} / GID {}: {error}",
+        path.display(),
+        unsafe { libc::geteuid() },
+        unsafe { libc::getegid() }
+    ))
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -311,7 +476,7 @@ struct Session {
 impl AppState {
     pub fn new(config: ManagementConfig, clock: impl Clock) -> Result<Self, Error> {
         let now = clock.unix_seconds();
-        let database = config.secrets_file.with_file_name("management.sqlite3");
+        let database = config.database_file.clone();
         let tasks = TaskStore::open(&database)?;
         let assets = AssetIndex::open(&database)?;
         let integration =
@@ -357,6 +522,10 @@ struct LoginRequest {
 
 pub fn app(state: AppState) -> Router {
     Router::new()
+        .route("/health/live", get(health_live))
+        .route("/health/ready", get(health_ready))
+        .route("/health/mounts", get(health_mounts))
+        .route("/health/jellyfin", get(health_jellyfin))
         .route("/api/v1/auth/initialize", post(initialize))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
@@ -396,6 +565,43 @@ pub fn app(state: AppState) -> Router {
         )
         .fallback(spa_fallback)
         .with_state(state)
+}
+
+async fn health_live() -> impl IntoResponse {
+    Json(serde_json::json!({"process":"alive"}))
+}
+
+async fn health_ready(State(state): State<AppState>) -> impl IntoResponse {
+    match rusqlite::Connection::open(&state.database)
+        .and_then(|connection| connection.query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0)))
+    {
+        Ok(result) if result == "ok" => Json(serde_json::json!({"process":"alive","database":"ready"})).into_response(),
+        Ok(result) => (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"process":"alive","database":"degraded","detail":result}))).into_response(),
+        Err(error) => (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"process":"alive","database":"unavailable","detail":error.to_string()}))).into_response(),
+    }
+}
+
+async fn health_mounts(State(state): State<AppState>) -> impl IntoResponse {
+    match state.config.validate_truenas_mounts() {
+        Ok(report) => Json(serde_json::json!({"ready":true,"report":report})).into_response(),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"ready":false,"detail":error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn health_jellyfin(State(state): State<AppState>) -> impl IntoResponse {
+    let (available, detail) = match jellyfin_client(&state) {
+        Ok(Some(client)) => match client.test_connection().await {
+            Ok(status) => (true, Some(status.server_name)),
+            Err(error) => (false, Some(error.to_string())),
+        },
+        Ok(None) => (false, Some("not configured".into())),
+        Err(status) => (false, Some(status.to_string())),
+    };
+    Json(serde_json::json!({"available":available,"detail":detail,"affects_local_readiness":false}))
 }
 
 async fn initialize(
@@ -1386,6 +1592,9 @@ async fn spa_fallback(uri: Uri) -> Response<Body> {
 }
 
 pub async fn serve(config: ManagementConfig) -> Result<(), Error> {
+    if config.container {
+        config.validate_truenas_mounts()?;
+    }
     let store = SecretsStore::new(config.secrets_file.clone());
     if let Ok(password) = std::env::var(PASSWORD_ENV) {
         if store.load()?.password_hash.is_none() {
