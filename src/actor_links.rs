@@ -44,11 +44,20 @@ pub fn plan_actor_links(source_dir: &Path, actors_root: &Path) -> io::Result<Vec
     for nfo_path in nfo_files {
         let contents = fs::read_to_string(&nfo_path)?;
         let actors = parse_actor_names(&contents);
-        let movie_code = nfo_path
+        let nfo_stem = nfo_path
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+            .unwrap_or("unknown");
+        let movie_code = if nfo_stem.eq_ignore_ascii_case("movie") {
+            nfo_path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .unwrap_or(nfo_stem)
+                .to_string()
+        } else {
+            nfo_stem.to_string()
+        };
 
         let mut warnings = Vec::new();
         if actors.is_empty() {
@@ -60,11 +69,11 @@ pub fn plan_actor_links(source_dir: &Path, actors_root: &Path) -> io::Result<Vec
 
         for actor in &actors {
             let actor_dir_name = sanitize_path_component(actor);
-            for file in &related_files {
+            for (file, relative_path) in &related_files {
                 let target = actors_root
                     .join(&actor_dir_name)
                     .join(&movie_code)
-                    .join(file.file_name().unwrap());
+                    .join(relative_path);
                 actions.push(ActionItem {
                     kind: "hard-link".to_string(),
                     source: Some(file.clone()),
@@ -299,7 +308,7 @@ fn collect_files_with_extension(
     Ok(())
 }
 
-fn collect_related_files(nfo_path: &Path) -> io::Result<Vec<PathBuf>> {
+fn collect_related_files(nfo_path: &Path) -> io::Result<Vec<(PathBuf, PathBuf)>> {
     let parent = nfo_path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "NFO file has no parent"))?;
@@ -307,6 +316,13 @@ fn collect_related_files(nfo_path: &Path) -> io::Result<Vec<PathBuf>> {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "NFO file has no stem"))?;
+
+    if movie_code.eq_ignore_ascii_case("movie") {
+        let mut files = Vec::new();
+        collect_regular_files_relative(parent, parent, &mut files)?;
+        files.sort_by(|left, right| left.1.cmp(&right.1));
+        return Ok(files);
+    }
 
     let mut files = Vec::new();
     for entry in fs::read_dir(parent)? {
@@ -321,11 +337,36 @@ fn collect_related_files(nfo_path: &Path) -> io::Result<Vec<PathBuf>> {
             continue;
         };
         if file_name.starts_with(movie_code) {
-            files.push(path);
+            files.push((path.clone(), PathBuf::from(file_name)));
         }
     }
-    files.sort();
+    files.sort_by(|left, right| left.1.cmp(&right.1));
     Ok(files)
+}
+
+fn collect_regular_files_relative(
+    root: &Path,
+    dir: &Path,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            collect_regular_files_relative(root, &path, files)?;
+        } else if metadata.is_file() {
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+                .to_owned();
+            files.push((path, relative));
+        }
+    }
+    Ok(())
 }
 
 fn sanitize_path_component(component: &str) -> String {

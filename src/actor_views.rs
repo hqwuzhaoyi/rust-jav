@@ -14,10 +14,27 @@ pub struct ActorFolder {
     pub name: String,
     pub path: PathBuf,
     pub movie_count: usize,
+    /// Recursive regular-file paths in this derived Actor Folder.
+    pub derived_file_count: usize,
+    /// Compatibility alias for `derived_file_count`.
     pub hard_link_count: usize,
+    /// Distinct regular-file inodes referenced by those paths.
+    pub unique_inode_count: usize,
     pub logical_size: u64,
     pub reclaimable_space: u64,
     pub poster_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileIdentity {
+    pub device: u64,
+    pub inode: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorFolderDetail {
+    pub folder: ActorFolder,
+    pub file_identities: Vec<FileIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,23 +67,31 @@ pub fn browse_actor_folders(actors_root: &Path) -> io::Result<Vec<ActorFolder>> 
                     .or_insert(0u64) += 1;
             }
         }
-        let logical_size = files.iter().map(|(_, metadata)| metadata.len()).sum();
         #[cfg(unix)]
-        let mut reclaimable_inodes = HashSet::new();
-        let reclaimable_space = files
+        let unique_inodes = files
             .iter()
-            .filter(|(_, metadata)| {
-                metadata.nlink() <= inode_occurrences[&(metadata.dev(), metadata.ino())]
-                    && reclaimable_inodes.insert((metadata.dev(), metadata.ino()))
-            })
+            .map(|(_, metadata)| ((metadata.dev(), metadata.ino()), metadata))
+            .collect::<HashMap<_, _>>();
+        #[cfg(unix)]
+        let logical_size = unique_inodes.values().map(|metadata| metadata.len()).sum();
+        #[cfg(unix)]
+        let reclaimable_space = unique_inodes
+            .iter()
+            .filter(|(inode, metadata)| metadata.nlink() == inode_occurrences[inode])
             .map(|(_, metadata)| metadata.len())
             .sum();
+        #[cfg(unix)]
+        let unique_inode_count = unique_inodes.len();
         #[cfg(not(unix))]
-        let reclaimable_space = 0;
+        let (logical_size, reclaimable_space, unique_inode_count) = (
+            files.iter().map(|(_, metadata)| metadata.len()).sum(),
+            0,
+            files.len(),
+        );
         let poster_path = files
             .iter()
             .map(|(path, _)| path)
-            .find(|path| is_poster(path))
+            .find(|candidate| candidate.parent() == Some(path.as_path()) && is_poster(candidate))
             .cloned();
         let movie_count = fs::read_dir(&path)?
             .filter_map(Result::ok)
@@ -76,13 +101,12 @@ pub fn browse_actor_folders(actors_root: &Path) -> io::Result<Vec<ActorFolder>> 
             name: entry.file_name().to_string_lossy().into_owned(),
             path,
             movie_count,
+            derived_file_count: files.len(),
             #[cfg(unix)]
-            hard_link_count: files
-                .iter()
-                .filter(|(_, metadata)| metadata.nlink() > 1)
-                .count(),
+            hard_link_count: files.len(),
             #[cfg(not(unix))]
             hard_link_count: files.len(),
+            unique_inode_count,
             logical_size,
             reclaimable_space,
             poster_path,
@@ -92,38 +116,45 @@ pub fn browse_actor_folders(actors_root: &Path) -> io::Result<Vec<ActorFolder>> 
     Ok(folders)
 }
 
+pub fn actor_folder_detail(
+    actors_root: &Path,
+    actor_name: &str,
+) -> io::Result<Option<ActorFolderDetail>> {
+    let Some(path) = resolve_actor_folder(actors_root, actor_name)? else {
+        return Ok(None);
+    };
+    let Some(folder) = browse_actor_folders(actors_root)?
+        .into_iter()
+        .find(|folder| folder.name == actor_name)
+    else {
+        return Ok(None);
+    };
+    let mut files = Vec::new();
+    collect_regular_files(&path, &mut files)?;
+    #[cfg(unix)]
+    let file_identities = files
+        .into_iter()
+        .map(|(_, metadata)| FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    #[cfg(not(unix))]
+    let file_identities = Vec::new();
+    Ok(Some(ActorFolderDetail {
+        folder,
+        file_identities,
+    }))
+}
+
 pub fn remove_actor_folder(
     actors_root: &Path,
     actor_name: &str,
 ) -> io::Result<Vec<RemovalOutcome>> {
-    if actor_name.is_empty()
-        || Path::new(actor_name).components().count() != 1
-        || !matches!(
-            Path::new(actor_name).components().next(),
-            Some(Component::Normal(_))
-        )
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Actor Folder name must be one safe path component",
-        ));
-    }
-    let root = fs::canonicalize(actors_root)?;
-    let folder = root.join(actor_name);
-    let metadata = fs::symlink_metadata(&folder)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Actor Folder must be a real directory inside Actor View root",
-        ));
-    }
-    let canonical = fs::canonicalize(&folder)?;
-    if canonical.parent() != Some(root.as_path()) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "Actor Folder escapes Actor View root",
-        ));
-    }
+    let canonical = resolve_actor_folder(actors_root, actor_name)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Actor Folder does not exist"))?;
     let mut files = Vec::new();
     collect_regular_files(&canonical, &mut files)?;
     let mut outcomes = Vec::new();
@@ -146,6 +177,42 @@ pub fn remove_actor_folder(
     }
     remove_empty_tree(&canonical, &mut outcomes)?;
     Ok(outcomes)
+}
+
+fn resolve_actor_folder(actors_root: &Path, actor_name: &str) -> io::Result<Option<PathBuf>> {
+    if actor_name.is_empty()
+        || Path::new(actor_name).components().count() != 1
+        || !matches!(
+            Path::new(actor_name).components().next(),
+            Some(Component::Normal(_))
+        )
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Actor Folder name must be one safe path component",
+        ));
+    }
+    let root = fs::canonicalize(actors_root)?;
+    let folder = root.join(actor_name);
+    let metadata = match fs::symlink_metadata(&folder) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Actor Folder must be a real directory inside Actor View root",
+        ));
+    }
+    let canonical = fs::canonicalize(&folder)?;
+    if canonical.parent() != Some(root.as_path()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Actor Folder escapes Actor View root",
+        ));
+    }
+    Ok(Some(canonical))
 }
 
 #[cfg(unix)]

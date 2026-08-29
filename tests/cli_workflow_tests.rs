@@ -195,6 +195,57 @@ fn actor_links_apply_creates_directory_style_links() {
 }
 
 #[test]
+fn actor_links_conventional_movie_nfo_preserves_recursive_movie_layout() {
+    let source_dir = unique_temp_dir("actor-conventional-source");
+    let actors_root = unique_temp_dir("actor-conventional-target");
+    let movie_dir = source_dir.join("MIAB-492-C");
+    let source_video = movie_dir.join("MIAB-492-C.mp4");
+    let source_trickplay = movie_dir.join("MIAB-492-C.trickplay/320 - 10x10/0.jpg");
+    write_file(&source_video, b"video");
+    write_file(&source_trickplay, b"trickplay");
+    write_file(&movie_dir.join("folder.jpg"), b"poster");
+    write_file(
+        &movie_dir.join("movie.nfo"),
+        b"<movie><actor><name>AIKA</name></actor></movie>",
+    );
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        source_dir.join("outside.jpg"),
+        movie_dir.join("MIAB-492-C.trickplay/ignored.jpg"),
+    )
+    .unwrap();
+
+    let report =
+        execute_actor_links_command(source_dir.clone(), actors_root.clone(), true).unwrap();
+    let target_movie = actors_root.join("AIKA/MIAB-492-C");
+
+    assert_eq!(report.summary.failed_actions, 0);
+    assert!(target_movie.join("MIAB-492-C.mp4").exists());
+    assert!(target_movie.join("movie.nfo").exists());
+    assert!(target_movie.join("folder.jpg").exists());
+    assert!(target_movie
+        .join("MIAB-492-C.trickplay/320 - 10x10/0.jpg")
+        .exists());
+    assert!(!target_movie
+        .join("MIAB-492-C.trickplay/ignored.jpg")
+        .exists());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&source_trickplay).unwrap().ino(),
+            fs::metadata(target_movie.join("MIAB-492-C.trickplay/320 - 10x10/0.jpg"))
+                .unwrap()
+                .ino()
+        );
+    }
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(actors_root).unwrap();
+}
+
+#[test]
 fn actor_links_apply_adds_dual_scope_verification_summary() {
     let source_dir = unique_temp_dir("actor-verify-source");
     let actors_root = unique_temp_dir("actor-verify-target");

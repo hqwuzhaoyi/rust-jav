@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
@@ -375,6 +376,27 @@ impl AssetIndex {
         Ok(value
             .map(PathBuf::from)
             .filter(|p| p.is_file() && is_artwork(p)))
+    }
+
+    pub fn assets_by_identities(
+        &self,
+        identities: &[(u64, u64)],
+    ) -> Result<Vec<MediaAsset>, Error> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare("SELECT id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,observed_at,captured_date,state,exception FROM media_assets WHERE device=?1 AND inode=?2 ORDER BY path")?;
+        let mut seen = HashSet::new();
+        let mut assets = Vec::new();
+        for &(device, inode) in identities {
+            let matches =
+                statement.query_map(params![device as i64, inode as i64], asset_from_row)?;
+            for asset in matches {
+                let asset = asset?;
+                if seen.insert(asset.id.clone()) {
+                    assets.push(asset);
+                }
+            }
+        }
+        Ok(assets)
     }
 
     pub fn detail(&self, id: &str) -> Result<Option<AssetDetail>, Error> {

@@ -84,9 +84,19 @@ async fn actor_folder_api_lists_confirmation_and_removes_via_management_task() {
     std::fs::create_dir_all(media.join("ABC-123")).unwrap();
     std::fs::create_dir_all(actors.join("Alice/ABC-123")).unwrap();
     std::fs::write(media.join("ABC-123/ABC-123.mp4"), b"movie").unwrap();
+    std::fs::write(
+        media.join("ABC-123/ABC-123.nfo"),
+        "<movie><title>Blue Room</title><actor><name>Alice</name></actor></movie>",
+    )
+    .unwrap();
     std::fs::hard_link(
         media.join("ABC-123/ABC-123.mp4"),
         actors.join("Alice/ABC-123/ABC-123.mp4"),
+    )
+    .unwrap();
+    std::fs::hard_link(
+        media.join("ABC-123/ABC-123.mp4"),
+        actors.join("Alice/ABC-123/ABC-123-copy.mp4"),
     )
     .unwrap();
     config.media_roots.push(media.clone());
@@ -126,9 +136,60 @@ async fn actor_folder_api_lists_confirmation_and_removes_via_management_task() {
         serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(folders[0]["name"], "Alice");
     assert_eq!(folders[0]["movie_count"], 1);
-    assert_eq!(folders[0]["hard_link_count"], 1);
+    assert_eq!(folders[0]["derived_file_count"], 2);
+    assert_eq!(folders[0]["unique_inode_count"], 1);
+    assert_eq!(folders[0]["hard_link_count"], 2);
     assert_eq!(folders[0]["logical_size"], 5);
     assert_eq!(folders[0]["reclaimable_space"], 0);
+
+    let detail_response = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/actors/Alice",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(detail_response.status(), StatusCode::OK);
+    let detail: serde_json::Value = serde_json::from_slice(
+        &to_bytes(detail_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(detail["name"], "Alice");
+    assert_eq!(detail["linked_assets"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["linked_assets"][0]["jav_code"], "ABC-123");
+
+    let asset_id = detail["linked_assets"][0]["id"].as_str().unwrap();
+    let asset_response = json_request(
+        app(state.clone()),
+        "GET",
+        &format!("/api/v1/assets/{asset_id}"),
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let asset_detail: serde_json::Value = serde_json::from_slice(
+        &to_bytes(asset_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        asset_detail["actors"][0]["actor_folder_url"],
+        "/actors/QWxpY2U"
+    );
+
+    let missing = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/actors/Missing",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 
     let removal = json_request(
         app(state.clone()),
@@ -282,10 +343,8 @@ async fn authenticated_asset_detail_api_exposes_nfo_and_rejects_anonymous_access
     assert_eq!(detail["studio"], "Example");
     assert_eq!(detail["parse_status"], "valid");
     assert_eq!(detail["actors"][0]["name"], "miru");
-    assert!(detail["actors"][0]["actor_folder_url"]
-        .as_str()
-        .unwrap()
-        .starts_with("/actors/"));
+    assert!(detail["actors"][0]["poster_url"].is_null());
+    assert!(detail["actors"][0]["actor_folder_url"].is_null());
 }
 
 #[tokio::test]
@@ -1323,6 +1382,11 @@ async fn generated_openapi_describes_task_rest_and_sse_contracts() {
         document["components"]["schemas"]["MediaAsset"]["properties"]["state"]["enum"][2],
         "exception"
     );
+    assert_eq!(
+        document["components"]["schemas"]["ActorFolder"]["properties"]["linked_assets"]["items"]
+            ["$ref"],
+        "#/components/schemas/MediaAsset"
+    );
 }
 
 #[tokio::test]
@@ -1519,11 +1583,21 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
         Arc,
     };
     let refreshes = Arc::new(AtomicUsize::new(0));
+    let image_requests = Arc::new(AtomicUsize::new(0));
     let count = refreshes.clone();
+    let image_count = image_requests.clone();
     let jellyfin = Router::new()
         .route("/System/Info", get(|| async { Json(serde_json::json!({"ServerName":"TrueNAS Jellyfin","Version":"10.11","Id":"server"})) }))
         .route("/Library/MediaFolders", get(|| async { Json(serde_json::json!({"Items":[{"Id":"jav","Name":"JAV","Path":"/media/jav"}]})) }))
         .route("/Items", get(|| async { Json(serde_json::json!({"Items":[{"Id":"jf-1","Name":"ABC-123","Path":"/media/jav/ABC-123.mp4","ProviderIds":{},"UserData":{"Played":true,"PlayCount":1,"PlaybackPositionTicks":0}}]})) }))
+        .route("/Persons", get(|| async { Json(serde_json::json!({"Items":[{"Id":"person-alice","Name":"Alice","ImageTags":{"Primary":"portrait-tag"}}]})) }))
+        .route("/Items/:id/Images/Primary", get(move |headers: axum::http::HeaderMap, axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String,String>>| { let image_count=image_count.clone(); async move {
+            assert_eq!(headers["X-Emby-Token"], "server-only-secret");
+            assert_eq!(query.get("maxWidth").map(String::as_str), Some("320"));
+            assert_eq!(query.get("tag").map(String::as_str), Some("portrait-tag"));
+            image_count.fetch_add(1, Ordering::SeqCst);
+            ([(header::CONTENT_TYPE, "image/jpeg")], b"actor portrait".to_vec())
+        }}))
         .route("/Library/Refresh", post(move || { let count=count.clone(); async move { count.fetch_add(1, Ordering::SeqCst); StatusCode::NO_CONTENT } }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let jellyfin_url = format!("http://{}", listener.local_addr().unwrap());
@@ -1535,10 +1609,19 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
     std::fs::write(root.join("ABC-123.mp4"), b"video").unwrap();
     std::fs::write(
         root.join("ABC-123.nfo"),
-        "<movie><title>ABC-123</title></movie>",
+        "<movie><title>ABC-123</title><actor><name>Alice</name></actor></movie>",
+    )
+    .unwrap();
+    let actors = dir.path().join("actors");
+    std::fs::create_dir_all(actors.join("Alice/ABC-123")).unwrap();
+    std::fs::hard_link(
+        root.join("ABC-123.mp4"),
+        actors.join("Alice/ABC-123/ABC-123.mp4"),
     )
     .unwrap();
     config.media_roots.push(root);
+    config.actor_view_root = Some(actors);
+    config.artwork_cache_root = Some(dir.path().join("artwork-cache"));
     password_secrets(
         &SecretsStore::new(config.secrets_file.clone()),
         "a strong password",
@@ -1616,6 +1699,63 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
         .as_str()
         .unwrap()
         .contains("web/#/details?id=jf-1"));
+    assert_eq!(
+        detail["actors"][0]["poster_url"],
+        "/api/v1/actors/Alice/poster"
+    );
+
+    let actor_list = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/actors",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let actor_list: serde_json::Value =
+        serde_json::from_slice(&to_bytes(actor_list.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
+    assert_eq!(actor_list[0]["poster_url"], "/api/v1/actors/Alice/poster");
+
+    let portrait = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/actors/Alice/poster",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(portrait.status(), StatusCode::OK);
+    assert_eq!(portrait.headers()[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(
+        to_bytes(portrait.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .as_ref(),
+        b"actor portrait"
+    );
+    assert_eq!(image_requests.load(Ordering::SeqCst), 1);
+    let cached_portrait = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/actors/Alice/poster",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(cached_portrait.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(cached_portrait.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .as_ref(),
+        b"actor portrait"
+    );
+    assert_eq!(
+        image_requests.load(Ordering::SeqCst),
+        1,
+        "person ID + image tag cache hit"
+    );
 
     let refresh = json_request(
         app(state.clone()),

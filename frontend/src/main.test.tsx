@@ -147,3 +147,120 @@ describe("permanent deletion", () => {
     expect(requests.some(request=>request.url.endsWith("/execute")&&request.body?.includes('"irreversible":true'))).toBe(true);
   });
 });
+
+const actorSummary = {
+  name: "Alice Aoki",
+  movie_count: 2,
+  derived_file_count: 7,
+  hard_link_count: 7,
+  unique_inode_count: 3,
+  logical_size: 5242880,
+  reclaimable_space: 1048576,
+  poster_url: "/api/v1/actors/Alice%20Aoki/poster",
+};
+
+const linkedAsset = {
+  id: "asset-1",
+  path: "/media/ABC-123/ABC-123.mp4",
+  jav_code: "ABC-123",
+  title: "Linked Film",
+  artwork_url: "/art/ABC-123.jpg",
+  captured_date: "2026-08-30",
+  state: "normal",
+  exception: null,
+};
+
+function stubActorApi() {
+  const requests: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "/api/v1/status") return Response.json({ state: "healthy" });
+      if (url.startsWith("/api/v1/assets?"))
+        return Response.json({
+          items: [linkedAsset],
+          groups: [{ date: "2026-08-30", count: 1 }],
+          page: 1,
+          total: 1,
+          total_pages: 1,
+        });
+      if (url === "/api/v1/assets/health")
+        return Response.json({ state: "healthy", mode: "manual" });
+      if (url === "/api/v1/actors") return Response.json([actorSummary]);
+      if (url === "/api/v1/actors/Alice%20Aoki")
+        return Response.json({ ...actorSummary, linked_assets: [linkedAsset] });
+      if (url === "/api/v1/assets/asset-1")
+        return Response.json({
+          ...linkedAsset,
+          actors: [{ name: "Alice Aoki", poster_url: actorSummary.poster_url, actor_folder_url: "/actors/QWxpY2UgQW9raQ" }],
+          studio: "Studio",
+          release_date: "2026-08-30",
+          runtime_minutes: 90,
+          director: null,
+          tags: [],
+          plot: null,
+          parse_status: "valid",
+          source_path: "/media/ABC-123/ABC-123.nfo",
+        });
+      return new Response(null, { status: 204 });
+    }),
+  );
+  return requests;
+}
+
+describe("Actor detail navigation", () => {
+  it("opens an actor card without invoking its separate Remove action", async () => {
+    const requests = stubActorApi();
+    render(<App />);
+    await userEvent.click((await screen.findAllByRole("button", { name: /Actors/ }))[0]);
+    await userEvent.click(await screen.findByRole("button", { name: "Open Alice Aoki" }));
+
+    expect(await screen.findByRole("heading", { name: "Alice Aoki" })).toBeInTheDocument();
+    expect(location.pathname).toBe("/actors/QWxpY2UgQW9raQ");
+    expect(requests).toContain("/api/v1/actors/Alice%20Aoki");
+    expect(requests.filter((url) => url === "/api/v1/actors/Alice%20Aoki")).toHaveLength(1);
+  });
+
+  it("loads a base64url actor route directly and exposes the required metrics", async () => {
+    history.replaceState({}, "", "/actors/QWxpY2UgQW9raQ");
+    stubActorApi();
+    render(<App />);
+
+    expect(await screen.findByText("Derived paths")).toBeInTheDocument();
+    expect(screen.getByText("Unique files")).toBeInTheDocument();
+    expect(screen.getByText("Referenced logical size")).toBeInTheDocument();
+    expect(screen.getByText("Reclaimable if removed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove Actor Folder…" })).toBeInTheDocument();
+  });
+
+  it("opens a linked Media Asset and returns to its actor through browser history", async () => {
+    history.replaceState({}, "", "/actors/QWxpY2UgQW9raQ");
+    stubActorApi();
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /Open ABC-123/ }));
+    expect(await screen.findByRole("heading", { name: "ABC-123" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to Alice Aoki" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Back to Alice Aoki" }));
+    expect(await screen.findByText("Referenced logical size")).toBeInTheDocument();
+    expect(location.pathname).toBe("/actors/QWxpY2UgQW9raQ");
+  });
+});
+
+describe("BeUI Photos presentation", () => {
+  it("renders a dense 4:3 gallery with overlays and accessible motion tabs", async () => {
+    stubActorApi();
+    render(<App />);
+
+    const tile = await screen.findByRole("button", { name: "Inspect ABC-123" });
+    expect(tile.closest(".asset-card")).toHaveClass("photos-tile");
+    expect(tile.querySelector(".asset-overlay")).toBeInTheDocument();
+    expect(tile.querySelector("svg")).toBeInTheDocument();
+    await userEvent.click(tile);
+    expect(await screen.findByRole("tab", { name: "Overview" })).toHaveAttribute(
+      "aria-controls",
+    );
+  });
+});

@@ -1,5 +1,24 @@
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Clock3,
+  Film,
+  Grid2X2,
+  Image as ImageIcon,
+  ListTodo,
+  LogOut,
+  RefreshCw,
+  Search,
+  Settings,
+  Trash2,
+  UserRound,
+  Users,
+  X,
+} from "lucide-react";
+import { BeUITab, BeUITabPanel, BeUITabs, BeUITabsList } from "./beui-tabs";
 import "./style.css";
 type View = "loading" | "initialize" | "login" | "ready";
 type Validation = { valid: true; empty: boolean; yaml: string } | null;
@@ -93,6 +112,9 @@ type ActorFolder = {
   logical_size: number;
   reclaimable_space: number;
   poster_url: string | null;
+  derived_file_count?: number;
+  unique_inode_count?: number;
+  linked_assets?: Asset[];
 };
 type Task = {
   id: string;
@@ -128,6 +150,23 @@ const labels: Record<AssetState, string> = {
   synchronizing: "Synchronizing",
   exception: "Exception",
 };
+function actorRoute(name: string) {
+  const bytes = new TextEncoder().encode(name);
+  let binary = "";
+  bytes.forEach((byte) => (binary += String.fromCharCode(byte)));
+  return `/actors/${btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}`;
+}
+function actorNameFromPath(pathname = location.pathname) {
+  const match = pathname.match(/^\/actors\/([^/]+)$/);
+  if (!match) return null;
+  try {
+    const encoded = match[1].replaceAll("-", "+").replaceAll("_", "/");
+    const binary = atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "="));
+    return new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
+  } catch {
+    return null;
+  }
+}
 export function App() {
   const token = new URLSearchParams(location.search).get("token"),
     [view, setView] = useState<View>(token ? "initialize" : "loading"),
@@ -148,7 +187,7 @@ export function App() {
     [page, setPage] = useState(1),
     [nav, setNav] = useState<
       "assets" | "actors" | "deletion" | "tasks" | "settings"
-    >("assets");
+    >(actorNameFromPath() ? "actors" : "assets");
   const [tasks, setTasks] = useState<Task[]>([]),
     [mediaRoot, setMediaRoot] = useState(""),
     [selectedOps, setSelectedOps] = useState<string[]>(
@@ -172,6 +211,9 @@ export function App() {
   const [actors, setActors] = useState<ActorFolder[]>([]);
   const [confirmActor, setConfirmActor] = useState<ActorFolder | null>(null);
   const [actorBusy, setActorBusy] = useState(false);
+  const [inspectedActor, setInspectedActor] = useState<ActorFolder | null>(null);
+  const [actorDetailLoading, setActorDetailLoading] = useState(false);
+  const [assetBackActor, setAssetBackActor] = useState<ActorFolder | null>(null);
   useEffect(() => {
     if (!token)
       fetch("/api/v1/status").then((r) => {
@@ -197,6 +239,24 @@ export function App() {
     if (nav === "deletion") void loadCandidates();
     if (nav === "actors") void loadActors();
   }, [nav]);
+  useEffect(() => {
+    if (view !== "ready") return;
+    const actorName = actorNameFromPath();
+    if (actorName) void openActor(actorName, false);
+    const onPopState = () => {
+      const poppedActor = actorNameFromPath();
+      setAssetBackActor(null);
+      setInspectedAsset(null);
+      setAssetDetail(null);
+      if (poppedActor) void openActor(poppedActor, false);
+      else {
+        setInspectedActor(null);
+        setNav("assets");
+      }
+    };
+    addEventListener("popstate", onPopState);
+    return () => removeEventListener("popstate", onPopState);
+  }, [view]);
   async function loadJellyfinConfig() {
     const response = await fetch("/api/v1/jellyfin/config");
     if (response.ok) {
@@ -259,6 +319,28 @@ export function App() {
       setMessage(
         (await response.text()) || "Actor Folders could not be loaded.",
       );
+  }
+  async function openActor(actor: ActorFolder | string, push = true) {
+    const name = typeof actor === "string" ? actor : actor.name;
+    setNav("actors");
+    setActorDetailLoading(true);
+    setInspectedAsset(null);
+    setAssetDetail(null);
+    if (push) history.pushState({ actor: name }, "", actorRoute(name));
+    const response = await fetch(`/api/v1/actors/${encodeURIComponent(name)}`);
+    if (response.ok) setInspectedActor((await response.json()) as ActorFolder);
+    else setMessage((await response.text()) || "Actor Folder could not be loaded.");
+    setActorDetailLoading(false);
+  }
+  function closeActor() {
+    setInspectedActor(null);
+    history.pushState({}, "", "/actors");
+  }
+  async function openLinkedAsset(asset: Asset) {
+    if (inspectedActor) setAssetBackActor(inspectedActor);
+    setInspectedActor(null);
+    history.pushState({ asset: asset.id }, "", `/assets/${encodeURIComponent(asset.id)}`);
+    await inspect(asset);
   }
   async function requestActorRemoval(actor: ActorFolder) {
     setActorBusy(true);
@@ -433,6 +515,12 @@ export function App() {
   function closeInspector() {
     setInspectedAsset(null);
     setAssetDetail(null);
+    if (assetBackActor) {
+      const actor = assetBackActor;
+      setAssetBackActor(null);
+      setInspectedActor(actor);
+      history.pushState({ actor: actor.name }, "", actorRoute(actor.name));
+    }
   }
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -559,7 +647,7 @@ export function App() {
   if (view === "initialize" || view === "login")
     return (
       <main className="auth">
-        <div className="brand-mark">◆</div>
+        <div className="brand-mark"><ImageIcon aria-hidden="true" /></div>
         <p className="eyebrow">RUST—JAV</p>
         <h1>
           {view === "initialize" ? "Initialize Administrator" : "Welcome back"}
@@ -591,7 +679,7 @@ export function App() {
     <div className={`shell ${inspectedAsset ? "inspecting" : ""}`}>
       <aside className="sidebar">
         <div className="logo">
-          <span>◆</span>
+          <span><ImageIcon aria-hidden="true" /></span>
           <div>
             <b>rust-jav</b>
             <small>Media library</small>
@@ -603,39 +691,39 @@ export function App() {
             className={nav === "assets" ? "active" : ""}
             onClick={() => setNav("assets")}
           >
-            <span>▦</span> All Assets <em>{assets.total}</em>
+            <span><Grid2X2 aria-hidden="true" /></span> All Assets <em>{assets.total}</em>
           </button>
           <button>
-            <span>◷</span> Recently Added
+            <span><Clock3 aria-hidden="true" /></span> Recently Added
           </button>
           <button
             className={nav === "actors" ? "active" : ""}
             onClick={() => setNav("actors")}
           >
-            <span>♙</span> Actors
+            <span><Users aria-hidden="true" /></span> Actors
             <em>{actors.length}</em>
           </button>
           <button
             className={nav === "deletion" ? "active" : ""}
             onClick={() => setNav("deletion")}
           >
-            <span>⌫</span> Deletion Candidates
+            <span><Trash2 aria-hidden="true" /></span> Deletion Candidates
           </button>
           <p>MANAGE</p>
           <button
             className={nav === "tasks" ? "active" : ""}
             onClick={() => setNav("tasks")}
           >
-            <span>☷</span> Management Tasks
+            <span><ListTodo aria-hidden="true" /></span> Management Tasks
           </button>
           <button>
-            <span>⚠</span> Exceptions
+            <span><AlertTriangle aria-hidden="true" /></span> Exceptions
           </button>
           <button
             className={nav === "settings" ? "active" : ""}
             onClick={() => setNav("settings")}
           >
-            <span>⚙</span> Settings
+            <span><Settings aria-hidden="true" /></span> Settings
           </button>
         </nav>
         <div className="root-card">
@@ -651,7 +739,7 @@ export function App() {
           </span>
         </div>
         <button className="signout" onClick={logout}>
-          Sign out
+          <LogOut aria-hidden="true" /> Sign out
         </button>
       </aside>
       <main className="content">
@@ -681,7 +769,7 @@ export function App() {
           </div>
           {nav === "assets" && (
             <button className="scan" onClick={scan}>
-              ↻ <span>Reconcile</span>
+              <RefreshCw aria-hidden="true" /> <span>Reconcile</span>
             </button>
           )}
         </header>
@@ -689,7 +777,7 @@ export function App() {
           <>
             <div className="toolbar">
               <label className="search">
-                ⌕
+                <Search aria-hidden="true" />
                 <input
                   aria-label="Search assets"
                   placeholder="Search code, title, or path"
@@ -741,7 +829,7 @@ export function App() {
                     <div className="asset-grid">
                       {items.map((a) => (
                         <article
-                          className={`asset-card ${inspectedAsset?.id === a.id ? "selected" : ""}`}
+                          className={`asset-card photos-tile ${inspectedAsset?.id === a.id ? "selected" : ""}`}
                           key={a.id}
                         >
                           <button
@@ -762,17 +850,14 @@ export function App() {
                                   <small>NO ARTWORK</small>
                                 </div>
                               )}
-                              <span
-                                className={`state ${a.state}`}
-                                title={a.exception ?? labels[a.state]}
-                              />
-                            </div>
-                            <div className="meta">
-                              <b>{a.jav_code ?? a.title ?? "Unidentified"}</b>
-                              <span>{a.title ?? a.path.split("/").pop()}</span>
-                              <small className={`state-label ${a.state}`}>
-                                {labels[a.state]}
-                              </small>
+                              <div className="asset-overlay">
+                                <Film aria-hidden="true" />
+                                <span>
+                                  <b>{a.jav_code ?? a.title ?? "Unidentified"}</b>
+                                  <small>{a.title ?? a.path.split("/").pop()}</small>
+                                </span>
+                                <em className={`state-label ${a.state}`}>{labels[a.state]}</em>
+                              </div>
                             </div>
                           </button>
                         </article>
@@ -820,6 +905,7 @@ export function App() {
           <ActorFolders
             actors={actors}
             busy={actorBusy}
+            inspect={(actor) => void openActor(actor)}
             remove={requestActorRemoval}
           />
         )}
@@ -1025,8 +1111,20 @@ export function App() {
           detail={assetDetail}
           loading={detailLoading}
           close={closeInspector}
+          backLabel={assetBackActor ? `Back to ${assetBackActor.name}` : undefined}
         />
       )}
+      <AnimatePresence>
+        {(inspectedActor || actorDetailLoading) && (
+          <ActorInspector
+            actor={inspectedActor}
+            loading={actorDetailLoading}
+            close={closeActor}
+            openAsset={(asset) => void openLinkedAsset(asset)}
+            remove={(actor) => void requestActorRemoval(actor)}
+          />
+        )}
+      </AnimatePresence>
       {confirmActor && (
         <ActorRemovalDialog
           actor={confirmActor}
@@ -1040,31 +1138,31 @@ export function App() {
           className={nav === "assets" ? "active" : ""}
           onClick={() => setNav("assets")}
         >
-          <span>▦</span>Library
+          <span><Grid2X2 aria-hidden="true" /></span>Library
         </button>
         <button
           className={nav === "actors" ? "active" : ""}
           onClick={() => setNav("actors")}
         >
-          <span>♙</span>Actors
+          <span><Users aria-hidden="true" /></span>Actors
         </button>
         <button
           className={nav === "deletion" ? "active" : ""}
           onClick={() => setNav("deletion")}
         >
-          <span>⌫</span>Delete
+          <span><Trash2 aria-hidden="true" /></span>Delete
         </button>
         <button
           className={nav === "tasks" ? "active" : ""}
           onClick={() => setNav("tasks")}
         >
-          <span>☷</span>Tasks
+          <span><ListTodo aria-hidden="true" /></span>Tasks
         </button>
         <button
           className={nav === "settings" ? "active" : ""}
           onClick={() => setNav("settings")}
         >
-          <span>⚙</span>Settings
+          <span><Settings aria-hidden="true" /></span>Settings
         </button>
       </nav>
       {plan && (
@@ -1137,11 +1235,13 @@ function AssetInspector({
   detail,
   loading,
   close,
+  backLabel,
 }: {
   asset: Asset;
   detail: AssetDetail | null;
   loading: boolean;
   close: () => void;
+  backLabel?: string;
 }) {
   const [tab, setTab] = useState<"overview" | "nfo">("overview");
   useEffect(() => setTab("overview"), [asset.id]);
@@ -1153,7 +1253,10 @@ function AssetInspector({
     return () => removeEventListener("keydown", escape);
   }, [close]);
   return (
-    <aside
+    <motion.aside
+      initial={{ x: 28, opacity: 0 }}
+      animate={{ x: 0, opacity: 1 }}
+      exit={{ x: 28, opacity: 0 }}
       className="asset-inspector"
       role="dialog"
       aria-modal="false"
@@ -1161,13 +1264,17 @@ function AssetInspector({
     >
       <div className="sheet-handle" />
       <button
-        autoFocus
         className="inspector-close"
         onClick={close}
         aria-label="Close asset details"
       >
-        ×
+        <X aria-hidden="true" />
       </button>
+      {backLabel && (
+        <button className="inspector-back" onClick={close} aria-label={backLabel}>
+          <ArrowLeft aria-hidden="true" /> <span>{backLabel}</span>
+        </button>
+      )}
       <div className="inspector-hero">
         {asset.artwork_url ? (
           <img src={asset.artwork_url} alt="" />
@@ -1178,36 +1285,25 @@ function AssetInspector({
           </div>
         )}
         <div>
-          <strong id="asset-detail-title">
+          <h2 id="asset-detail-title">
             {asset.jav_code ?? "Media Asset"}
-          </strong>
+          </h2>
           <span>
             {detail?.title ?? asset.title ?? asset.path.split("/").pop()}
           </span>
         </div>
       </div>
-      <div className="detail-tabs" role="tablist" aria-label="Asset details">
-        <button
-          role="tab"
-          aria-selected={tab === "overview"}
-          onClick={() => setTab("overview")}
-        >
-          Overview
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === "nfo"}
-          onClick={() => setTab("nfo")}
-        >
-          NFO
-        </button>
-      </div>
+      <BeUITabs defaultValue="overview" value={tab} onValueChange={(value) => setTab(value as "overview" | "nfo")} className="detail-tabs">
+        <BeUITabsList label="Asset details">
+          <BeUITab value="overview">Overview</BeUITab>
+          <BeUITab value="nfo">NFO</BeUITab>
+        </BeUITabsList>
       {loading ? (
         <p className="detail-loading" role="status">
           Loading asset details…
         </p>
       ) : detail && tab === "overview" ? (
-        <div role="tabpanel" className="detail-panel">
+        <BeUITabPanel value="overview">
           <StateBanner detail={detail} />
           <h2>Actors</h2>
           {detail.actors.length ? (
@@ -1225,7 +1321,7 @@ function AssetInspector({
                         alt={`${actor.name} poster`}
                       />
                     ) : (
-                      <span className="actor-silhouette">♙</span>
+                      <span className="actor-silhouette"><UserRound aria-hidden="true" /></span>
                     )}
                     <span>
                       <b>{actor.name}</b>
@@ -1234,7 +1330,7 @@ function AssetInspector({
                   </a>
                 ) : (
                   <div className="actor-poster" key={actor.name}>
-                    <span className="actor-silhouette">♙</span>
+                    <span className="actor-silhouette"><UserRound aria-hidden="true" /></span>
                     <span>
                       <b>{actor.name}</b>
                       <small>Actor Folder unavailable</small>
@@ -1251,10 +1347,10 @@ function AssetInspector({
             <Info k="Release" v={detail.release_date} />
             <Info k="Source video" v={detail.path} />
           </dl>
-        </div>
+        </BeUITabPanel>
       ) : (
         detail && (
-          <div role="tabpanel" className="detail-panel">
+          <BeUITabPanel value="nfo">
             <p className="plot">{detail.plot ?? "No plot in this NFO."}</p>
             <dl className="detail-list">
               <Info k="Title" v={detail.title} />
@@ -1277,10 +1373,11 @@ function AssetInspector({
                 <span key={tag}>{tag}</span>
               ))}
             </div>
-          </div>
+          </BeUITabPanel>
         )
       )}
-    </aside>
+      </BeUITabs>
+    </motion.aside>
   );
 }
 function StateBanner({ detail }: { detail: AssetDetail }) {
@@ -1323,16 +1420,18 @@ function Info({ k, v }: { k: string; v: string | null }) {
 function ActorFolders({
   actors,
   busy,
+  inspect,
   remove,
 }: {
   actors: ActorFolder[];
   busy: boolean;
+  inspect: (actor: ActorFolder) => void;
   remove: (actor: ActorFolder) => Promise<void>;
 }) {
   if (!actors.length)
     return (
       <div className="empty">
-        <span>♙</span>
+        <span><UserRound aria-hidden="true" /></span>
         <h2>No Actor Folders</h2>
         <p>Generate the derived Actor View from NFO metadata.</p>
       </div>
@@ -1341,37 +1440,77 @@ function ActorFolders({
     <div className="actor-folder-grid">
       {actors.map((actor) => (
         <article className="actor-folder-card" key={actor.name}>
-          <div className="actor-folder-poster">
-            {actor.poster_url ? (
-              <img src={actor.poster_url} alt={`${actor.name} poster`} />
-            ) : (
-              <span>♙</span>
-            )}
-          </div>
-          <div className="actor-folder-meta">
-            <h2>{actor.name}</h2>
-            <p>
-              {actor.movie_count} movie director
-              {actor.movie_count === 1 ? "y" : "ies"} · {actor.hard_link_count}{" "}
-              hard link{actor.hard_link_count === 1 ? "" : "s"}
-            </p>
-            <dl>
-              <div>
-                <dt>Logical Size</dt>
-                <dd>{formatBytes(actor.logical_size)}</dd>
-              </div>
-              <div>
-                <dt>Reclaimable Space</dt>
-                <dd>{formatBytes(actor.reclaimable_space)}</dd>
-              </div>
-            </dl>
-            <button disabled={busy} onClick={() => void remove(actor)}>
-              Remove Actor Folder…
-            </button>
-          </div>
+          <button className="actor-folder-open" aria-label={`Open ${actor.name}`} onClick={() => inspect(actor)}>
+            <div className="actor-folder-poster">
+              {actor.poster_url ? (
+                <img src={actor.poster_url} alt={`${actor.name} portrait`} />
+              ) : (
+                <span><UserRound aria-hidden="true" /></span>
+              )}
+              <div><b>{actor.name}</b><p>{actor.movie_count} linked Media Assets</p></div>
+            </div>
+          </button>
+          <button className="actor-remove" disabled={busy} onClick={() => void remove(actor)}>
+            <Trash2 aria-hidden="true" /> Remove
+          </button>
         </article>
       ))}
     </div>
+  );
+}
+function ActorInspector({
+  actor,
+  loading,
+  close,
+  openAsset,
+  remove,
+}: {
+  actor: ActorFolder | null;
+  loading: boolean;
+  close: () => void;
+  openAsset: (asset: Asset) => void;
+  remove: (actor: ActorFolder) => void;
+}) {
+  const reduce = useReducedMotion();
+  return (
+    <motion.aside
+      className="asset-inspector actor-inspector"
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="actor-detail-title"
+      initial={{ x: reduce ? 0 : 40, opacity: 0 }}
+      animate={{ x: 0, opacity: 1 }}
+      exit={{ x: reduce ? 0 : 40, opacity: 0 }}
+    >
+      <div className="sheet-handle" aria-hidden="true" />
+      <button className="inspector-close" onClick={close} aria-label="Close actor details"><X aria-hidden="true" /></button>
+      {loading && !actor ? <p role="status">Loading Actor Folder…</p> : actor && (
+        <>
+          <div className="actor-detail-hero">
+            {actor.poster_url ? <img src={actor.poster_url} alt={`${actor.name} portrait`} /> : <UserRound aria-hidden="true" />}
+            <div><p className="eyebrow">ACTOR VIEW</p><h2 id="actor-detail-title">{actor.name}</h2></div>
+          </div>
+          <dl className="actor-metrics">
+            <Info k="Derived paths" v={String(actor.derived_file_count ?? actor.hard_link_count)} />
+            <Info k="Unique files" v={String(actor.unique_inode_count ?? actor.movie_count)} />
+            <Info k="Referenced logical size" v={formatBytes(actor.logical_size)} />
+            <Info k="Reclaimable if removed" v={formatBytes(actor.reclaimable_space)} />
+          </dl>
+          <section className="linked-assets">
+            <div className="section-title"><h3>Linked Media Assets</h3><span>{actor.linked_assets?.length ?? 0}</span></div>
+            <div className="linked-asset-grid">
+              {(actor.linked_assets ?? []).map((asset) => (
+                <button key={asset.id} aria-label={`Open ${asset.jav_code ?? asset.title ?? "Media Asset"}`} onClick={() => openAsset(asset)}>
+                  {asset.artwork_url ? <img src={asset.artwork_url} alt="" /> : <Film aria-hidden="true" />}
+                  <span><b>{asset.jav_code ?? "Media Asset"}</b><small>{asset.title ?? asset.path}</small></span>
+                </button>
+              ))}
+            </div>
+          </section>
+          <button className="actor-detail-remove" onClick={() => remove(actor)}><Trash2 aria-hidden="true" /> Remove Actor Folder…</button>
+        </>
+      )}
+    </motion.aside>
   );
 }
 function ActorRemovalDialog({
@@ -1415,15 +1554,19 @@ function ActorRemovalDialog({
             <dd>{actor.movie_count}</dd>
           </div>
           <div>
-            <dt>Hard links</dt>
-            <dd>{actor.hard_link_count}</dd>
+            <dt>Derived paths</dt>
+            <dd>{actor.derived_file_count ?? actor.hard_link_count}</dd>
           </div>
           <div>
-            <dt>Logical Size</dt>
+            <dt>Unique files</dt>
+            <dd>{actor.unique_inode_count ?? 0}</dd>
+          </div>
+          <div>
+            <dt>Referenced logical size</dt>
             <dd>{formatBytes(actor.logical_size)}</dd>
           </div>
           <div>
-            <dt>Reclaimable Space</dt>
+            <dt>Reclaimable if removed</dt>
             <dd>{formatBytes(actor.reclaimable_space)}</dd>
           </div>
         </dl>
@@ -1622,7 +1765,7 @@ function formatDate(v: string) {
 }
 function formatBytes(value: number) {
   if (value < 1024) return `${value} B`;
-  const units = ["KB", "MB", "GB", "TB"];
+  const units = ["KiB", "MiB", "GiB", "TiB"];
   let size = value / 1024,
     index = 0;
   while (size >= 1024 && index < units.length - 1) {

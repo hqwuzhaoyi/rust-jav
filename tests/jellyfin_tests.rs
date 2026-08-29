@@ -7,8 +7,8 @@ use axum::{
     Json, Router,
 };
 use rust_jav::jellyfin::{
-    associate, AssociationConfidence, JellyfinClient, JellyfinConfig, JellyfinItem,
-    JellyfinLibrary, RefreshOutcome, RetryPolicy,
+    associate, match_person, AssociationConfidence, JellyfinClient, JellyfinConfig, JellyfinItem,
+    JellyfinLibrary, JellyfinPerson, RefreshOutcome, RetryPolicy,
 };
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
@@ -22,6 +22,7 @@ struct MockData {
     item_queries: Vec<BTreeMap<String, String>>,
     refreshes: usize,
     refresh_failures: usize,
+    image_requests: Vec<String>,
 }
 
 async fn mock_server(refresh_failures: usize) -> (String, MockState) {
@@ -51,6 +52,26 @@ async fn mock_server(refresh_failures: usize) -> (String, MockState) {
             {"Id":"fallback","Name":"XYZ-999","Path":"/other/XYZ-999.mkv","ProviderIds":{},"UserData":{"Played":false,"PlayCount":0,"PlaybackPositionTicks":42}}
         ],"TotalRecordCount":2}))
     }
+    async fn people() -> Json<Value> {
+        Json(json!({"Items":[
+            {"Id":"alice","Name":"ＡＬＩＣＥ","ImageTags":{"Primary":"tag-a"}},
+            {"Id":"duplicate-1","Name":"森沢かな","ImageTags":{"Primary":"tag-1"}},
+            {"Id":"duplicate-2","Name":"森沢かな","ImageTags":{"Primary":"tag-2"}},
+            {"Id":"no-image","Name":"Tiny Lu","ImageTags":{}}
+        ]}))
+    }
+    async fn image(
+        State(state): State<MockState>,
+        axum::extract::Path(id): axum::extract::Path<String>,
+        Query(query): Query<BTreeMap<String, String>>,
+    ) -> ([(&'static str, &'static str); 1], Vec<u8>) {
+        state.0.lock().unwrap().image_requests.push(format!(
+            "{id}:{}:{}",
+            query.get("maxWidth").map(String::as_str).unwrap_or(""),
+            query.get("tag").map(String::as_str).unwrap_or("")
+        ));
+        ([("content-type", "image/jpeg")], b"portrait".to_vec())
+    }
     async fn refresh(State(state): State<MockState>) -> StatusCode {
         let mut data = state.0.lock().unwrap();
         data.refreshes += 1;
@@ -66,12 +87,50 @@ async fn mock_server(refresh_failures: usize) -> (String, MockState) {
         .route("/System/Info", get(info))
         .route("/Library/MediaFolders", get(libraries))
         .route("/Items", get(items))
+        .route("/Persons", get(people))
+        .route("/Items/:id/Images/Primary", get(image))
         .route("/Library/Refresh", post(refresh))
         .with_state(state.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     (format!("http://{address}"), state)
+}
+
+#[test]
+fn person_match_requires_one_unicode_normalized_name_with_primary_image() {
+    let people = vec![
+        JellyfinPerson::fixture("alice", "ＡＬＩＣＥ", Some("tag-a")),
+        JellyfinPerson::fixture("duplicate-1", "森沢かな", Some("tag-1")),
+        JellyfinPerson::fixture("duplicate-2", "森沢かな", None),
+        JellyfinPerson::fixture("no-image", "Tiny Lu", None),
+    ];
+
+    assert_eq!(match_person(" alice ", &people).unwrap().id, "alice");
+    assert!(match_person("森沢かな", &people).is_none());
+    assert!(match_person("Tiny Lu", &people).is_none());
+    assert!(match_person("Missing", &people).is_none());
+}
+
+#[tokio::test]
+async fn person_discovery_and_primary_portrait_are_server_side() {
+    let (url, state) = mock_server(0).await;
+    let client = JellyfinClient::new(
+        JellyfinConfig {
+            url,
+            library_ids: vec!["jav".into()],
+        },
+        "server-secret".into(),
+    )
+    .unwrap();
+
+    let people = client.people().await.unwrap();
+    let person = match_person("alice", &people).unwrap();
+    let image = client.primary_image(person, 320).await.unwrap();
+
+    assert_eq!(image.content_type, "image/jpeg");
+    assert_eq!(image.bytes, b"portrait");
+    assert_eq!(state.0.lock().unwrap().image_requests, ["alice:320:tag-a"]);
 }
 
 #[tokio::test]

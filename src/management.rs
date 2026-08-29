@@ -44,7 +44,10 @@ use crate::{
         DeletionOutcomeStatus, FileType as DeletionFileType, PermanentDeletionPlan,
         PermanentDeletionPlanner, RelatedHardLink,
     },
-    jellyfin::{associate, JellyfinClient, JellyfinConfig, RefreshOutcome, RetryPolicy},
+    jellyfin::{
+        associate, match_person, JellyfinClient, JellyfinConfig, JellyfinImage, JellyfinPerson,
+        RefreshOutcome, RetryPolicy,
+    },
     management_tasks::{NewTask, TaskCoordinator, TaskKind, TaskStore},
     tui::state::OperationType,
 };
@@ -1432,7 +1435,22 @@ async fn asset_detail(
     match state.assets.detail(&asset_id) {
         Ok(Some(detail)) => {
             let mut value = serde_json::to_value(&detail).unwrap_or_default();
+            for (index, actor) in detail.actors.iter().enumerate() {
+                value["actors"][index]["poster_url"] = serde_json::Value::Null;
+                value["actors"][index]["actor_folder_url"] = canonical_actor_folder_url(
+                    state.config.actor_view_root.as_deref(),
+                    &actor.name,
+                )
+                .map_or(serde_json::Value::Null, serde_json::Value::String);
+            }
             if let Ok(Some(client)) = jellyfin_client(&state) {
+                if let Ok(people) = client.people().await {
+                    for (index, actor) in detail.actors.iter().enumerate() {
+                        value["actors"][index]["poster_url"] = match_person(&actor.name, &people)
+                            .map(|_| actor_poster_url(&actor.name))
+                            .map_or(serde_json::Value::Null, serde_json::Value::String);
+                    }
+                }
                 if let Ok(items) = client.selected_items().await {
                     if let Some(association) = associate(
                         &detail.path,
@@ -1471,28 +1489,51 @@ async fn asset_detail(
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
+
+fn canonical_actor_folder_url(root: Option<&Path>, actor_name: &str) -> Option<String> {
+    let folder = crate::actor_views::actor_folder_detail(root?, actor_name)
+        .ok()??
+        .folder;
+    Some(format!(
+        "/actors/{}",
+        URL_SAFE_NO_PAD.encode(folder.name.as_bytes())
+    ))
+}
+
 #[derive(Serialize)]
 struct ActorFolderResponse {
     name: String,
     movie_count: usize,
+    derived_file_count: usize,
+    unique_inode_count: usize,
     hard_link_count: usize,
     logical_size: u64,
     reclaimable_space: u64,
     poster_url: Option<String>,
+    linked_assets: Vec<crate::asset_index::MediaAsset>,
 }
 
-fn actor_response(folder: crate::actor_views::ActorFolder) -> ActorFolderResponse {
-    let poster_url = folder
-        .poster_path
-        .map(|_| format!("/api/v1/actors/{}/poster", folder.name));
+fn actor_response(
+    folder: crate::actor_views::ActorFolder,
+    linked_assets: Vec<crate::asset_index::MediaAsset>,
+    has_jellyfin_portrait: bool,
+) -> ActorFolderResponse {
+    let poster_url = has_jellyfin_portrait.then(|| actor_poster_url(&folder.name));
     ActorFolderResponse {
         name: folder.name,
         movie_count: folder.movie_count,
+        derived_file_count: folder.derived_file_count,
+        unique_inode_count: folder.unique_inode_count,
         hard_link_count: folder.hard_link_count,
         logical_size: folder.logical_size,
         reclaimable_space: folder.reclaimable_space,
         poster_url,
+        linked_assets,
     }
+}
+
+fn actor_poster_url(actor_name: &str) -> String {
+    format!("/api/v1/actors/{actor_name}/poster")
 }
 
 async fn list_actor_folders(
@@ -1505,10 +1546,21 @@ async fn list_actor_folders(
     let Some(root) = state.config.actor_view_root.as_deref() else {
         return Json(Vec::<ActorFolderResponse>::new()).into_response();
     };
+    let people = match jellyfin_client(&state) {
+        Ok(Some(client)) => client.people().await.unwrap_or_default(),
+        _ => Vec::new(),
+    };
     match crate::actor_views::browse_actor_folders(root) {
-        Ok(folders) => {
-            Json(folders.into_iter().map(actor_response).collect::<Vec<_>>()).into_response()
-        }
+        Ok(folders) => Json(
+            folders
+                .into_iter()
+                .map(|folder| {
+                    let has_portrait = match_person(&folder.name, &people).is_some();
+                    actor_response(folder, Vec::new(), has_portrait)
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
         Err(error) => (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response(),
     }
 }
@@ -1524,12 +1576,30 @@ async fn actor_folder_confirmation(
     let Some(root) = state.config.actor_view_root.as_deref() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    match crate::actor_views::browse_actor_folders(root) {
-        Ok(folders) => folders
-            .into_iter()
-            .find(|folder| folder.name == actor_name)
-            .map(|folder| Json(actor_response(folder)).into_response())
-            .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response()),
+    match crate::actor_views::actor_folder_detail(root, &actor_name) {
+        Ok(Some(detail)) => {
+            let identities = detail
+                .file_identities
+                .iter()
+                .map(|identity| (identity.device, identity.inode))
+                .collect::<Vec<_>>();
+            let has_portrait = match jellyfin_client(&state) {
+                Ok(Some(client)) => client
+                    .people()
+                    .await
+                    .ok()
+                    .and_then(|people| match_person(&actor_name, &people).map(|_| ()))
+                    .is_some(),
+                _ => false,
+            };
+            match state.assets.assets_by_identities(&identities) {
+                Ok(assets) => {
+                    Json(actor_response(detail.folder, assets, has_portrait)).into_response()
+                }
+                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(error) => (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response(),
     }
 }
@@ -1545,35 +1615,68 @@ async fn actor_poster(
     let Some(root) = state.config.actor_view_root.as_deref() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Ok(Some(path)) = crate::actor_views::browse_actor_folders(root).map(|folders| {
-        folders
-            .into_iter()
-            .find(|folder| folder.name == actor_name)
-            .and_then(|folder| folder.poster_path)
-    }) else {
+    let Ok(Some(folder)) = crate::actor_views::actor_folder_detail(root, &actor_name) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Ok(bytes) = fs::read(&path) else {
+    let Ok(Some(client)) = jellyfin_client(&state) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let content_type = match path
-        .extension()
-        .and_then(|v| v.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("png") => "image/png",
-        Some("webp") => "image/webp",
-        _ => "image/jpeg",
+    let Ok(people) = client.people().await else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    let Some(person) = match_person(&folder.folder.name, &people) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(image) = cached_person_image(&state, &client, person).await else {
+        return StatusCode::BAD_GATEWAY.into_response();
     };
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_TYPE, image.content_type)
         .header(header::CACHE_CONTROL, "private, max-age=3600")
         .header("X-Content-Type-Options", "nosniff")
-        .body(Body::from(bytes))
+        .body(Body::from(image.bytes))
         .unwrap()
         .into_response()
+}
+
+async fn cached_person_image(
+    state: &AppState,
+    client: &JellyfinClient,
+    person: &JellyfinPerson,
+) -> Result<JellyfinImage, crate::jellyfin::Error> {
+    let cache_paths = state.config.artwork_cache_root.as_ref().map(|root| {
+        let mut hasher = Sha256::new();
+        hasher.update(person.id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(person.primary_image_tag().unwrap_or_default().as_bytes());
+        hasher.update(b"\0width=320");
+        let key = format!("{:x}", hasher.finalize());
+        let directory = root.join("jellyfin-people");
+        (
+            directory.join(format!("{key}.image")),
+            directory.join(format!("{key}.type")),
+        )
+    });
+    if let Some((image_path, type_path)) = &cache_paths {
+        if let (Ok(bytes), Ok(content_type)) = (fs::read(image_path), fs::read_to_string(type_path))
+        {
+            return Ok(JellyfinImage {
+                bytes,
+                content_type,
+            });
+        }
+    }
+    let image = client.primary_image(person, 320).await?;
+    if let Some((image_path, type_path)) = cache_paths {
+        if let Some(directory) = image_path.parent() {
+            if fs::create_dir_all(directory).is_ok() {
+                let _ = fs::write(image_path, &image.bytes);
+                let _ = fs::write(type_path, image.content_type.as_bytes());
+            }
+        }
+    }
+    Ok(image)
 }
 
 async fn remove_actor_folder_task(
@@ -2242,7 +2345,7 @@ fn openapi_document() -> serde_json::Value {
             "ScanAssetsRequest":{"type":"object","required":["mode"],"properties":{"mode":{"type":"string","enum":["manual","incremental"]},"media_root":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}}}},
             "MediaAsset":{"type":"object","required":["id","media_root","path","device","inode","observed_at","captured_date","state"],"properties":{"id":{"type":"string"},"media_root":{"type":"string"},"path":{"type":"string"},"device":{"type":"integer"},"inode":{"type":"integer"},"jav_code":{"type":["string","null"]},"title":{"type":["string","null"]},"nfo_path":{"type":["string","null"]},"artwork_url":{"type":["string","null"]},"observed_at":{"type":"integer"},"captured_date":{"type":"string","format":"date"},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]}}},
             "AssetActor":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"poster_url":{"type":["string","null"]},"actor_folder_url":{"type":["string","null"]}}},
-            "ActorFolder":{"type":"object","required":["name","movie_count","hard_link_count","logical_size","reclaimable_space"],"properties":{"name":{"type":"string"},"movie_count":{"type":"integer"},"hard_link_count":{"type":"integer"},"logical_size":{"type":"integer"},"reclaimable_space":{"type":"integer"},"poster_url":{"type":["string","null"]}}},
+            "ActorFolder":{"type":"object","required":["name","movie_count","derived_file_count","unique_inode_count","hard_link_count","logical_size","reclaimable_space","linked_assets"],"properties":{"name":{"type":"string"},"movie_count":{"type":"integer"},"derived_file_count":{"type":"integer"},"unique_inode_count":{"type":"integer"},"hard_link_count":{"type":"integer","description":"Compatibility alias for derived_file_count"},"logical_size":{"type":"integer"},"reclaimable_space":{"type":"integer"},"poster_url":{"type":["string","null"]},"linked_assets":{"type":"array","items":{"$ref":"#/components/schemas/MediaAsset"}}}},
             "AssetDetail":{"type":"object","required":["id","path","actors","tags","parse_status","state"],"properties":{"id":{"type":"string"},"path":{"type":"string"},"title":{"type":["string","null"]},"actors":{"type":"array","items":{"$ref":"#/components/schemas/AssetActor"}},"studio":{"type":["string","null"]},"release_date":{"type":["string","null"],"format":"date"},"runtime_minutes":{"type":["integer","null"]},"director":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"plot":{"type":["string","null"]},"parse_status":{"type":"string","enum":["valid","missing","invalid"]},"source_path":{"type":["string","null"]},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]},"jellyfin":{"type":"object","description":"Read-only association, playback state, and Jellyfin web URL; uncertain metadata matches never authorize deletion."}}},
             "AssetPage":{"type":"object","required":["items","groups","page","per_page","total","total_pages"],"properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/MediaAsset"}},"groups":{"type":"array","items":{"type":"object","properties":{"date":{"type":"string","format":"date"},"count":{"type":"integer"}}}},"page":{"type":"integer"},"per_page":{"type":"integer"},"total":{"type":"integer"},"total_pages":{"type":"integer"}}},
             "ManagementTask": {"type":"object","required":["id","task_type","media_root","kind","status","created_at","items"],"properties":{

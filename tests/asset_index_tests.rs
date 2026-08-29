@@ -62,6 +62,40 @@ fn stable_identity_survives_replaced_inode_at_the_observed_path() {
 }
 
 #[test]
+fn identity_lookup_matches_only_device_inode_and_deduplicates_assets() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    fs::create_dir(&root).unwrap();
+    let first_path = root.join("ABC-123.mp4");
+    let second_path = root.join("XYZ-999.mp4");
+    media(&first_path);
+    media(&second_path);
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+    let assets = index.search(AssetQuery::default()).unwrap().items;
+    let first = assets
+        .iter()
+        .find(|asset| asset.path == first_path.display().to_string())
+        .unwrap();
+    let second = assets
+        .iter()
+        .find(|asset| asset.path == second_path.display().to_string())
+        .unwrap();
+
+    let linked = index
+        .assets_by_identities(&[
+            (first.device, first.inode),
+            (first.device, first.inode),
+            (first.device + 1, first.inode),
+        ])
+        .unwrap();
+
+    assert_eq!(linked.len(), 1);
+    assert_eq!(linked[0].id, first.id);
+    assert_ne!(linked[0].id, second.id);
+}
+
+#[test]
 fn full_rebuild_drops_assets_from_media_roots_no_longer_configured() {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().join("media");

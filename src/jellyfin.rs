@@ -79,6 +79,39 @@ pub struct JellyfinItem {
     pub user_data: JellyfinUserData,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub struct JellyfinPerson {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub image_tags: BTreeMap<String, String>,
+}
+
+impl JellyfinPerson {
+    pub fn fixture(id: &str, name: &str, primary_image_tag: Option<&str>) -> Self {
+        let mut image_tags = BTreeMap::new();
+        if let Some(tag) = primary_image_tag {
+            image_tags.insert("Primary".to_owned(), tag.to_owned());
+        }
+        Self {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            image_tags,
+        }
+    }
+
+    pub fn primary_image_tag(&self) -> Option<&str> {
+        self.image_tags.get("Primary").map(String::as_str)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JellyfinImage {
+    pub bytes: Vec<u8>,
+    pub content_type: String,
+}
+
 impl JellyfinItem {
     pub fn fixture(id: &str, name: &str, path: Option<&str>, code: Option<&str>) -> Self {
         let mut provider_ids = BTreeMap::new();
@@ -185,6 +218,42 @@ impl JellyfinClient {
             items.extend(result.items);
         }
         Ok(items)
+    }
+
+    pub async fn people(&self) -> Result<Vec<JellyfinPerson>, Error> {
+        let result: QueryResult<JellyfinPerson> = self
+            .get("Persons")?
+            .query(&[("fields", "ImageTags")])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(result.items)
+    }
+
+    pub async fn primary_image(
+        &self,
+        person: &JellyfinPerson,
+        max_width: u32,
+    ) -> Result<JellyfinImage, Error> {
+        let tag = person.primary_image_tag().unwrap_or_default();
+        let response = self
+            .get(&format!("Items/{}/Images/Primary", person.id))?
+            .query(&[("maxWidth", max_width.to_string()), ("tag", tag.to_owned())])
+            .send()
+            .await?
+            .error_for_status()?;
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("image/jpeg")
+            .to_owned();
+        Ok(JellyfinImage {
+            bytes: response.bytes().await?.to_vec(),
+            content_type,
+        })
     }
 
     pub fn open_url(&self, item_id: &str) -> String {
@@ -328,6 +397,28 @@ fn association(
 
 fn normalize_metadata(value: &str) -> String {
     value.trim().to_lowercase().replace(['_', ' '], "-")
+}
+
+pub fn match_person<'a>(name: &str, people: &'a [JellyfinPerson]) -> Option<&'a JellyfinPerson> {
+    let wanted = normalize_person_name(name);
+    let mut matches = people
+        .iter()
+        .filter(|person| normalize_person_name(&person.name) == wanted);
+    let matched = matches.next()?;
+    (matches.next().is_none() && matched.primary_image_tag().is_some()).then_some(matched)
+}
+
+fn normalize_person_name(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .map(|character| match character {
+            '\u{3000}' => ' ',
+            '\u{ff01}'..='\u{ff5e}' => char::from_u32(character as u32 - 0xfee0).unwrap(),
+            other => other,
+        })
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn normalize_path(value: &str) -> String {
