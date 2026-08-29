@@ -542,3 +542,134 @@ async fn unknown_non_api_routes_fall_back_to_embedded_react_shell() {
         .unwrap()
         .contains("<div id=\"root\"></div>"));
 }
+
+#[tokio::test]
+async fn embedded_management_interface_exposes_task_creation_and_live_lifecycle() {
+    let (_dir, config) = fixture();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let response = app(state)
+        .oneshot(
+            Request::builder()
+                .uri("/assets/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let javascript = std::str::from_utf8(&body).unwrap();
+    assert!(javascript.contains("Management Tasks"));
+    assert!(javascript.contains("/api/v1/tasks"));
+    assert!(javascript.contains("EventSource"));
+}
+
+#[tokio::test]
+async fn authenticated_versioned_api_creates_and_recovers_a_preview_task() {
+    let (dir, state, cookie) = authenticated_fixture().await;
+    std::fs::write(dir.path().join("新片首发每天更新.txt"), b"ad").unwrap();
+    let request = serde_json::json!({
+        "task_type": "operations",
+        "media_root": dir.path(),
+        "mode": "preview",
+        "operations": ["delete_ad_files"]
+    });
+    let created = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &request.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::ACCEPTED);
+    let created: serde_json::Value =
+        serde_json::from_slice(&to_bytes(created.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    let mut final_task = None;
+    for _ in 0..100 {
+        let response = json_request(
+            app(state.clone()),
+            "GET",
+            &format!("/api/v1/tasks/{id}"),
+            "",
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let task: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        if task["status"] == "completed" {
+            final_task = Some(task);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let task = final_task.expect("preview task should finish");
+    assert_eq!(task["kind"], "preview");
+    assert_eq!(task["media_root"], dir.path().display().to_string());
+    assert_eq!(task["items"][0]["status"], "planned");
+    assert!(dir.path().join("新片首发每天更新.txt").exists());
+}
+
+#[tokio::test]
+async fn sse_reconnect_to_completed_task_emits_recoverable_final_snapshot() {
+    let (dir, state, cookie) = authenticated_fixture().await;
+    let store = rust_jav::management_tasks::TaskStore::open(&dir.path().join("management.sqlite3"))
+        .unwrap();
+    let task = store
+        .create(
+            rust_jav::management_tasks::NewTask::preview("operations", "/media/a"),
+            100,
+        )
+        .unwrap();
+    store.mark_running(&task.id, 101).unwrap();
+    store.mark_completed(&task.id, 102).unwrap();
+
+    let response = json_request(
+        app(state),
+        "GET",
+        &format!("/api/v1/tasks/{}/events", task.id),
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/event-stream"
+    );
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let event = std::str::from_utf8(&body).unwrap();
+    assert!(event.contains("event: task"));
+    assert!(event.contains("\"status\":\"completed\""));
+    assert!(event.contains(&task.id));
+}
+
+#[tokio::test]
+async fn generated_openapi_describes_task_rest_and_sse_contracts() {
+    let (_dir, state, cookie) = authenticated_fixture().await;
+    let response = json_request(app(state), "GET", "/api/v1/openapi.json", "", Some(&cookie)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(document["openapi"], "3.1.0");
+    assert!(document["paths"]["/api/v1/tasks"]["post"].is_object());
+    assert_eq!(
+        document["paths"]["/api/v1/tasks"]["post"]["requestBody"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/CreateTaskRequest"
+    );
+    assert!(document["paths"]["/api/v1/tasks/{task_id}"]["get"].is_object());
+    assert_eq!(
+        document["paths"]["/api/v1/tasks/{task_id}/events"]["get"]["responses"]["200"]["content"]
+            ["text/event-stream"]["schema"]["type"],
+        "string"
+    );
+    assert_eq!(
+        document["components"]["schemas"]["ManagementTask"]["required"][0],
+        "id"
+    );
+}

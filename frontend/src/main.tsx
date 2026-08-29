@@ -4,6 +4,15 @@ import "./style.css";
 
 type View = "loading" | "initialize" | "login" | "ready";
 type Validation = { valid: true; empty: boolean; yaml: string } | null;
+type Task = {
+  id: string;
+  task_type: string;
+  media_root: string;
+  kind: "preview" | "mutation";
+  status: "queued" | "running" | "completed" | "failed" | "interrupted";
+  created_at: number;
+  items: Array<{ id: number; kind: string; path: string | null; status: string }>;
+};
 
 export function App() {
   const token = new URLSearchParams(location.search).get("token");
@@ -16,6 +25,10 @@ export function App() {
   const [editing, setEditing] = useState(false);
   const [validation, setValidation] = useState<Validation>(null);
   const [rulesMessage, setRulesMessage] = useState("");
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [mediaRoot, setMediaRoot] = useState("");
+  const [mode, setMode] = useState<"preview" | "apply">("preview");
+  const [operation, setOperation] = useState("delete_ad_files");
 
   useEffect(() => {
     if (token) return;
@@ -26,12 +39,47 @@ export function App() {
         setView("ready");
         const rules = await fetch("/api/v1/rules/active");
         if (rules.ok) setYaml(((await rules.json()) as { yaml: string }).yaml);
+        void loadTasks();
       } else {
         setView("login");
         if (response.status === 503) setMessage("Run rust-jav administrator init locally first.");
       }
     });
   }, [token]);
+
+  async function loadTasks() {
+    const response = await fetch("/api/v1/tasks");
+    if (response.ok) {
+      const body = await response.json().catch(() => null) as Task[] | null;
+      if (body) setTasks(body);
+    }
+  }
+
+  function watchTask(id: string) {
+    const events = new EventSource(`/api/v1/tasks/${id}/events`);
+    events.addEventListener("task", (event) => {
+      const task = JSON.parse((event as MessageEvent).data) as Task;
+      setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+      if (["completed", "failed", "interrupted"].includes(task.status)) events.close();
+    });
+  }
+
+  async function createTask(event: FormEvent) {
+    event.preventDefault();
+    setMessage("");
+    const response = await fetch("/api/v1/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_type: "operations", media_root: mediaRoot, mode, operations: [operation] }),
+    });
+    if (!response.ok) {
+      setMessage(await response.text() || "Task request rejected.");
+      return;
+    }
+    const task = (await response.json()) as Task;
+    setTasks((current) => [task, ...current]);
+    watchTask(task.id);
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -119,6 +167,39 @@ export function App() {
       )}
       {view === "ready" && <>
         <section className="service"><p>Authenticated against API v1 · rust-jav {version}</p><button className="secondary" onClick={logout}>Sign out</button></section>
+        <div className="dashboard">
+          <section>
+            <h2>Management Tasks</h2>
+            <form className="task-form" onSubmit={createTask}>
+              <label htmlFor="media-root">Media Root</label>
+              <input id="media-root" value={mediaRoot} onChange={(event) => setMediaRoot(event.target.value)} placeholder="/media/library" required />
+              <label htmlFor="operation">Operation</label>
+              <select id="operation" value={operation} onChange={(event) => setOperation(event.target.value)}>
+                <option value="delete_ad_files">Delete ad files</option>
+                <option value="standardize_names">Standardize names</option>
+                <option value="clean_empty_dirs">Clean empty directories</option>
+                <option value="remove_duplicates">Remove duplicates</option>
+              </select>
+              <label htmlFor="mode">Mode</label>
+              <select id="mode" value={mode} onChange={(event) => setMode(event.target.value as "preview" | "apply")}>
+                <option value="preview">Preview</option>
+                <option value="apply">Apply changes</option>
+              </select>
+              <button type="submit">Start task</button>
+            </form>
+          </section>
+          <section>
+            <h2>Lifecycle</h2>
+            {tasks.length === 0 ? <p>No Management Tasks yet.</p> : <ol className="tasks">{tasks.map((task) =>
+              <li key={task.id}>
+                <span className={`status status-${task.status}`}>{task.status}</span>
+                <strong>{task.kind}</strong> · {task.media_root}
+                <small>{task.items.length} item outcome{task.items.length === 1 ? "" : "s"} · {task.id}</small>
+              </li>
+            )}</ol>}
+            <button className="secondary" onClick={() => void loadTasks()}>Refresh</button>
+          </section>
+        </div>
         <section>
           <p className="eyebrow">SETTINGS</p>
           <h2>Active Rule Set</h2>
