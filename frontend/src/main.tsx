@@ -181,6 +181,7 @@ export function App() {
       total: 0,
       total_pages: 0,
     }),
+    [libraryTotal, setLibraryTotal] = useState(0),
     [query, setQuery] = useState(""),
     [filter, setFilter] = useState<AssetState | "">(""),
     [health, setHealth] = useState<Health | null>(null),
@@ -237,11 +238,10 @@ export function App() {
       void loadJellyfinConfig();
     }
     if (nav === "deletion") void loadCandidates();
-    if (nav === "actors") void loadActors();
+    if (nav === "actors" && !actorNameFromPath()) void loadActors();
   }, [nav]);
   useEffect(() => {
     if (view !== "ready") return;
-    void loadActors();
     const actorName = actorNameFromPath();
     if (actorName) void openActor(actorName, false);
     const onPopState = () => {
@@ -490,7 +490,10 @@ export function App() {
     ]);
     if (a.ok) {
       const body = (await a.json().catch(() => null)) as Page | null;
-      if (body) setAssets(body);
+      if (body) {
+        setAssets(body);
+        if (!query && !filter) setLibraryTotal(body.total);
+      }
     }
     if (h.ok) {
       const body = (await h.json().catch(() => null)) as Health | null;
@@ -699,7 +702,7 @@ export function App() {
             className={nav === "assets" ? "active" : ""}
             onClick={() => setNav("assets")}
           >
-            <span><Grid2X2 aria-hidden="true" /></span> 所有资产 <em>{assets.total}</em>
+            <span><Grid2X2 aria-hidden="true" /></span> 所有资产 <em>{libraryTotal || assets.total}</em>
           </button>
           <button aria-label="Recently Added">
             <span><Clock3 aria-hidden="true" /></span> 最近入库
@@ -776,7 +779,7 @@ export function App() {
                   ? `${candidates.length} 个路径命中当前规则`
                   : nav === "tasks"
                     ? `${tasks.length} 个持久化任务`
-                    : `${assets.total} 个项目 · 文件系统为准`}
+                    : `${libraryTotal || assets.total} 个项目 · 文件系统为准`}
             </small>
           </div>
           {nav === "assets" && (
