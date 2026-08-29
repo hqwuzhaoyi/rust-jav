@@ -120,8 +120,12 @@ impl ActiveRuleSet {
     }
 
     pub fn embedded() -> Self {
-        Self::from_yaml(include_str!("../rules.yaml"), false)
+        Self::from_yaml(Self::embedded_yaml(), false)
             .expect("embedded Active Rule Set must be valid")
+    }
+
+    pub fn embedded_yaml() -> &'static str {
+        include_str!("../rules.yaml")
     }
 
     pub fn version(&self) -> u32 {

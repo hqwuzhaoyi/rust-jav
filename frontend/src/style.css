@@ -1,10 +1,17 @@
 :root { color: #f4f1e8; background: #151714; font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-synthesis: none; }
 body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 75% 10%, #354832 0, transparent 35rem), #151714; }
-main { box-sizing: border-box; width: min(42rem, calc(100% - 2rem)); margin: 0 auto; padding: 12vh 0 4rem; }
+main { box-sizing: border-box; width: min(54rem, calc(100% - 2rem)); margin: 0 auto; padding: 8vh 0 4rem; }
 .eyebrow { color: #9fc78f; font: 700 .75rem/1 monospace; letter-spacing: .18em; }
 h1 { margin: .5rem 0 3rem; font-size: clamp(2.5rem, 9vw, 5rem); line-height: .95; letter-spacing: -.05em; }
 form, section { padding: 1.5rem; border: 1px solid #4a5146; border-radius: .75rem; background: #20231fdd; box-shadow: 0 1.5rem 5rem #0006; }
 h2 { margin-top: 0; } label { display: block; margin-bottom: .5rem; color: #c7cec3; }
-input { box-sizing: border-box; width: 100%; padding: .85rem; border: 1px solid #596356; border-radius: .4rem; color: inherit; background: #151714; font: inherit; }
+input, textarea { box-sizing: border-box; width: 100%; padding: .85rem; border: 1px solid #596356; border-radius: .4rem; color: inherit; background: #151714; font: inherit; }
+textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; }
+textarea[readonly] { color: #b7beb3; background: #191b18; }
 button { margin-top: 1rem; padding: .75rem 1rem; border: 0; border-radius: .4rem; color: #142010; background: #a9d598; font: 700 1rem/1 inherit; cursor: pointer; }
-button:hover { background: #c2e9b4; }.message { color: #d7c694; }
+button:hover { background: #c2e9b4; } button:disabled { cursor: not-allowed; opacity: .45; }
+.service { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; padding-block: .75rem; }
+.service button { margin: 0; }.secondary { color: #eef1eb; background: #485044; }.danger { color: #fff; background: #9f473e; }
+.action-row { display: flex; align-items: stretch; gap: .75rem; margin-bottom: 1.25rem; }.action-row button { flex: 0 0 auto; margin-top: 0; }
+.message { color: #d7c694; }
+@media (max-width: 38rem) { .action-row { align-items: stretch; flex-direction: column; }.service { align-items: flex-start; gap: 1rem; flex-direction: column; } }
