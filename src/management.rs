@@ -15,7 +15,7 @@ use argon2::{
 };
 use axum::{
     body::Body,
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri},
     response::{
         sse::{Event, KeepAlive},
@@ -36,6 +36,7 @@ use std::convert::Infallible;
 
 use crate::{
     application::{ApplicationServices, OperationsRequest},
+    asset_index::{AssetIndex, AssetQuery, AssetState, ScanMode},
     management_tasks::{NewTask, TaskCoordinator, TaskKind, TaskStore},
     tui::state::OperationType,
 };
@@ -77,6 +78,8 @@ pub enum Error {
     Server(#[from] std::io::Error),
     #[error(transparent)]
     Tasks(#[from] crate::management_tasks::Error),
+    #[error(transparent)]
+    Assets(#[from] crate::asset_index::Error),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -90,6 +93,7 @@ struct ManagementYaml {
     rule_source_hosts: Vec<String>,
     rule_download_timeout_seconds: u64,
     rule_download_max_bytes: usize,
+    media_roots: Vec<PathBuf>,
 }
 
 impl Default for ManagementYaml {
@@ -103,6 +107,7 @@ impl Default for ManagementYaml {
             rule_source_hosts: vec!["raw.githubusercontent.com".to_owned()],
             rule_download_timeout_seconds: 10,
             rule_download_max_bytes: 1_048_576,
+            media_roots: Vec::new(),
         }
     }
 }
@@ -117,6 +122,7 @@ pub struct ManagementConfig {
     pub rule_source_hosts: Vec<String>,
     pub rule_download_timeout: Duration,
     pub rule_download_max_bytes: usize,
+    pub media_roots: Vec<PathBuf>,
 }
 
 impl ManagementConfig {
@@ -141,6 +147,17 @@ impl ManagementConfig {
         } else {
             parent.join(raw.active_rule_set_file)
         };
+        let media_roots = raw
+            .media_roots
+            .into_iter()
+            .map(|root| {
+                if root.is_absolute() {
+                    root
+                } else {
+                    parent.join(root)
+                }
+            })
+            .collect();
         Ok(Self {
             port: raw.port,
             container: raw.container,
@@ -150,6 +167,7 @@ impl ManagementConfig {
             rule_source_hosts: raw.rule_source_hosts,
             rule_download_timeout: Duration::from_secs(raw.rule_download_timeout_seconds),
             rule_download_max_bytes: raw.rule_download_max_bytes,
+            media_roots,
         })
     }
 
@@ -296,6 +314,7 @@ pub struct AppState {
     downloader: Arc<dyn RuleDownloader>,
     tasks: TaskStore,
     coordinator: TaskCoordinator,
+    assets: AssetIndex,
 }
 
 #[derive(Clone)]
@@ -392,6 +411,10 @@ impl AppState {
         let now = clock.unix_seconds();
         let database = config.secrets_file.with_file_name("management.sqlite3");
         let tasks = TaskStore::open(&database)?;
+        let assets = AssetIndex::open(&database)?;
+        // A missing or incorrectly-permissioned TrueNAS mount degrades the
+        // rebuildable index; it must not prevent the diagnostic API starting.
+        let _ = assets.reconcile(&config.media_roots, ScanMode::Startup, now);
         tasks.interrupt_running_destructive(now)?;
         Ok(Self {
             store: SecretsStore::new(config.secrets_file.clone()),
@@ -402,6 +425,7 @@ impl AppState {
             downloader: Arc::new(downloader),
             tasks,
             coordinator: TaskCoordinator::new(),
+            assets,
         })
     }
     pub fn set_clock(&self, clock: impl Clock) {
@@ -446,6 +470,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/tasks", post(create_task).get(list_tasks))
         .route("/api/v1/tasks/:task_id", get(get_task))
         .route("/api/v1/tasks/:task_id/events", get(task_events))
+        .route("/api/v1/assets", get(list_assets))
+        .route("/api/v1/assets/health", get(asset_health))
+        .route("/api/v1/assets/scan", post(scan_assets))
+        .route("/api/v1/assets/:asset_id/artwork", get(indexed_artwork))
+        .route("/api/v1/media-roots/health", get(media_root_health))
         .route(
             "/api/v1/rules/active",
             get(active_rules).put(activate_rules),
@@ -696,6 +725,158 @@ fn persist_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     fs::rename(temporary, path)
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct AssetQueryParams {
+    q: Option<String>,
+    state: Option<String>,
+    page: Option<usize>,
+    per_page: Option<usize>,
+}
+
+async fn list_assets(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(input): Query<AssetQueryParams>,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    let asset_state = match input.state.as_deref() {
+        None => None,
+        Some("normal") => Some(AssetState::Normal),
+        Some("synchronizing") => Some(AssetState::Synchronizing),
+        Some("exception") => Some(AssetState::Exception),
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "state must be normal, synchronizing, or exception",
+            )
+                .into_response()
+        }
+    };
+    match state.assets.search(AssetQuery {
+        query: input.q,
+        state: asset_state,
+        page: input.page.unwrap_or(1),
+        per_page: input.per_page.unwrap_or(48),
+    }) {
+        Ok(page) => Json(page).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn asset_health(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    match state.assets.health_json() {
+        Ok(value) => Json(value).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ScanAssetsRequest {
+    mode: String,
+    media_root: Option<PathBuf>,
+    #[serde(default)]
+    paths: Vec<PathBuf>,
+}
+
+async fn scan_assets(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<ScanAssetsRequest>,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    let result = match input.mode.as_str() {
+        "manual" => {
+            state
+                .assets
+                .reconcile(&state.config.media_roots, ScanMode::Manual, state.now())
+        }
+        "incremental" => match input.media_root {
+            Some(root)
+                if state.config.media_roots.contains(&root)
+                    && !input.paths.iter().any(|path| !path.starts_with(&root)) =>
+            {
+                state
+                    .assets
+                    .reconcile_paths(&root, &input.paths, state.now())
+            }
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "incremental paths must be inside a configured Media Root",
+                )
+                    .into_response()
+            }
+        },
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "mode must be manual or incremental",
+            )
+                .into_response()
+        }
+    };
+    match result {
+        Ok(()) => Json(state.assets.health_json().unwrap_or_default()).into_response(),
+        Err(error) => (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response(),
+    }
+}
+
+async fn media_root_health(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    Json(
+        state
+            .config
+            .media_roots
+            .iter()
+            .map(|root| state.assets.root_health(root))
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
+}
+
+async fn indexed_artwork(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(asset_id): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    let Ok(Some(path)) = state.assets.indexed_artwork(&asset_id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(bytes) = fs::read(&path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let content_type = match path
+        .extension()
+        .and_then(|v| v.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        _ => "image/jpeg",
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "private, max-age=3600")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(Body::from(bytes))
+        .unwrap()
+        .into_response()
+}
+
 fn authorized(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
     let secrets = state
         .store
@@ -930,13 +1111,23 @@ fn openapi_document() -> serde_json::Value {
                 "post": {"summary": "Create a Management Task", "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CreateTaskRequest"}}}}, "responses": {"202": {"description": "Accepted", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ManagementTask"}}}}, "400": {"description": "Invalid task"}}}
             },
             "/api/v1/tasks/{task_id}": {"get": {"summary": "Get a Management Task", "parameters": [{"name":"task_id","in":"path","required":true,"schema":{"type":"string"}}], "responses":{"200":{"description":"Task","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ManagementTask"}}}},"404":{"description":"Not found"}}}},
-            "/api/v1/tasks/{task_id}/events": {"get": {"summary": "Stream Management Task lifecycle", "parameters": [{"name":"task_id","in":"path","required":true,"schema":{"type":"string"}}], "responses":{"200":{"description":"Task snapshots","content":{"text/event-stream":{"schema":{"type":"string"}}}},"404":{"description":"Not found"}}}}
+            "/api/v1/tasks/{task_id}/events": {"get": {"summary": "Stream Management Task lifecycle", "parameters": [{"name":"task_id","in":"path","required":true,"schema":{"type":"string"}}], "responses":{"200":{"description":"Task snapshots","content":{"text/event-stream":{"schema":{"type":"string"}}}},"404":{"description":"Not found"}}}},
+            "/api/v1/assets": {"get":{"summary":"Search date-grouped Media Assets","parameters":[
+                {"name":"q","in":"query","schema":{"type":"string"}},{"name":"state","in":"query","schema":{"type":"string","enum":["normal","synchronizing","exception"]}},{"name":"page","in":"query","schema":{"type":"integer","minimum":1}},{"name":"per_page","in":"query","schema":{"type":"integer","minimum":1,"maximum":200}}
+            ],"responses":{"200":{"description":"Paginated assets","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AssetPage"}}}}}}},
+            "/api/v1/assets/health":{"get":{"summary":"Get Asset Index reconciliation health","responses":{"200":{"description":"Index health"}}}},
+            "/api/v1/assets/scan":{"post":{"summary":"Run manual or incremental reconciliation","requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ScanAssetsRequest"}}}},"responses":{"200":{"description":"Reconciled"},"422":{"description":"Filesystem scan failed"}}}},
+            "/api/v1/assets/{asset_id}/artwork":{"get":{"summary":"Serve artwork belonging to an indexed Media Asset","parameters":[{"name":"asset_id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Indexed image","content":{"image/jpeg":{},"image/png":{},"image/webp":{}}},"404":{"description":"No indexed artwork"}}}},
+            "/api/v1/media-roots/health":{"get":{"summary":"Report TrueNAS Host Path access and process UID/GID","responses":{"200":{"description":"Media Root permission reports"}}}}
         },
         "components": {"schemas": {
             "CreateTaskRequest": {"type":"object","required":["task_type","media_root","mode","operations"],"properties":{
                 "task_type":{"type":"string","const":"operations"},"media_root":{"type":"string"},"mode":{"type":"string","enum":["preview","apply"]},"operations":{"type":"array","minItems":1,"items":{"type":"string"}}
             }},
             "TaskItem": {"type":"object","required":["id","kind","status"],"properties":{"id":{"type":"integer"},"kind":{"type":"string"},"path":{"type":["string","null"]},"status":{"type":"string"},"message":{"type":["string","null"]}}},
+            "ScanAssetsRequest":{"type":"object","required":["mode"],"properties":{"mode":{"type":"string","enum":["manual","incremental"]},"media_root":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}}}},
+            "MediaAsset":{"type":"object","required":["id","media_root","path","device","inode","observed_at","captured_date","state"],"properties":{"id":{"type":"string"},"media_root":{"type":"string"},"path":{"type":"string"},"device":{"type":"integer"},"inode":{"type":"integer"},"jav_code":{"type":["string","null"]},"title":{"type":["string","null"]},"nfo_path":{"type":["string","null"]},"artwork_url":{"type":["string","null"]},"observed_at":{"type":"integer"},"captured_date":{"type":"string","format":"date"},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]}}},
+            "AssetPage":{"type":"object","required":["items","groups","page","per_page","total","total_pages"],"properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/MediaAsset"}},"groups":{"type":"array","items":{"type":"object","properties":{"date":{"type":"string","format":"date"},"count":{"type":"integer"}}}},"page":{"type":"integer"},"per_page":{"type":"integer"},"total":{"type":"integer"},"total_pages":{"type":"integer"}}},
             "ManagementTask": {"type":"object","required":["id","task_type","media_root","kind","status","created_at","items"],"properties":{
                 "id":{"type":"string"},"task_type":{"type":"string"},"media_root":{"type":"string"},"kind":{"type":"string","enum":["preview","mutation"]},"status":{"type":"string","enum":["queued","running","completed","failed","interrupted"]},"created_at":{"type":"integer"},"started_at":{"type":["integer","null"]},"finished_at":{"type":["integer","null"]},"error":{"type":["string","null"]},"items":{"type":"array","items":{"$ref":"#/components/schemas/TaskItem"}}
             }}
