@@ -7,6 +7,8 @@ pub mod actor_links;
 pub mod application;
 pub mod cli;
 pub mod config;
+#[cfg(unix)]
+pub mod deletion_plan;
 pub mod file_utils;
 pub mod management;
 pub mod migration_verifier;
