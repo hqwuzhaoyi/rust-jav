@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
 
-const MIN_PASSWORD_LENGTH: usize = 6;
+const MIN_PASSWORD_LENGTH: usize = 4;
 
 use crate::active_rules::{ActiveRuleSet, ActiveRuleSetError};
 use std::convert::Infallible;
@@ -74,7 +74,7 @@ pub enum Error {
     },
     #[error("Administrator is already configured")]
     AlreadyConfigured,
-    #[error("{PASSWORD_ENV} must contain at least 6 characters")]
+    #[error("{PASSWORD_ENV} must contain at least 4 characters")]
     InvalidPassword,
     #[error("{PASSWORD_ENV} is required for a local password reset")]
     MissingPassword,

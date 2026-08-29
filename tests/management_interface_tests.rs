@@ -784,7 +784,7 @@ async fn one_time_initialization_configures_exactly_one_administrator() {
 }
 
 #[tokio::test]
-async fn administrator_password_accepts_six_characters_and_rejects_five() {
+async fn administrator_password_accepts_four_characters_and_rejects_three() {
     let (_short_dir, short_config) = fixture();
     let short_store = SecretsStore::new(short_config.secrets_file.clone());
     let short_token = init_administrator(&short_store).unwrap();
@@ -792,7 +792,7 @@ async fn administrator_password_accepts_six_characters_and_rejects_five() {
         app(AppState::new(short_config, TestClock(100)).unwrap()),
         "POST",
         "/api/v1/auth/initialize",
-        &format!(r#"{{"token":"{short_token}","password":"12345"}}"#),
+        &format!(r#"{{"token":"{short_token}","password":"123"}}"#),
         None,
     )
     .await;
@@ -805,7 +805,7 @@ async fn administrator_password_accepts_six_characters_and_rejects_five() {
         app(AppState::new(valid_config, TestClock(100)).unwrap()),
         "POST",
         "/api/v1/auth/initialize",
-        &format!(r#"{{"token":"{valid_token}","password":"123456"}}"#),
+        &format!(r#"{{"token":"{valid_token}","password":"1234"}}"#),
         None,
     )
     .await;
