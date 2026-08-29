@@ -938,6 +938,31 @@ async fn unknown_non_api_routes_fall_back_to_embedded_react_shell() {
 }
 
 #[tokio::test]
+async fn embedded_shell_busts_legacy_asset_cache_and_static_assets_revalidate() {
+    let (_dir, config) = fixture();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let shell = app(state.clone())
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let shell_body = to_bytes(shell.into_body(), usize::MAX).await.unwrap();
+    let shell_html = std::str::from_utf8(&shell_body).unwrap();
+    assert!(shell_html.contains("/assets/app.js?v=2"));
+    assert!(shell_html.contains("/assets/app.css?v=2"));
+
+    let javascript = app(state)
+        .oneshot(
+            Request::builder()
+                .uri("/assets/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(javascript.headers()[header::CACHE_CONTROL], "no-cache");
+}
+
+#[tokio::test]
 async fn embedded_management_interface_exposes_task_creation_and_live_lifecycle() {
     let (_dir, config) = fixture();
     let state = AppState::new(config, TestClock(100)).unwrap();

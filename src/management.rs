@@ -2281,7 +2281,7 @@ fn asset(content_type: &'static str, bytes: &'static [u8]) -> Response<Body> {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
-        .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+        .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from(bytes))
         .unwrap()
 }
@@ -2293,11 +2293,14 @@ async fn spa_fallback(uri: Uri) -> Response<Body> {
             .body(Body::empty())
             .unwrap();
     }
+    let html = String::from_utf8_lossy(INDEX_HTML)
+        .replace("/assets/app.js", "/assets/app.js?v=2")
+        .replace("/assets/app.css", "/assets/app.css?v=2");
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")
-        .body(Body::from(INDEX_HTML))
+        .body(Body::from(html))
         .unwrap()
 }
 
