@@ -86,6 +86,7 @@ pub struct AssetActor {
 pub struct AssetDetail {
     pub id: String,
     pub path: String,
+    pub jav_code: Option<String>,
     pub title: Option<String>,
     pub actors: Vec<AssetActor>,
     pub studio: Option<String>,
@@ -393,6 +394,7 @@ impl AssetIndex {
         Ok(Some(AssetDetail {
             id: asset.id,
             path: asset.path,
+            jav_code: asset.jav_code,
             title: metadata.title.or(asset.title),
             actors,
             studio: metadata.studio,
