@@ -5,7 +5,7 @@ use color_eyre::Result;
 use crate::application::{
     ActorViewRequest, ApplicationServices, NfoCheckRequest, OperationsRequest, ReportingService,
 };
-use crate::cli::{Cli, Command};
+use crate::cli::{AdministratorAction, Cli, Command};
 use crate::report::{CommandReport, OutputFormat};
 
 #[derive(Debug, Clone)]
@@ -17,6 +17,12 @@ pub enum RunRequest {
         report: CommandReport,
         format: OutputFormat,
         exit_code: i32,
+    },
+    Serve {
+        config: PathBuf,
+    },
+    Administrator {
+        action: AdministratorAction,
     },
 }
 
@@ -93,6 +99,12 @@ pub async fn resolve_run_request(cli: Cli) -> Result<RunRequest> {
                 report,
             })
         }
+        Command::Serve(args) => Ok(RunRequest::Serve {
+            config: args.config,
+        }),
+        Command::Administrator(args) => Ok(RunRequest::Administrator {
+            action: args.action,
+        }),
     }
 }
 

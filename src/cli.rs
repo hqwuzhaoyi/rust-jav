@@ -22,6 +22,38 @@ pub enum Command {
     ActorLinks(ActorLinksArgs),
     /// Check which movie directories are missing NFO metadata files
     NfoCheck(NfoCheckArgs),
+    /// Run the independently deployable Management Interface
+    Serve(ServeArgs),
+    /// Configure the single local Management Interface Administrator
+    Administrator(AdministratorArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ServeArgs {
+    /// YAML file containing non-secret server settings
+    #[arg(long, default_value = "management.yaml")]
+    pub config: PathBuf,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AdministratorArgs {
+    #[command(subcommand)]
+    pub action: AdministratorAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum AdministratorAction {
+    /// Create a one-use browser initialization link
+    Init(AdministratorConfigArgs),
+    /// Reset the password from RUST_JAV_ADMIN_PASSWORD
+    ResetPassword(AdministratorConfigArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AdministratorConfigArgs {
+    /// YAML file containing non-secret server settings
+    #[arg(long, default_value = "management.yaml")]
+    pub config: PathBuf,
 }
 
 #[derive(Args, Debug, Clone)]

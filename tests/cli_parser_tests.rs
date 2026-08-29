@@ -3,6 +3,31 @@ use clap::Parser;
 use rust_jav::cli::{Cli, Command};
 
 #[test]
+fn parses_serve_command_with_config_path() {
+    let cli = Cli::try_parse_from(["rust-jav", "serve", "--config", "management.yaml"]).unwrap();
+
+    match cli.command {
+        Command::Serve(args) => assert_eq!(args.config.to_string_lossy(), "management.yaml"),
+        other => panic!("expected serve command, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_local_administrator_commands() {
+    for action in ["init", "reset-password"] {
+        let cli = Cli::try_parse_from([
+            "rust-jav",
+            "administrator",
+            action,
+            "--config",
+            "management.yaml",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Command::Administrator(_)));
+    }
+}
+
+#[test]
 fn parses_tui_command() {
     let cli = Cli::try_parse_from(["rust-jav", "tui", "--dir", "./examples/test"]).unwrap();
 

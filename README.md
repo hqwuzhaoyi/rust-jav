@@ -43,6 +43,33 @@ cargo run -- --help
 - `tui`：启动 TUI
 - `ops`：预览或执行文件整理操作
 - `actor-links`：根据 NFO 演员信息建立目录式硬链接
+- `serve`：独立启动内嵌的 Management Interface
+- `administrator`：在本机初始化或重置唯一管理员
+
+### Management Interface
+
+普通服务配置从 YAML 读取，密码和初始化令牌只保存在权限为 `0600` 的独立 secrets 文件中。复制示例后启动：
+
+```shell
+cp management.example.yaml management.yaml
+cargo run -- administrator init --config management.yaml
+cargo run -- serve --config management.yaml
+```
+
+打开 `administrator init` 输出的一次性链接并设置至少 12 个字符的密码。也可以通过环境变量完成无人值守初始化；该变量只在尚未配置管理员时生效：
+
+```shell
+RUST_JAV_ADMIN_PASSWORD='replace-with-a-strong-password' cargo run -- serve --config management.yaml
+```
+
+本机运行默认只监听 `127.0.0.1`。TrueNAS 等容器环境需要将 YAML 中的 `container` 显式设为 `true`，服务才监听 `0.0.0.0`。本地重置不会经由 HTTP：
+
+```shell
+RUST_JAV_ADMIN_PASSWORD='replace-with-a-new-strong-password' \
+  cargo run -- administrator reset-password --config management.yaml
+```
+
+重置会立即使现有会话失效。CLI/TUI 不依赖也不会自动启动此服务。
 
 ### 默认 preview 语义
 

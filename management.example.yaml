@@ -1,0 +1,5 @@
+# Ordinary, non-secret Management Interface settings.
+port: 9317
+container: false
+session_ttl_seconds: 43200
+secrets_file: management.secrets.yaml

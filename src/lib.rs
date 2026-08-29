@@ -7,6 +7,7 @@ pub mod application;
 pub mod cli;
 pub mod config;
 pub mod file_utils;
+pub mod management;
 pub mod migration_verifier;
 pub mod nfo_check;
 pub mod operations;

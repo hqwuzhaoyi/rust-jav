@@ -25,6 +25,8 @@ examples/*/
 # Environment
 .env*
 *.log
+frontend/node_modules/
+management.secrets.yaml
 
 # Project tools
 .claude/
