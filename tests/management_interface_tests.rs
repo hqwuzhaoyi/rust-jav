@@ -25,8 +25,98 @@ fn fixture() -> (TempDir, ManagementConfig) {
         session_ttl: Duration::from_secs(60),
         secrets_file: dir.path().join("management.secrets.yaml"),
         media_roots: Vec::new(),
+        actor_view_root: None,
     };
     (dir, config)
+}
+
+#[tokio::test]
+async fn actor_folder_api_lists_confirmation_and_removes_via_management_task() {
+    let (dir, mut config) = fixture();
+    let media = dir.path().join("media");
+    let actors = dir.path().join("actors");
+    std::fs::create_dir_all(media.join("ABC-123")).unwrap();
+    std::fs::create_dir_all(actors.join("Alice/ABC-123")).unwrap();
+    std::fs::write(media.join("ABC-123/ABC-123.mp4"), b"movie").unwrap();
+    std::fs::hard_link(
+        media.join("ABC-123/ABC-123.mp4"),
+        actors.join("Alice/ABC-123/ABC-123.mp4"),
+    )
+    .unwrap();
+    config.media_roots.push(media.clone());
+    config.actor_view_root = Some(actors.clone());
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let login = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/auth/login",
+        r#"{"password":"a strong password"}"#,
+        None,
+    )
+    .await;
+    let cookie = login.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let listed = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/actors",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let folders: serde_json::Value =
+        serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(folders[0]["name"], "Alice");
+    assert_eq!(folders[0]["movie_count"], 1);
+    assert_eq!(folders[0]["hard_link_count"], 1);
+    assert_eq!(folders[0]["logical_size"], 5);
+    assert_eq!(folders[0]["reclaimable_space"], 0);
+
+    let removal = json_request(
+        app(state.clone()),
+        "DELETE",
+        "/api/v1/actors/Alice",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(removal.status(), StatusCode::ACCEPTED);
+    let task: serde_json::Value =
+        serde_json::from_slice(&to_bytes(removal.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let id = task["id"].as_str().unwrap();
+    for _ in 0..100 {
+        let response = json_request(
+            app(state.clone()),
+            "GET",
+            &format!("/api/v1/tasks/{id}"),
+            "",
+            Some(&cookie),
+        )
+        .await;
+        let task: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        if task["status"] == "completed" {
+            assert!(!actors.join("Alice").exists());
+            assert!(media.join("ABC-123/ABC-123.mp4").exists());
+            assert!(!task["items"].as_array().unwrap().is_empty());
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("actor removal task did not complete");
 }
 
 #[tokio::test]
@@ -595,6 +685,10 @@ async fn embedded_browser_shell_has_asset_search_state_filters_and_responsive_na
     assert!(javascript.contains("Overview"));
     assert!(javascript.contains("NFO"));
     assert!(javascript.contains("Actor Folder"));
+    assert!(javascript.contains("/api/v1/actors"));
+    assert!(javascript.contains("Logical Size"));
+    assert!(javascript.contains("Reclaimable Space"));
+    assert!(javascript.contains("Remove via Management Task"));
     assert!(javascript.contains("/api/v1/assets/"));
     assert!(javascript.contains("dialog"));
     let css = app(state)
@@ -613,6 +707,9 @@ async fn embedded_browser_shell_has_asset_search_state_filters_and_responsive_na
     assert!(css.contains("sidebar"));
     assert!(css.contains("asset-inspector"));
     assert!(css.contains("aspect-ratio:2/3"));
+    assert!(css.contains("actor-folder-grid"));
+    assert!(css.contains("grid-template-columns:repeat(3"));
+    assert!(css.contains("grid-template-columns:repeat(4"));
     assert!(css.contains("max-height:86vh"));
     assert!(css.contains("width:360px"));
 }

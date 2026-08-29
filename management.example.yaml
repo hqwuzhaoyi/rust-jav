@@ -6,3 +6,5 @@ secrets_file: management.secrets.yaml
 # Non-overlapping TrueNAS Host Paths or native filesystem trees.
 media_roots:
   - /media/jav
+# Derived hard-link Actor View. Must be on the same filesystem/ZFS dataset.
+actor_view_root: /media/actors

@@ -83,6 +83,7 @@ struct ManagementYaml {
     session_ttl_seconds: u64,
     secrets_file: PathBuf,
     media_roots: Vec<PathBuf>,
+    actor_view_root: Option<PathBuf>,
 }
 
 impl Default for ManagementYaml {
@@ -93,6 +94,7 @@ impl Default for ManagementYaml {
             session_ttl_seconds: 43_200,
             secrets_file: PathBuf::from("management.secrets.yaml"),
             media_roots: Vec::new(),
+            actor_view_root: None,
         }
     }
 }
@@ -104,6 +106,7 @@ pub struct ManagementConfig {
     pub session_ttl: Duration,
     pub secrets_file: PathBuf,
     pub media_roots: Vec<PathBuf>,
+    pub actor_view_root: Option<PathBuf>,
 }
 
 impl ManagementConfig {
@@ -134,12 +137,20 @@ impl ManagementConfig {
                 }
             })
             .collect();
+        let actor_view_root = raw.actor_view_root.map(|root| {
+            if root.is_absolute() {
+                root
+            } else {
+                parent.join(root)
+            }
+        });
         Ok(Self {
             port: raw.port,
             container: raw.container,
             session_ttl: Duration::from_secs(raw.session_ttl_seconds),
             secrets_file,
             media_roots,
+            actor_view_root,
         })
     }
 
@@ -346,6 +357,12 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/assets/scan", post(scan_assets))
         .route("/api/v1/assets/:asset_id", get(asset_detail))
         .route("/api/v1/assets/:asset_id/artwork", get(indexed_artwork))
+        .route("/api/v1/actors", get(list_actor_folders))
+        .route(
+            "/api/v1/actors/:actor_name",
+            get(actor_folder_confirmation).delete(remove_actor_folder_task),
+        )
+        .route("/api/v1/actors/:actor_name/poster", get(actor_poster))
         .route("/api/v1/media-roots/health", get(media_root_health))
         .route(
             "/assets/app.js",
@@ -622,6 +639,180 @@ async fn asset_detail(
     }
 }
 
+#[derive(Serialize)]
+struct ActorFolderResponse {
+    name: String,
+    movie_count: usize,
+    hard_link_count: usize,
+    logical_size: u64,
+    reclaimable_space: u64,
+    poster_url: Option<String>,
+}
+
+fn actor_response(folder: crate::actor_views::ActorFolder) -> ActorFolderResponse {
+    let poster_url = folder
+        .poster_path
+        .map(|_| format!("/api/v1/actors/{}/poster", folder.name));
+    ActorFolderResponse {
+        name: folder.name,
+        movie_count: folder.movie_count,
+        hard_link_count: folder.hard_link_count,
+        logical_size: folder.logical_size,
+        reclaimable_space: folder.reclaimable_space,
+        poster_url,
+    }
+}
+
+async fn list_actor_folders(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    let Some(root) = state.config.actor_view_root.as_deref() else {
+        return Json(Vec::<ActorFolderResponse>::new()).into_response();
+    };
+    match crate::actor_views::browse_actor_folders(root) {
+        Ok(folders) => {
+            Json(folders.into_iter().map(actor_response).collect::<Vec<_>>()).into_response()
+        }
+        Err(error) => (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response(),
+    }
+}
+
+async fn actor_folder_confirmation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(actor_name): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    let Some(root) = state.config.actor_view_root.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match crate::actor_views::browse_actor_folders(root) {
+        Ok(folders) => folders
+            .into_iter()
+            .find(|folder| folder.name == actor_name)
+            .map(|folder| Json(actor_response(folder)).into_response())
+            .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response()),
+        Err(error) => (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response(),
+    }
+}
+
+async fn actor_poster(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(actor_name): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    let Some(root) = state.config.actor_view_root.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(Some(path)) = crate::actor_views::browse_actor_folders(root).map(|folders| {
+        folders
+            .into_iter()
+            .find(|folder| folder.name == actor_name)
+            .and_then(|folder| folder.poster_path)
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(bytes) = fs::read(&path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let content_type = match path
+        .extension()
+        .and_then(|v| v.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        _ => "image/jpeg",
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "private, max-age=3600")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(Body::from(bytes))
+        .unwrap()
+        .into_response()
+}
+
+async fn remove_actor_folder_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(actor_name): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    let Some(root) = state.config.actor_view_root.clone() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let exists = crate::actor_views::browse_actor_folders(&root)
+        .map(|folders| folders.iter().any(|folder| folder.name == actor_name))
+        .unwrap_or(false);
+    if !exists {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let task = match state.tasks.create(
+        NewTask::mutation("remove_actor_folder", root.display().to_string()),
+        state.now(),
+    ) {
+        Ok(task) => task,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let id = task.id.clone();
+    tokio::spawn(run_actor_removal_task(state, id, root, actor_name));
+    (StatusCode::ACCEPTED, Json(task)).into_response()
+}
+
+async fn run_actor_removal_task(
+    state: AppState,
+    task_id: String,
+    root: PathBuf,
+    actor_name: String,
+) {
+    let _lease = state
+        .coordinator
+        .mutation(&root.display().to_string())
+        .await;
+    if state.tasks.mark_running(&task_id, state.now()).is_err() {
+        return;
+    }
+    match crate::actor_views::remove_actor_folder(&root, &actor_name) {
+        Ok(outcomes) => {
+            for outcome in outcomes {
+                if state
+                    .tasks
+                    .finish_item(
+                        &task_id,
+                        &outcome.kind,
+                        Some(&outcome.path.display().to_string()),
+                        &outcome.status,
+                        outcome.message.as_deref(),
+                    )
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let _ = state.tasks.mark_completed(&task_id, state.now());
+        }
+        Err(error) => {
+            let _ = state
+                .tasks
+                .mark_failed(&task_id, state.now(), &error.to_string());
+        }
+    }
+}
+
 fn authorized(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
     let secrets = state
         .store
@@ -864,6 +1055,8 @@ fn openapi_document() -> serde_json::Value {
             "/api/v1/assets/health":{"get":{"summary":"Get Asset Index reconciliation health","responses":{"200":{"description":"Index health"}}}},
             "/api/v1/assets/scan":{"post":{"summary":"Run manual or incremental reconciliation","requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ScanAssetsRequest"}}}},"responses":{"200":{"description":"Reconciled"},"422":{"description":"Filesystem scan failed"}}}},
             "/api/v1/assets/{asset_id}/artwork":{"get":{"summary":"Serve artwork belonging to an indexed Media Asset","parameters":[{"name":"asset_id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Indexed image","content":{"image/jpeg":{},"image/png":{},"image/webp":{}}},"404":{"description":"No indexed artwork"}}}},
+            "/api/v1/actors":{"get":{"summary":"Browse derived Actor Folders with inode-aware storage metrics","responses":{"200":{"description":"Actor Folders","content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/ActorFolder"}}}}}}}},
+            "/api/v1/actors/{actor_name}":{"get":{"summary":"Recompute Actor Folder removal confirmation","responses":{"200":{"description":"Fresh confirmation metrics"}}},"delete":{"summary":"Remove derived paths as a Management Task","responses":{"202":{"description":"Accepted Management Task"},"404":{"description":"Actor Folder not found"}}}},
             "/api/v1/media-roots/health":{"get":{"summary":"Report TrueNAS Host Path access and process UID/GID","responses":{"200":{"description":"Media Root permission reports"}}}}
         },
         "components": {"schemas": {
@@ -874,6 +1067,7 @@ fn openapi_document() -> serde_json::Value {
             "ScanAssetsRequest":{"type":"object","required":["mode"],"properties":{"mode":{"type":"string","enum":["manual","incremental"]},"media_root":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}}}},
             "MediaAsset":{"type":"object","required":["id","media_root","path","device","inode","observed_at","captured_date","state"],"properties":{"id":{"type":"string"},"media_root":{"type":"string"},"path":{"type":"string"},"device":{"type":"integer"},"inode":{"type":"integer"},"jav_code":{"type":["string","null"]},"title":{"type":["string","null"]},"nfo_path":{"type":["string","null"]},"artwork_url":{"type":["string","null"]},"observed_at":{"type":"integer"},"captured_date":{"type":"string","format":"date"},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]}}},
             "AssetActor":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"poster_url":{"type":["string","null"]},"actor_folder_url":{"type":["string","null"]}}},
+            "ActorFolder":{"type":"object","required":["name","movie_count","hard_link_count","logical_size","reclaimable_space"],"properties":{"name":{"type":"string"},"movie_count":{"type":"integer"},"hard_link_count":{"type":"integer"},"logical_size":{"type":"integer"},"reclaimable_space":{"type":"integer"},"poster_url":{"type":["string","null"]}}},
             "AssetDetail":{"type":"object","required":["id","path","actors","tags","parse_status","state"],"properties":{"id":{"type":"string"},"path":{"type":"string"},"title":{"type":["string","null"]},"actors":{"type":"array","items":{"$ref":"#/components/schemas/AssetActor"}},"studio":{"type":["string","null"]},"release_date":{"type":["string","null"],"format":"date"},"runtime_minutes":{"type":["integer","null"]},"director":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"plot":{"type":["string","null"]},"parse_status":{"type":"string","enum":["valid","missing","invalid"]},"source_path":{"type":["string","null"]},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]}}},
             "AssetPage":{"type":"object","required":["items","groups","page","per_page","total","total_pages"],"properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/MediaAsset"}},"groups":{"type":"array","items":{"type":"object","properties":{"date":{"type":"string","format":"date"},"count":{"type":"integer"}}}},"page":{"type":"integer"},"per_page":{"type":"integer"},"total":{"type":"integer"},"total_pages":{"type":"integer"}}},
             "ManagementTask": {"type":"object","required":["id","task_type","media_root","kind","status","created_at","items"],"properties":{
