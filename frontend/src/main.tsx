@@ -241,6 +241,7 @@ export function App() {
   }, [nav]);
   useEffect(() => {
     if (view !== "ready") return;
+    void loadActors();
     const actorName = actorNameFromPath();
     if (actorName) void openActor(actorName, false);
     const onPopState = () => {
@@ -314,7 +315,10 @@ export function App() {
   }
   async function loadActors() {
     const response = await fetch("/api/v1/actors");
-    if (response.ok) setActors((await response.json()) as ActorFolder[]);
+    if (response.ok) {
+      const folders = (await response.json().catch(() => null)) as ActorFolder[] | null;
+      if (Array.isArray(folders)) setActors(folders);
+    }
     else
       setMessage(
         (await response.text()) || "Actor Folders could not be loaded.",
@@ -676,58 +680,66 @@ export function App() {
       </main>
     );
   return (
-    <div className={`shell ${inspectedAsset ? "inspecting" : ""}`}>
+    <div
+      className={`shell ${inspectedAsset ? "inspecting" : ""}`}
+      data-design="beui-photos"
+    >
       <aside className="sidebar">
         <div className="logo">
           <span><ImageIcon aria-hidden="true" /></span>
           <div>
             <b>rust-jav</b>
-            <small>Media library</small>
+            <small>媒体资产管理</small>
           </div>
         </div>
         <nav>
-          <p>LIBRARY</p>
+          <p>图库</p>
           <button
+            aria-label="All Assets"
             className={nav === "assets" ? "active" : ""}
             onClick={() => setNav("assets")}
           >
-            <span><Grid2X2 aria-hidden="true" /></span> All Assets <em>{assets.total}</em>
+            <span><Grid2X2 aria-hidden="true" /></span> 所有资产 <em>{assets.total}</em>
           </button>
-          <button>
-            <span><Clock3 aria-hidden="true" /></span> Recently Added
+          <button aria-label="Recently Added">
+            <span><Clock3 aria-hidden="true" /></span> 最近入库
           </button>
           <button
+            aria-label="Actors"
             className={nav === "actors" ? "active" : ""}
             onClick={() => setNav("actors")}
           >
-            <span><Users aria-hidden="true" /></span> Actors
+            <span><Users aria-hidden="true" /></span> 演员
             <em>{actors.length}</em>
           </button>
           <button
+            aria-label="Deletion Candidates"
             className={nav === "deletion" ? "active" : ""}
             onClick={() => setNav("deletion")}
           >
-            <span><Trash2 aria-hidden="true" /></span> Deletion Candidates
+            <span><Trash2 aria-hidden="true" /></span> 删除候选
           </button>
-          <p>MANAGE</p>
+          <p>管理</p>
           <button
+            aria-label="Management Tasks"
             className={nav === "tasks" ? "active" : ""}
             onClick={() => setNav("tasks")}
           >
-            <span><ListTodo aria-hidden="true" /></span> Management Tasks
+            <span><ListTodo aria-hidden="true" /></span> 整理任务
           </button>
-          <button>
-            <span><AlertTriangle aria-hidden="true" /></span> Exceptions
+          <button aria-label="Exceptions">
+            <span><AlertTriangle aria-hidden="true" /></span> 异常资产
           </button>
           <button
+            aria-label="Settings"
             className={nav === "settings" ? "active" : ""}
             onClick={() => setNav("settings")}
           >
-            <span><Settings aria-hidden="true" /></span> Settings
+            <span><Settings aria-hidden="true" /></span> 设置
           </button>
         </nav>
         <div className="root-card">
-          <small>ASSET INDEX</small>
+          <small>资产索引</small>
           <b>
             <i className={`health-dot ${health?.state}`} />
             {health?.state ?? "Loading"}
@@ -738,38 +750,38 @@ export function App() {
               : "Filesystem authoritative"}
           </span>
         </div>
-        <button className="signout" onClick={logout}>
-          <LogOut aria-hidden="true" /> Sign out
+        <button className="signout" onClick={logout} aria-label="Sign out">
+          <LogOut aria-hidden="true" /> 退出登录
         </button>
       </aside>
       <main className="content">
         <header>
           <div>
-            <p className="eyebrow">MEDIA LIBRARY</p>
+            <p className="eyebrow">媒体图库</p>
             <h1>
               {nav === "assets"
-                ? "All Assets"
+                ? "所有资产"
                 : nav === "actors"
-                  ? "Actor Folders"
+                  ? "演员"
                   : nav === "deletion"
-                    ? "Deletion Candidates"
+                    ? "删除候选"
                     : nav === "tasks"
-                      ? "Management Tasks"
-                      : "Settings"}
+                      ? "整理任务"
+                      : "设置"}
             </h1>
             <small>
               {nav === "actors"
-                ? `${actors.length} derived Actor Folders · regenerable from NFO metadata`
+                ? `${actors.length} 个可重建演员视图`
                 : nav === "deletion"
-                  ? `${candidates.length} paths matched by the Active Rule Set`
+                  ? `${candidates.length} 个路径命中当前规则`
                   : nav === "tasks"
-                    ? `${tasks.length} durable tasks · live lifecycle recovery`
-                    : `${assets.total} indexed Media Assets · filesystem authoritative`}
+                    ? `${tasks.length} 个持久化任务`
+                    : `${assets.total} 个项目 · 文件系统为准`}
             </small>
           </div>
           {nav === "assets" && (
-            <button className="scan" onClick={scan}>
-              <RefreshCw aria-hidden="true" /> <span>Reconcile</span>
+            <button className="scan" onClick={scan} aria-label="Reconcile">
+              <RefreshCw aria-hidden="true" /> <span>重新扫描</span>
             </button>
           )}
         </header>
@@ -780,7 +792,7 @@ export function App() {
                 <Search aria-hidden="true" />
                 <input
                   aria-label="Search assets"
-                  placeholder="Search code, title, or path"
+                  placeholder="搜索番号、标题或路径"
                   value={query}
                   onChange={(e) => {
                     setQuery(e.target.value);
@@ -793,7 +805,7 @@ export function App() {
                   className={!filter ? "selected" : ""}
                   onClick={() => setFilter("")}
                 >
-                  All
+                  全部
                 </button>
                 {(["normal", "synchronizing", "exception"] as AssetState[]).map(
                   (s) => (
@@ -805,7 +817,7 @@ export function App() {
                         setPage(1);
                       }}
                     >
-                      {labels[s]}
+                      {s === "normal" ? "正常" : s === "synchronizing" ? "刷新中" : "异常"}
                     </button>
                   ),
                 )}
@@ -1135,34 +1147,39 @@ export function App() {
       )}
       <nav className="bottom-nav">
         <button
+          aria-label="Library"
           className={nav === "assets" ? "active" : ""}
           onClick={() => setNav("assets")}
         >
-          <span><Grid2X2 aria-hidden="true" /></span>Library
+          <span><Grid2X2 aria-hidden="true" /></span>图库
         </button>
         <button
+          aria-label="Actors"
           className={nav === "actors" ? "active" : ""}
           onClick={() => setNav("actors")}
         >
-          <span><Users aria-hidden="true" /></span>Actors
+          <span><Users aria-hidden="true" /></span>演员
         </button>
         <button
+          aria-label="Delete"
           className={nav === "deletion" ? "active" : ""}
           onClick={() => setNav("deletion")}
         >
-          <span><Trash2 aria-hidden="true" /></span>Delete
+          <span><Trash2 aria-hidden="true" /></span>删除
         </button>
         <button
+          aria-label="Tasks"
           className={nav === "tasks" ? "active" : ""}
           onClick={() => setNav("tasks")}
         >
-          <span><ListTodo aria-hidden="true" /></span>Tasks
+          <span><ListTodo aria-hidden="true" /></span>任务
         </button>
         <button
+          aria-label="Settings"
           className={nav === "settings" ? "active" : ""}
           onClick={() => setNav("settings")}
         >
-          <span><Settings aria-hidden="true" /></span>Settings
+          <span><Settings aria-hidden="true" /></span>设置
         </button>
       </nav>
       {plan && (

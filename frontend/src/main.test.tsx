@@ -250,6 +250,18 @@ describe("Actor detail navigation", () => {
 });
 
 describe("BeUI Photos presentation", () => {
+  it("uses the prototype information architecture and Chinese gallery labels", async () => {
+    stubActorApi();
+    render(<App />);
+
+    expect(await screen.findByText("所有资产", { selector: "h1" })).toBeInTheDocument();
+    expect(screen.getAllByText("图库").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("演员").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("删除候选").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("整理任务").length).toBeGreaterThan(0);
+    expect(document.querySelector('.shell')).toHaveAttribute("data-design", "beui-photos");
+  });
+
   it("renders a dense 4:3 gallery with overlays and accessible motion tabs", async () => {
     stubActorApi();
     render(<App />);
