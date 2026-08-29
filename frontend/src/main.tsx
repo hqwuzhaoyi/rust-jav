@@ -22,6 +22,8 @@ type Page = {
   total_pages: number;
 };
 type Health = { state: string; mode: string | null };
+type Candidate = { path:string; matching_rule:string; type:string; video_warning:string|null; logical_size:number; reclaimable_space:number };
+type DeletionPlan = { id:string; selection:"selected"|"unified"; logical_size:number; reclaimable_space:number; expires_at:number; paths:Array<{path:string;type:string;video_warning:string|null}>; discovered_hard_links:Array<{path:string}> };
 type Task = {
   id: string;
   task_type: string;
@@ -59,7 +61,7 @@ export function App() {
     [filter, setFilter] = useState<AssetState | "">(""),
     [health, setHealth] = useState<Health | null>(null),
     [page, setPage] = useState(1),
-    [nav, setNav] = useState<"assets" | "tasks" | "settings">("assets");
+    [nav, setNav] = useState<"assets" | "deletion" | "tasks" | "settings">("assets");
   const [tasks, setTasks] = useState<Task[]>([]),
     [mediaRoot, setMediaRoot] = useState(""),
     [mode, setMode] = useState<"preview" | "apply">("preview"),
@@ -69,6 +71,7 @@ export function App() {
   const [editing, setEditing] = useState(false);
   const [validation, setValidation] = useState<Validation>(null);
   const [rulesMessage, setRulesMessage] = useState("");
+  const [candidates,setCandidates]=useState<Candidate[]>([]), [selected,setSelected]=useState<string[]>([]), [plan,setPlan]=useState<DeletionPlan|null>(null), [confirmText,setConfirmText]=useState("");
   useEffect(() => {
     if (!token)
       fetch("/api/v1/status").then((r) => {
@@ -88,7 +91,11 @@ export function App() {
   useEffect(() => {
     if (nav === "tasks") void loadTasks();
     if (nav === "settings") void loadRules();
+    if (nav === "deletion") void loadCandidates();
   }, [nav]);
+  async function loadCandidates(){ const r=await fetch("/api/v1/deletion-candidates"); if(r.ok)setCandidates(((await r.json()) as {items:Candidate[]}).items); }
+  async function previewDeletion(selection:"selected"|"unified") { const r=await fetch("/api/v1/deletion-plans",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paths:selected,selection})}); if(r.ok){setPlan(await r.json() as DeletionPlan);setConfirmText("");} else setMessage(await r.text()); }
+  async function executeDeletion(){ if(!plan)return; const r=await fetch(`/api/v1/deletion-plans/${plan.id}/execute`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({irreversible:true,confirmation:confirmText})}); if(r.ok){setPlan(null);setSelected([]);setMessage("Permanent deletion finished. Per-path outcomes are in Management Tasks.");await loadCandidates();} else setMessage(await r.text()); }
   async function loadRules() {
     const response = await fetch("/api/v1/rules/active");
     if (response.ok)
@@ -317,6 +324,7 @@ export function App() {
           <button>
             <span>♙</span> Actors
           </button>
+          <button className={nav === "deletion" ? "active" : ""} onClick={() => setNav("deletion")}><span>⌫</span> Deletion Candidates</button>
           <p>MANAGE</p>
           <button
             className={nav === "tasks" ? "active" : ""}
@@ -357,12 +365,14 @@ export function App() {
             <h1>
               {nav === "assets"
                 ? "All Assets"
+                : nav === "deletion"
+                  ? "Deletion Candidates"
                 : nav === "tasks"
                   ? "Management Tasks"
                   : "Settings"}
             </h1>
             <small>
-              {nav === "tasks"
+              {nav === "deletion" ? `${candidates.length} paths matched by the Active Rule Set` : nav === "tasks"
                 ? `${tasks.length} durable tasks · live lifecycle recovery`
                 : `${assets.total} indexed Media Assets · filesystem authoritative`}
             </small>
@@ -489,6 +499,16 @@ export function App() {
             message={message}
           />
         )}
+        {nav === "deletion" && <section className="deletion-browser">
+          <div className="deletion-intro"><div><p className="eyebrow">ACTIVE RULE SET</p><h2>Review permanent deletion</h2><p>Sizes are current filesystem observations. Nothing is deleted until an Operation Plan is explicitly confirmed.</p></div><button disabled={!selected.length} onClick={()=>void previewDeletion("selected")}>Review {selected.length || "selected"}</button></div>
+          {message && <p className="notice" role="status">{message}</p>}
+          <div className="candidate-list">{candidates.map(candidate=><label className="candidate" key={candidate.path}>
+            <input type="checkbox" aria-label={`Select ${candidate.path}`} checked={selected.includes(candidate.path)} onChange={e=>setSelected(current=>e.target.checked?[...current,candidate.path]:current.filter(path=>path!==candidate.path))}/>
+            <div><code title={candidate.path}>{candidate.path}</code><small>Rule: {candidate.matching_rule} · {candidate.type}</small>{candidate.video_warning&&<strong>⚠ Video content</strong>}</div>
+            <dl><div><dt>Logical Size</dt><dd>{formatBytes(candidate.logical_size)}</dd></div><div><dt>Reclaimable Space</dt><dd>{formatBytes(candidate.reclaimable_space)}</dd></div></dl>
+          </label>)}</div>
+          {!candidates.length&&<p className="task-empty">No paths match the Active Rule Set.</p>}
+        </section>}
         {nav === "settings" && (
           <section className="rules-settings">
             <p className="eyebrow">DELETION RULES</p>
@@ -575,6 +595,7 @@ export function App() {
         >
           <span>▦</span>Library
         </button>
+        <button className={nav === "deletion" ? "active" : ""} onClick={() => setNav("deletion")}><span>⌫</span>Delete</button>
         <button
           className={nav === "tasks" ? "active" : ""}
           onClick={() => setNav("tasks")}
@@ -588,6 +609,15 @@ export function App() {
           <span>⚙</span>Settings
         </button>
       </nav>
+      {plan&&<div className="modal-backdrop" role="presentation"><section className="delete-confirm" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+        <p className="eyebrow">IRREVERSIBLE ACTION</p><h2 id="delete-title">Permanently delete {plan.paths.length} paths?</h2>
+        <div className="choice"><button className={plan.selection==="selected"?"selected":""} onClick={()=>void previewDeletion("selected")}>Selected paths only</button><button className={plan.selection==="unified"?"selected":""} onClick={()=>void previewDeletion("unified")}>All discovered hard links ({plan.discovered_hard_links.length})</button></div>
+        <p><b>{formatBytes(plan.logical_size)}</b> logical · <b>{formatBytes(plan.reclaimable_space)}</b> reclaimable</p>
+        {plan.paths.some(path=>path.video_warning)&&<p className="video-warning">⚠ This plan permanently removes video content.</p>}
+        <div className="plan-paths">{plan.paths.map(path=><code key={path.path}>{path.path}</code>)}</div>
+        <label htmlFor="confirm-delete">Type <b>PERMANENTLY DELETE</b> to confirm</label><input id="confirm-delete" value={confirmText} onChange={event=>setConfirmText(event.target.value)} autoComplete="off"/>
+        <div className="confirm-actions"><button onClick={()=>setPlan(null)}>Cancel</button><button className="danger" disabled={confirmText!=="PERMANENTLY DELETE"} onClick={()=>void executeDeletion()}>Permanently delete</button></div>
+      </section></div>}
     </div>
   );
 }
@@ -719,6 +749,7 @@ function formatDate(v: string) {
     year: "numeric",
   }).format(new Date(`${v}T00:00:00`));
 }
+function formatBytes(value:number){ if(value<1024)return `${value} B`; const units=["KB","MB","GB","TB"];let size=value/1024,index=0;while(size>=1024&&index<units.length-1){size/=1024;index++}return `${size.toFixed(size>=10?0:1)} ${units[index]}`; }
 const root = document.getElementById("root");
 if (root) {
   createRoot(root).render(

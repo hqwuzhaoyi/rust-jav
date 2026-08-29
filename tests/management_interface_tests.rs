@@ -909,3 +909,186 @@ async fn generated_openapi_describes_task_rest_and_sse_contracts() {
         "exception"
     );
 }
+
+#[tokio::test]
+async fn authenticated_candidate_plan_executes_as_durable_task_and_keeps_audit() {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    let selected = root.join("delete-me.mp4");
+    let related = root.join("related-copy.mp4");
+    std::fs::write(&selected, b"video").unwrap();
+    std::fs::hard_link(&selected, &related).unwrap();
+    std::fs::write(
+        &config.active_rule_set_file,
+        "version: 1\nrules:\n  - pattern: 'delete-*'\n",
+    )
+    .unwrap();
+    config.media_roots.push(root);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+
+    let candidates = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/deletion-candidates",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(candidates.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
+    assert_eq!(body["items"][0]["matching_rule"], "delete-*");
+    assert_eq!(body["items"][0]["type"], "file");
+    assert!(body["items"][0]["video_warning"].is_string());
+    assert_eq!(body["items"][0]["logical_size"], 5);
+
+    let request = serde_json::json!({"paths":[selected],"selection":"unified"}).to_string();
+    let planned = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/deletion-plans",
+        &request,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(planned.status(), StatusCode::CREATED);
+    let plan: serde_json::Value =
+        serde_json::from_slice(&to_bytes(planned.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(plan["paths"].as_array().unwrap().len(), 2);
+    assert!(plan["reclaimable_space"].as_u64().unwrap() > 0);
+    let endpoint = format!(
+        "/api/v1/deletion-plans/{}/execute",
+        plan["id"].as_str().unwrap()
+    );
+    let executed = json_request(
+        app(state.clone()),
+        "POST",
+        &endpoint,
+        r#"{"irreversible":true,"confirmation":"PERMANENTLY DELETE"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(executed.status(), StatusCode::ACCEPTED);
+    let task: serde_json::Value =
+        serde_json::from_slice(&to_bytes(executed.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(task["task_type"], "permanent_deletion");
+    assert_eq!(task["items"].as_array().unwrap().len(), 2);
+    assert!(!selected.exists() && !related.exists());
+    let audits = json_request(
+        app(state),
+        "GET",
+        "/api/v1/deletion-audits",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let records: serde_json::Value =
+        serde_json::from_slice(&to_bytes(audits.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(records[0]["administrator"], "Administrator");
+    assert_eq!(records[0]["rolled_back"], false);
+    assert_eq!(
+        records[0]["operation_plan"]["paths"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn deletion_api_rejects_expired_plan_and_reports_replaced_file_as_partial() {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    let replaced = root.join("delete-replaced.txt");
+    let deletable = root.join("delete-ok.txt");
+    std::fs::write(&replaced, b"old").unwrap();
+    std::fs::write(&deletable, b"ok").unwrap();
+    std::fs::write(
+        &config.active_rule_set_file,
+        "version: 1\nrules:\n  - pattern: 'delete-*'\n",
+    )
+    .unwrap();
+    config.media_roots.push(root);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+
+    let create = |paths: Vec<&std::path::Path>| {
+        serde_json::json!({"paths":paths,"selection":"selected"}).to_string()
+    };
+    let planned = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/deletion-plans",
+        &create(vec![&replaced, &deletable]),
+        Some(&cookie),
+    )
+    .await;
+    let plan: serde_json::Value =
+        serde_json::from_slice(&to_bytes(planned.into_body(), usize::MAX).await.unwrap()).unwrap();
+    std::fs::remove_file(&replaced).unwrap();
+    std::fs::write(&replaced, b"replacement").unwrap();
+    let endpoint = format!(
+        "/api/v1/deletion-plans/{}/execute",
+        plan["id"].as_str().unwrap()
+    );
+    let response = json_request(
+        app(state.clone()),
+        "POST",
+        &endpoint,
+        r#"{"irreversible":true,"confirmation":"PERMANENTLY DELETE"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let task: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let statuses = task["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["status"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(statuses.contains(&"changed") && statuses.contains(&"deleted"));
+    assert!(replaced.exists() && !deletable.exists());
+
+    let expiring = replaced.clone();
+    let planned = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/deletion-plans",
+        &create(vec![&expiring]),
+        Some(&cookie),
+    )
+    .await;
+    let plan: serde_json::Value =
+        serde_json::from_slice(&to_bytes(planned.into_body(), usize::MAX).await.unwrap()).unwrap();
+    state.set_clock(TestClock(701));
+    let cookie = login_cookie(&state).await;
+    let endpoint = format!(
+        "/api/v1/deletion-plans/{}/execute",
+        plan["id"].as_str().unwrap()
+    );
+    let expired = json_request(
+        app(state),
+        "POST",
+        &endpoint,
+        r#"{"irreversible":true,"confirmation":"PERMANENTLY DELETE"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(expired.status(), StatusCode::CONFLICT);
+    assert!(replaced.exists());
+}

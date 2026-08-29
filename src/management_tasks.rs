@@ -137,6 +137,11 @@ impl TaskStore {
                id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
                kind TEXT NOT NULL, path TEXT, status TEXT NOT NULL, message TEXT,
                FOREIGN KEY(task_id) REFERENCES management_tasks(id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS deletion_audit_records (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL UNIQUE,
+               created_at INTEGER NOT NULL, record_json TEXT NOT NULL,
+               FOREIGN KEY(task_id) REFERENCES management_tasks(id)
              );",
         )?;
         Ok(Self(Arc::new(Mutex::new(connection))))
@@ -231,6 +236,33 @@ impl TaskStore {
             .into_iter()
             .filter(|task| task.status == TaskStatus::Queued && task.kind != TaskKind::Mutation)
             .collect())
+    }
+
+    /// Audit records intentionally have no retention/deletion API. They remain
+    /// durable for the lifetime of the management database by default.
+    pub fn record_deletion_audit(
+        &self,
+        task_id: &str,
+        created_at: u64,
+        record: &serde_json::Value,
+    ) -> Result<(), Error> {
+        self.connection()?.execute(
+            "INSERT INTO deletion_audit_records(task_id,created_at,record_json) VALUES (?1,?2,?3)",
+            params![task_id, created_at, record.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn deletion_audits(&self) -> Result<Vec<serde_json::Value>, Error> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT record_json FROM deletion_audit_records ORDER BY created_at DESC,id DESC",
+        )?;
+        let records = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|value| value.ok().and_then(|json| serde_json::from_str(&json).ok()))
+            .collect();
+        Ok(records)
     }
 }
 
