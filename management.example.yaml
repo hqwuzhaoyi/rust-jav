@@ -11,3 +11,5 @@ rule_download_max_bytes: 1048576
 # Non-overlapping TrueNAS Host Paths or native filesystem trees.
 media_roots:
   - /media/jav
+# Derived hard-link Actor View. Must be on the same filesystem/ZFS dataset.
+actor_view_root: /media/actors

@@ -70,6 +70,14 @@ type OperationPlan = {
   warnings: string[];
   requires_confirmation: boolean;
 };
+type ActorFolder = {
+  name: string;
+  movie_count: number;
+  hard_link_count: number;
+  logical_size: number;
+  reclaimable_space: number;
+  poster_url: string | null;
+};
 type Task = {
   id: string;
   task_type: string;
@@ -120,9 +128,9 @@ export function App() {
     [filter, setFilter] = useState<AssetState | "">(""),
     [health, setHealth] = useState<Health | null>(null),
     [page, setPage] = useState(1),
-    [nav, setNav] = useState<"assets" | "deletion" | "tasks" | "settings">(
-      "assets",
-    );
+    [nav, setNav] = useState<
+      "assets" | "actors" | "deletion" | "tasks" | "settings"
+    >("assets");
   const [tasks, setTasks] = useState<Task[]>([]),
     [mediaRoot, setMediaRoot] = useState(""),
     [selectedOps, setSelectedOps] = useState<string[]>(
@@ -140,6 +148,9 @@ export function App() {
     [selected, setSelected] = useState<string[]>([]),
     [plan, setPlan] = useState<DeletionPlan | null>(null),
     [confirmText, setConfirmText] = useState("");
+  const [actors, setActors] = useState<ActorFolder[]>([]);
+  const [confirmActor, setConfirmActor] = useState<ActorFolder | null>(null);
+  const [actorBusy, setActorBusy] = useState(false);
   useEffect(() => {
     if (!token)
       fetch("/api/v1/status").then((r) => {
@@ -160,7 +171,50 @@ export function App() {
     if (nav === "tasks") void loadTasks();
     if (nav === "settings") void loadRules();
     if (nav === "deletion") void loadCandidates();
+    if (nav === "actors") void loadActors();
   }, [nav]);
+  async function loadActors() {
+    const response = await fetch("/api/v1/actors");
+    if (response.ok) setActors((await response.json()) as ActorFolder[]);
+    else
+      setMessage(
+        (await response.text()) || "Actor Folders could not be loaded.",
+      );
+  }
+  async function requestActorRemoval(actor: ActorFolder) {
+    setActorBusy(true);
+    const response = await fetch(
+      `/api/v1/actors/${encodeURIComponent(actor.name)}`,
+    );
+    if (response.ok) setConfirmActor((await response.json()) as ActorFolder);
+    else
+      setMessage(
+        (await response.text()) || "Actor Folder could not be revalidated.",
+      );
+    setActorBusy(false);
+  }
+  async function removeActor() {
+    if (!confirmActor) return;
+    setActorBusy(true);
+    const response = await fetch(
+      `/api/v1/actors/${encodeURIComponent(confirmActor.name)}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) {
+      setMessage(
+        (await response.text()) || "Actor Folder removal was rejected.",
+      );
+      setActorBusy(false);
+      return;
+    }
+    const task = (await response.json()) as Task;
+    setTasks((current) => [task, ...current]);
+    watchTask(task.id);
+    setConfirmActor(null);
+    setMessage("Actor Folder removal started as a Management Task.");
+    await loadActors();
+    setActorBusy(false);
+  }
   async function loadCandidates() {
     const r = await fetch("/api/v1/deletion-candidates");
     if (r.ok) setCandidates(((await r.json()) as { items: Candidate[] }).items);
@@ -450,8 +504,12 @@ export function App() {
           <button>
             <span>◷</span> Recently Added
           </button>
-          <button>
+          <button
+            className={nav === "actors" ? "active" : ""}
+            onClick={() => setNav("actors")}
+          >
             <span>♙</span> Actors
+            <em>{actors.length}</em>
           </button>
           <button
             className={nav === "deletion" ? "active" : ""}
@@ -499,18 +557,22 @@ export function App() {
             <h1>
               {nav === "assets"
                 ? "All Assets"
-                : nav === "deletion"
-                  ? "Deletion Candidates"
-                  : nav === "tasks"
-                    ? "Management Tasks"
-                    : "Settings"}
+                : nav === "actors"
+                  ? "Actor Folders"
+                  : nav === "deletion"
+                    ? "Deletion Candidates"
+                    : nav === "tasks"
+                      ? "Management Tasks"
+                      : "Settings"}
             </h1>
             <small>
-              {nav === "deletion"
-                ? `${candidates.length} paths matched by the Active Rule Set`
-                : nav === "tasks"
-                  ? `${tasks.length} durable tasks · live lifecycle recovery`
-                  : `${assets.total} indexed Media Assets · filesystem authoritative`}
+              {nav === "actors"
+                ? `${actors.length} derived Actor Folders · regenerable from NFO metadata`
+                : nav === "deletion"
+                  ? `${candidates.length} paths matched by the Active Rule Set`
+                  : nav === "tasks"
+                    ? `${tasks.length} durable tasks · live lifecycle recovery`
+                    : `${assets.total} indexed Media Assets · filesystem authoritative`}
             </small>
           </div>
           {nav === "assets" && (
@@ -648,6 +710,13 @@ export function App() {
             confirmPlan={confirmPlan}
             refresh={loadTasks}
             message={message}
+          />
+        )}
+        {nav === "actors" && (
+          <ActorFolders
+            actors={actors}
+            busy={actorBusy}
+            remove={requestActorRemoval}
           />
         )}
         {nav === "deletion" && (
@@ -802,12 +871,26 @@ export function App() {
           close={closeInspector}
         />
       )}
+      {confirmActor && (
+        <ActorRemovalDialog
+          actor={confirmActor}
+          busy={actorBusy}
+          cancel={() => setConfirmActor(null)}
+          remove={() => void removeActor()}
+        />
+      )}
       <nav className="bottom-nav">
         <button
           className={nav === "assets" ? "active" : ""}
           onClick={() => setNav("assets")}
         >
           <span>▦</span>Library
+        </button>
+        <button
+          className={nav === "actors" ? "active" : ""}
+          onClick={() => setNav("actors")}
+        >
+          <span>♙</span>Actors
         </button>
         <button
           className={nav === "deletion" ? "active" : ""}
@@ -1062,6 +1145,130 @@ function Info({ k, v }: { k: string; v: string | null }) {
     <div>
       <dt>{k}</dt>
       <dd>{v ?? "Not provided"}</dd>
+    </div>
+  );
+}
+function ActorFolders({
+  actors,
+  busy,
+  remove,
+}: {
+  actors: ActorFolder[];
+  busy: boolean;
+  remove: (actor: ActorFolder) => Promise<void>;
+}) {
+  if (!actors.length)
+    return (
+      <div className="empty">
+        <span>♙</span>
+        <h2>No Actor Folders</h2>
+        <p>Generate the derived Actor View from NFO metadata.</p>
+      </div>
+    );
+  return (
+    <div className="actor-folder-grid">
+      {actors.map((actor) => (
+        <article className="actor-folder-card" key={actor.name}>
+          <div className="actor-folder-poster">
+            {actor.poster_url ? (
+              <img src={actor.poster_url} alt={`${actor.name} poster`} />
+            ) : (
+              <span>♙</span>
+            )}
+          </div>
+          <div className="actor-folder-meta">
+            <h2>{actor.name}</h2>
+            <p>
+              {actor.movie_count} movie director
+              {actor.movie_count === 1 ? "y" : "ies"} · {actor.hard_link_count}{" "}
+              hard link{actor.hard_link_count === 1 ? "" : "s"}
+            </p>
+            <dl>
+              <div>
+                <dt>Logical Size</dt>
+                <dd>{formatBytes(actor.logical_size)}</dd>
+              </div>
+              <div>
+                <dt>Reclaimable Space</dt>
+                <dd>{formatBytes(actor.reclaimable_space)}</dd>
+              </div>
+            </dl>
+            <button disabled={busy} onClick={() => void remove(actor)}>
+              Remove Actor Folder…
+            </button>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+function ActorRemovalDialog({
+  actor,
+  busy,
+  cancel,
+  remove,
+}: {
+  actor: ActorFolder;
+  busy: boolean;
+  cancel: () => void;
+  remove: () => void;
+}) {
+  return (
+    <div
+      className="dialog-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) cancel();
+      }}
+    >
+      <section
+        className="confirm-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="remove-actor-title"
+      >
+        <p className="eyebrow">SAFE DERIVED-PATH REMOVAL</p>
+        <h2 id="remove-actor-title">Remove {actor.name}?</h2>
+        <p>
+          Only paths under this Actor Folder will be unlinked. Source Media
+          Assets, NFO metadata, and Jellyfin items will not be removed.
+        </p>
+        <dl>
+          <div>
+            <dt>Actor Folder</dt>
+            <dd>{actor.name}</dd>
+          </div>
+          <div>
+            <dt>Movies</dt>
+            <dd>{actor.movie_count}</dd>
+          </div>
+          <div>
+            <dt>Hard links</dt>
+            <dd>{actor.hard_link_count}</dd>
+          </div>
+          <div>
+            <dt>Logical Size</dt>
+            <dd>{formatBytes(actor.logical_size)}</dd>
+          </div>
+          <div>
+            <dt>Reclaimable Space</dt>
+            <dd>{formatBytes(actor.reclaimable_space)}</dd>
+          </div>
+        </dl>
+        <p className="regenerate-note">
+          Regenerate later by running Actor Links from the source NFO metadata.
+          Hard links require the Actor View and Media Root to remain on the same
+          filesystem.
+        </p>
+        <div className="dialog-actions">
+          <button disabled={busy} onClick={cancel}>
+            Cancel
+          </button>
+          <button className="danger" disabled={busy} onClick={remove}>
+            Remove via Management Task
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

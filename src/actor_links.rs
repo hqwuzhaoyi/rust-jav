@@ -103,6 +103,15 @@ pub(crate) fn run_actor_links_command(
         source_dir.clone(),
         vec!["actor-links".to_string()],
     );
+    if apply {
+        if let Err(error) =
+            crate::actor_views::validate_hard_link_compatibility(&source_dir, &actors_root)
+        {
+            report.errors.push(error.to_string());
+            report.finalize();
+            return Ok(report);
+        }
+    }
     let verification = crate::application::ApplicationServices::new().verification();
     let before_source = if apply {
         match verification.scan(&source_dir, MigrationScope::Source, false) {

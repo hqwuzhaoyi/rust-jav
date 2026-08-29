@@ -855,6 +855,146 @@ input {
     color: var(--blue);
   }
 }
+.actor-folder-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 24px 18px;
+}
+.actor-folder-card {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: #fff;
+  box-shadow: 0 5px 22px #0000000b;
+}
+.actor-folder-poster {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 2 / 3;
+  color: #ffffff80;
+  background: linear-gradient(145deg, #8ea8ca, #2c3f5d);
+  font-size: 64px;
+}
+.actor-folder-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.actor-folder-meta {
+  padding: 13px;
+}
+.actor-folder-meta h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.actor-folder-meta p {
+  min-height: 30px;
+  margin: 5px 0 11px;
+  color: #777;
+  font-size: 10px;
+}
+.actor-folder-meta dl,
+.confirm-dialog dl {
+  margin: 0;
+}
+.actor-folder-meta dl div,
+.confirm-dialog dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 10px;
+}
+.actor-folder-meta dt,
+.confirm-dialog dt {
+  color: #777;
+}
+.actor-folder-meta dd,
+.confirm-dialog dd {
+  margin: 0;
+  font-weight: 700;
+  text-align: right;
+}
+.actor-folder-meta button {
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
+  color: #a52a24;
+  background: #fee8e5;
+  cursor: pointer;
+}
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: #0007;
+  backdrop-filter: blur(5px);
+}
+.confirm-dialog {
+  width: min(480px, 100%);
+  padding: 25px;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 25px 80px #0005;
+}
+.confirm-dialog h2 {
+  margin: 4px 0 9px;
+}
+.confirm-dialog > p:not(.eyebrow) {
+  color: #555;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.confirm-dialog dl {
+  margin: 15px 0;
+  padding: 10px 13px;
+  border-radius: 10px;
+  background: #f5f5f7;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 19px;
+}
+.dialog-actions button {
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.dialog-actions .danger {
+  color: #fff;
+  background: #d9362b;
+}
+.dialog-actions button:disabled {
+  opacity: 0.55;
+}
+@media (max-width: 1100px) {
+  .actor-folder-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 760px) {
+  .actor-folder-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 8px;
+  }
+  .actor-folder-meta {
+    padding: 10px;
+  }
+  .actor-folder-meta p {
+    min-height: 42px;
+  }
+  .confirm-dialog {
+    padding: 20px;
+  }
+}
 .operation-heading {
   display: flex;
   align-items: end;

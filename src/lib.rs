@@ -4,6 +4,7 @@
 
 pub mod active_rules;
 pub mod actor_links;
+pub mod actor_views;
 pub mod application;
 pub mod asset_index;
 pub mod cli;
