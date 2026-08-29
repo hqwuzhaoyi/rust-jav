@@ -19,8 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 568 rust-jav \
     && useradd --uid 568 --gid 568 --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin rust-jav
-COPY --from=builder /src/target/release/rust-jav /usr/local/bin/rust-jav
-COPY docker/entrypoint.sh /usr/local/bin/rust-jav-entrypoint
+COPY --from=builder /src/target/release/rust-jav /usr/local/bin/rust-jav-bin
+COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/rust-jav-entrypoint
+COPY --chmod=755 docker/rust-jav-wrapper.sh /usr/local/bin/rust-jav
 ENV RUST_JAV_UID=568 RUST_JAV_GID=568 RUST_JAV_CONFIG=/config/management.yaml
 EXPOSE 9317
 VOLUME ["/config", "/state", "/cache", "/media", "/actors"]

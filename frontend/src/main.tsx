@@ -1,4 +1,4 @@
-import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
 type View = "loading" | "initialize" | "login" | "ready";
@@ -132,7 +132,9 @@ export function App() {
   const token = new URLSearchParams(location.search).get("token"),
     [view, setView] = useState<View>(token ? "initialize" : "loading"),
     [password, setPassword] = useState(""),
-    [message, setMessage] = useState("");
+    [message, setMessage] = useState(""),
+    [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const [assets, setAssets] = useState<Page>({
       items: [],
       groups: [],
@@ -434,28 +436,45 @@ export function App() {
   }
   async function submit(e: FormEvent) {
     e.preventDefault();
-    const init = view === "initialize",
-      r = await fetch(`/api/v1/auth/${init ? "initialize" : "login"}`, {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setMessage("");
+    const init = view === "initialize";
+    try {
+      const r = await fetch(`/api/v1/auth/${init ? "initialize" : "login"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(init ? { token, password } : { password }),
       });
-    setPassword("");
-    if (!r.ok) {
-      setMessage(
-        r.status === 401
-          ? "Incorrect password."
-          : init && r.status === 400
-            ? "Password must be at least 4 characters."
-            : "Request rejected.",
-      );
-      return;
+      setPassword("");
+      if (init && r.status === 409) {
+        history.replaceState({}, "", "/");
+        setView("login");
+        setMessage("Administrator is already initialized. Sign in to continue.");
+        return;
+      }
+      if (!r.ok) {
+        setMessage(
+          !init && r.status === 401
+            ? "Incorrect password."
+            : init && r.status === 400
+              ? "Password must be at least 4 characters."
+              : init && r.status === 403
+                ? "Initialization link is invalid or has expired. Create a new link locally."
+                : "The server could not complete the request. Try again.",
+        );
+        return;
+      }
+      if (init) {
+        history.replaceState({}, "", "/");
+        setView("login");
+        setMessage("Administrator initialized. Sign in to continue.");
+      } else location.assign("/");
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
     }
-    if (init) {
-      history.replaceState({}, "", "/");
-      setView("login");
-      setMessage("Administrator initialized. Sign in to continue.");
-    } else location.assign("/");
   }
   async function logout() {
     await fetch("/api/v1/auth/logout", { method: "POST" });
@@ -551,14 +570,18 @@ export function App() {
             id="password"
             type="password"
             minLength={4}
-            autoComplete="current-password"
+            autoComplete={view === "initialize" ? "new-password" : "current-password"}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
             autoFocus
           />
-          <button type="submit">
-            {view === "initialize" ? "Initialize" : "Sign in"}
+          <button type="submit" disabled={submitting}>
+            {submitting
+              ? "Please wait…"
+              : view === "initialize"
+                ? "Initialize"
+                : "Sign in"}
           </button>
         </form>
         {message && <p role="status">{message}</p>}

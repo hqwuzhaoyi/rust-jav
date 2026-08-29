@@ -19,4 +19,4 @@ if [ "$(id -u)" -ne "$uid" ] || [ "$(id -g)" -ne "$gid" ]; then
   exit 77
 fi
 
-exec /usr/local/bin/rust-jav "$@"
+exec /usr/local/bin/rust-jav-bin "$@"

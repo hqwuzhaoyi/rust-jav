@@ -8,6 +8,54 @@ import { App } from "./main";
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  history.replaceState({}, "", "/");
+});
+
+describe("Administrator initialization", () => {
+  it("uses new-password semantics and permits only one in-flight submission", async () => {
+    history.replaceState({}, "", "/initialize?token=one-use-token");
+    let resolveRequest: ((response: Response) => void) | undefined;
+    const fetchMock = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const password = screen.getByLabelText("Password");
+    const submit = screen.getByRole("button", { name: "Initialize" });
+    expect(password).toHaveAttribute("autocomplete", "new-password");
+
+    await userEvent.type(password, "4827");
+    await userEvent.dblClick(submit);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(submit).toBeDisabled();
+    resolveRequest?.(new Response(null, { status: 204 }));
+    expect(
+      await screen.findByText("Administrator initialized. Sign in to continue."),
+    ).toBeInTheDocument();
+  });
+
+  it("reports an already initialized Administrator instead of a generic rejection", async () => {
+    history.replaceState({}, "", "/initialize?token=used-token");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 409 })),
+    );
+
+    render(<App />);
+    await userEvent.type(screen.getByLabelText("Password"), "4827");
+    await userEvent.click(screen.getByRole("button", { name: "Initialize" }));
+
+    expect(
+      await screen.findByText(
+        "Administrator is already initialized. Sign in to continue.",
+      ),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("Active Rule Set settings", () => {

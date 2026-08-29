@@ -84,6 +84,20 @@ fn compose_and_image_contract_are_multiarch_non_root_and_health_layered() {
 }
 
 #[test]
+fn packaged_cli_reenters_the_identity_dropping_entrypoint() {
+    let dockerfile = include_str!("../Dockerfile");
+    let entrypoint = include_str!("../docker/entrypoint.sh");
+    let wrapper = include_str!("../docker/rust-jav-wrapper.sh");
+    let guide = include_str!("../docs/truenas-scale.md");
+
+    assert!(dockerfile.contains("/usr/local/bin/rust-jav-bin"));
+    assert!(dockerfile.contains("docker/rust-jav-wrapper.sh"));
+    assert!(entrypoint.contains("exec /usr/local/bin/rust-jav-bin"));
+    assert!(wrapper.contains("exec /usr/local/bin/rust-jav-entrypoint"));
+    assert!(guide.contains("docker exec rust-jav rust-jav administrator init"));
+}
+
+#[test]
 fn operations_guide_covers_the_complete_truenas_acceptance_lifecycle() {
     let guide = include_str!("../docs/truenas-scale.md");
     for requirement in [
