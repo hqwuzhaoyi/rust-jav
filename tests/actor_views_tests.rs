@@ -44,6 +44,24 @@ fn browses_actor_folders_with_counts_and_inode_aware_sizes() {
 }
 
 #[test]
+fn actor_folder_uses_a_nested_folder_image_as_its_poster() {
+    let fixture = tempdir().unwrap();
+    let actors = fixture.path().join("actors");
+    let movie = actors.join("Alice/ABC-123");
+    fs::create_dir_all(&movie).unwrap();
+    fs::write(movie.join("ABC-123.mp4"), b"movie").unwrap();
+    fs::write(movie.join("folder.jpg"), b"poster").unwrap();
+
+    let folders = browse_actor_folders(&actors).unwrap();
+
+    assert!(folders[0]
+        .poster_path
+        .as_ref()
+        .unwrap()
+        .ends_with("ABC-123/folder.jpg"));
+}
+
+#[test]
 fn removal_only_unlinks_actor_view_and_it_can_be_regenerated_from_nfo() {
     let fixture = tempdir().unwrap();
     let media = fixture.path().join("media");

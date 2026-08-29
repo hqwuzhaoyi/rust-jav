@@ -230,6 +230,33 @@ fn asset_detail_parses_complete_nfo_metadata_and_actors() {
 }
 
 #[test]
+fn asset_index_recognizes_movie_nfo_and_folder_artwork_conventions() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    let movie = root.join("ABC-123");
+    fs::create_dir_all(&movie).unwrap();
+    media(&movie.join("ABC-123.mp4"));
+    fs::write(
+        movie.join("movie.nfo"),
+        "<movie><title>Conventional Layout</title><actor><name>Alice</name></actor></movie>",
+    )
+    .unwrap();
+    fs::write(movie.join("folder.jpg"), b"poster").unwrap();
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+    let asset = index.search(AssetQuery::default()).unwrap().items.remove(0);
+
+    assert_eq!(asset.state, AssetState::Normal);
+    assert!(asset.nfo_path.as_deref().unwrap().ends_with("movie.nfo"));
+    assert!(asset.artwork_url.is_some());
+    assert_eq!(
+        index.detail(&asset.id).unwrap().unwrap().title.as_deref(),
+        Some("Conventional Layout")
+    );
+}
+
+#[test]
 fn missing_and_invalid_nfo_are_actionable_asset_exceptions() {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().join("media");

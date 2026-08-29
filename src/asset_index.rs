@@ -272,8 +272,19 @@ impl AssetIndex {
             .unwrap()
             .captures(stem)
             .map(|c| format!("{}-{}", c[1].to_uppercase(), &c[2]));
-        let nfo = sibling(path, &["nfo"]);
-        let artwork = sibling(path, &["jpg", "jpeg", "png", "webp"]);
+        let nfo = metadata_companion(path, &["movie.nfo"], &["nfo"]);
+        let artwork = metadata_companion(
+            path,
+            &[
+                "folder.jpg",
+                "poster.jpg",
+                "cover.jpg",
+                "folder.png",
+                "poster.png",
+                "cover.png",
+            ],
+            &["jpg", "jpeg", "png", "webp"],
+        );
         let parsed = nfo.as_deref().map(parse_nfo);
         let title = parsed
             .as_ref()
@@ -506,6 +517,15 @@ fn sibling(path: &Path, exts: &[&str]) -> Option<PathBuf> {
     exts.iter()
         .map(|e| path.with_extension(e))
         .find(|p| p.is_file())
+}
+fn metadata_companion(path: &Path, conventional_names: &[&str], exts: &[&str]) -> Option<PathBuf> {
+    sibling(path, exts).or_else(|| {
+        let parent = path.parent()?;
+        conventional_names
+            .iter()
+            .map(|name| parent.join(name))
+            .find(|candidate| candidate.is_file())
+    })
 }
 fn asset_id() -> String {
     let mut bytes = [0u8; 18];

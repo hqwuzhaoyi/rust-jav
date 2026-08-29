@@ -209,7 +209,12 @@ fn is_poster(path: &Path) -> bool {
         .and_then(|name| name.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    (name.contains("poster") || name.contains("portrait"))
+    (name.contains("poster")
+        || name.contains("portrait")
+        || name == "folder.jpg"
+        || name == "folder.jpeg"
+        || name == "folder.png"
+        || name == "folder.webp")
         && ["jpg", "jpeg", "png", "webp"].iter().any(|ext| {
             path.extension()
                 .and_then(|value| value.to_str())
