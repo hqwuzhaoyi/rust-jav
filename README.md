@@ -56,6 +56,8 @@ cargo run -- administrator init --config management.yaml
 cargo run -- serve --config management.yaml
 ```
 
+TrueNAS SCALE 24.10+ users can deploy the published multi-architecture container with the checked-in Compose example; see [the TrueNAS deployment and acceptance guide](docs/truenas-scale.md).
+
 打开 `administrator init` 输出的一次性链接并设置至少 12 个字符的密码。也可以通过环境变量完成无人值守初始化；该变量只在尚未配置管理员时生效：
 
 ```shell

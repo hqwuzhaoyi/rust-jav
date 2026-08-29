@@ -1,0 +1,9 @@
+port: 9317
+container: true
+session_ttl_seconds: 43200
+secrets_file: /config/management.secrets.yaml
+database_file: /state/management.sqlite3
+artwork_cache_root: /cache
+media_roots:
+  - /media
+actor_view_root: /actors

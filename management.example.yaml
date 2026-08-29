@@ -8,6 +8,8 @@ rule_source_hosts:
   - raw.githubusercontent.com
 rule_download_timeout_seconds: 10
 rule_download_max_bytes: 1048576
+database_file: management.sqlite3
+artwork_cache_root: artwork-cache
 # Non-overlapping TrueNAS Host Paths or native filesystem trees.
 media_roots:
   - /media/jav
