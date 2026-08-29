@@ -1049,7 +1049,7 @@ async fn embedded_management_interface_exposes_task_creation_and_live_lifecycle(
     assert!(javascript.contains("Refresh"));
     assert!(javascript.contains("item outcome"));
     assert!(javascript.contains("All Assets"));
-    assert!(javascript.contains("Search code, title, or path"));
+    assert!(javascript.contains("搜索番号、标题或路径"));
     assert!(javascript.contains("/api/v1/assets"));
 }
 
@@ -1659,6 +1659,16 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
     assert_eq!(returned["url"], jellyfin_url);
     assert_eq!(returned["api_key_configured"], true);
     assert!(returned.get("api_key").is_none());
+
+    let preserved = json_request(
+        app(state.clone()),
+        "PUT",
+        "/api/v1/jellyfin/config",
+        &serde_json::json!({"url":jellyfin_url,"library_ids":["jav"],"api_key":""}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(preserved.status(), StatusCode::NO_CONTENT);
     let secrets = std::fs::read_to_string(config.secrets_file).unwrap();
     assert!(secrets.contains("server-only-secret"));
 

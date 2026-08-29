@@ -1799,14 +1799,24 @@ async fn put_jellyfin_config(
     if let Err(status) = authorized(&state, &headers) {
         return status;
     }
+    let Ok(mut secrets) = state.store.load() else {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    };
+    let effective_key = if input.api_key.trim().is_empty() {
+        secrets.jellyfin_api_key.clone()
+    } else {
+        Some(input.api_key.clone())
+    };
     if input.library_ids.is_empty()
-        || input.api_key.trim().is_empty()
+        || effective_key
+            .as_ref()
+            .is_none_or(|key| key.trim().is_empty())
         || JellyfinClient::new(
             JellyfinConfig {
                 url: input.url.clone(),
                 library_ids: input.library_ids.clone(),
             },
-            input.api_key.clone(),
+            effective_key.unwrap(),
         )
         .is_err()
     {
@@ -1819,12 +1829,11 @@ async fn put_jellyfin_config(
     if connection.execute("INSERT INTO jellyfin_config(singleton,url,library_ids) VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET url=excluded.url,library_ids=excluded.library_ids", rusqlite::params![input.url.trim_end_matches('/'), ids]).is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
-    let Ok(mut secrets) = state.store.load() else {
-        return StatusCode::INTERNAL_SERVER_ERROR;
-    };
-    secrets.jellyfin_api_key = Some(input.api_key);
-    if state.store.save(&secrets).is_err() {
-        return StatusCode::INTERNAL_SERVER_ERROR;
+    if !input.api_key.trim().is_empty() {
+        secrets.jellyfin_api_key = Some(input.api_key);
+        if state.store.save(&secrets).is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
     }
     StatusCode::NO_CONTENT
 }

@@ -21,6 +21,8 @@ import {
 import { BeUITab, BeUITabPanel, BeUITabs, BeUITabsList } from "./beui-tabs";
 import "./style.css";
 type View = "loading" | "initialize" | "login" | "ready";
+const DEFAULT_RULE_SOURCE =
+  "https://raw.githubusercontent.com/hqwuzhaoyi/rust-jav/main/rules.yaml";
 type Validation = { valid: true; empty: boolean; yaml: string } | null;
 type AssetState = "normal" | "synchronizing" | "exception";
 type Asset = {
@@ -187,10 +189,16 @@ export function App() {
     [health, setHealth] = useState<Health | null>(null),
     [page, setPage] = useState(1),
     [nav, setNav] = useState<
-      "assets" | "actors" | "deletion" | "tasks" | "settings"
+      | "assets"
+      | "recent"
+      | "exceptions"
+      | "actors"
+      | "deletion"
+      | "tasks"
+      | "settings"
     >(actorNameFromPath() ? "actors" : "assets");
   const [tasks, setTasks] = useState<Task[]>([]),
-    [mediaRoot, setMediaRoot] = useState(""),
+    [mediaRoot, setMediaRoot] = useState("/media"),
     [selectedOps, setSelectedOps] = useState<string[]>(
       operations.map(([key]) => key),
     );
@@ -198,13 +206,14 @@ export function App() {
   const [assetDetail, setAssetDetail] = useState<AssetDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [yaml, setYaml] = useState("");
-  const [sourceUrl, setSourceUrl] = useState("");
+  const [sourceUrl, setSourceUrl] = useState(DEFAULT_RULE_SOURCE);
   const [editing, setEditing] = useState(false);
   const [validation, setValidation] = useState<Validation>(null);
   const [rulesMessage, setRulesMessage] = useState("");
   const [jfUrl, setJfUrl] = useState("");
   const [jfLibraries, setJfLibraries] = useState("");
   const [jfKey, setJfKey] = useState("");
+  const [jfKeyConfigured, setJfKeyConfigured] = useState(false);
   const [candidates, setCandidates] = useState<Candidate[]>([]),
     [selected, setSelected] = useState<string[]>([]),
     [plan, setPlan] = useState<DeletionPlan | null>(null),
@@ -264,10 +273,12 @@ export function App() {
       const config = (await response.json().catch(() => null)) as {
         url?: string;
         library_ids?: string[];
+        api_key_configured?: boolean;
       } | null;
       if (!config) return;
       setJfUrl(config.url ?? "");
       setJfLibraries((config.library_ids ?? []).join(", "));
+      setJfKeyConfigured(config.api_key_configured ?? false);
     }
   }
   async function saveJellyfin(event: FormEvent) {
@@ -413,8 +424,10 @@ export function App() {
   }
   async function loadRules() {
     const response = await fetch("/api/v1/rules/active");
-    if (response.ok)
-      setYaml(((await response.json()) as { yaml: string }).yaml);
+    if (response.ok) {
+      const body = (await response.json().catch(() => null)) as { yaml?: string } | null;
+      if (typeof body?.yaml === "string") setYaml(body.yaml);
+    }
   }
   function updateYaml(value: string) {
     setYaml(value);
@@ -700,11 +713,23 @@ export function App() {
           <button
             aria-label="All Assets"
             className={nav === "assets" ? "active" : ""}
-            onClick={() => setNav("assets")}
+            onClick={() => {
+              setNav("assets");
+              setFilter("");
+              setPage(1);
+            }}
           >
             <span><Grid2X2 aria-hidden="true" /></span> 所有资产 <em>{libraryTotal || assets.total}</em>
           </button>
-          <button aria-label="Recently Added">
+          <button
+            aria-label="Recently Added"
+            className={nav === "recent" ? "active" : ""}
+            onClick={() => {
+              setNav("recent");
+              setFilter("");
+              setPage(1);
+            }}
+          >
             <span><Clock3 aria-hidden="true" /></span> 最近入库
           </button>
           <button
@@ -730,7 +755,15 @@ export function App() {
           >
             <span><ListTodo aria-hidden="true" /></span> 整理任务
           </button>
-          <button aria-label="Exceptions">
+          <button
+            aria-label="Exceptions"
+            className={nav === "exceptions" ? "active" : ""}
+            onClick={() => {
+              setNav("exceptions");
+              setFilter("exception");
+              setPage(1);
+            }}
+          >
             <span><AlertTriangle aria-hidden="true" /></span> 异常资产
           </button>
           <button
@@ -764,6 +797,10 @@ export function App() {
             <h1>
               {nav === "assets"
                 ? "所有资产"
+                : nav === "recent"
+                  ? "最近入库"
+                  : nav === "exceptions"
+                    ? "异常资产"
                 : nav === "actors"
                   ? "演员"
                   : nav === "deletion"
@@ -775,6 +812,10 @@ export function App() {
             <small>
               {nav === "actors"
                 ? `${actors.length} 个可重建演员视图`
+                : nav === "recent"
+                  ? `${assets.total} 个最近观察到的资产`
+                  : nav === "exceptions"
+                    ? `${assets.total} 个需要处理的异常资产`
                 : nav === "deletion"
                   ? `${candidates.length} 个路径命中当前规则`
                   : nav === "tasks"
@@ -782,13 +823,13 @@ export function App() {
                     : `${libraryTotal || assets.total} 个项目 · 文件系统为准`}
             </small>
           </div>
-          {nav === "assets" && (
+          {(nav === "assets" || nav === "recent" || nav === "exceptions") && (
             <button className="scan" onClick={scan} aria-label="Reconcile">
               <RefreshCw aria-hidden="true" /> <span>重新扫描</span>
             </button>
           )}
         </header>
-        {nav === "assets" && (
+        {(nav === "assets" || nav === "recent" || nav === "exceptions") && (
           <>
             <div className="toolbar">
               <label className="search">
@@ -1082,7 +1123,7 @@ export function App() {
                   value={jfUrl}
                   onChange={(event) => setJfUrl(event.target.value)}
                   placeholder="http://jellyfin:8096"
-                  required
+                  required={!jfKeyConfigured}
                 />
                 <label htmlFor="jellyfin-libraries">Library IDs</label>
                 <input
@@ -1151,8 +1192,12 @@ export function App() {
       <nav className="bottom-nav">
         <button
           aria-label="Library"
-          className={nav === "assets" ? "active" : ""}
-          onClick={() => setNav("assets")}
+          className={nav === "assets" || nav === "recent" || nav === "exceptions" ? "active" : ""}
+          onClick={() => {
+            setNav("assets");
+            setFilter("");
+            setPage(1);
+          }}
         >
           <span><Grid2X2 aria-hidden="true" /></span>图库
         </button>

@@ -250,6 +250,24 @@ describe("Actor detail navigation", () => {
 });
 
 describe("BeUI Photos presentation", () => {
+  it("makes prototype navigation and configured defaults operational", async () => {
+    stubActorApi();
+    render(<App />);
+
+    await screen.findByText("所有资产", { selector: "h1" });
+    await userEvent.click(screen.getByRole("button", { name: "Recently Added" }));
+    expect(screen.getByText("最近入库", { selector: "h1" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Exceptions" }));
+    expect(screen.getByText("异常资产", { selector: "h1" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Management Tasks" }));
+    expect(screen.getByLabelText("Media Root")).toHaveValue("/media");
+    await userEvent.click(screen.getAllByRole("button", { name: "Settings" })[0]);
+    expect(screen.getByLabelText("Rule Source URL")).toHaveValue(
+      "https://raw.githubusercontent.com/hqwuzhaoyi/rust-jav/main/rules.yaml",
+    );
+  });
+
   it("uses the prototype information architecture and Chinese gallery labels", async () => {
     stubActorApi();
     render(<App />);
