@@ -5,6 +5,7 @@
 pub mod active_rules;
 pub mod actor_links;
 pub mod application;
+pub mod asset_index;
 pub mod cli;
 pub mod config;
 #[cfg(unix)]

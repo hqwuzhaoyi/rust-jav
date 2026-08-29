@@ -24,8 +24,185 @@ fn fixture() -> (TempDir, ManagementConfig) {
         container: false,
         session_ttl: Duration::from_secs(60),
         secrets_file: dir.path().join("management.secrets.yaml"),
+        media_roots: Vec::new(),
     };
     (dir, config)
+}
+
+#[tokio::test]
+async fn startup_scan_and_versioned_asset_search_expose_grouped_paginated_states() {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("ABC-123.mp4"), b"video").unwrap();
+    std::fs::write(
+        root.join("ABC-123.nfo"),
+        "<movie><title>Blue Room</title></movie>",
+    )
+    .unwrap();
+    config.media_roots.push(root);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let login = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/auth/login",
+        r#"{"password":"a strong password"}"#,
+        None,
+    )
+    .await;
+    let cookie = login.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+
+    let response = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/assets?q=blue&state=normal&page=1&per_page=12",
+        "",
+        Some(cookie),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["items"][0]["jav_code"], "ABC-123");
+    assert!(body["groups"].as_array().unwrap().len() == 1);
+    let health = json_request(app(state), "GET", "/api/v1/assets/health", "", Some(cookie)).await;
+    assert_eq!(health.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn manual_and_incremental_scan_endpoints_reconcile_and_report_root_permissions() {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    config.media_roots.push(root.clone());
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let login = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/auth/login",
+        r#"{"password":"a strong password"}"#,
+        None,
+    )
+    .await;
+    let cookie = login.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    std::fs::write(root.join("NEW-777.mkv"), b"video").unwrap();
+
+    let scan = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/assets/scan",
+        r#"{"mode":"manual"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(scan.status(), StatusCode::OK);
+    std::fs::remove_file(root.join("NEW-777.mkv")).unwrap();
+    let incremental = serde_json::json!({"mode":"incremental","media_root":root,"paths":[root.join("NEW-777.mkv")]}).to_string();
+    assert_eq!(
+        json_request(
+            app(state.clone()),
+            "POST",
+            "/api/v1/assets/scan",
+            &incremental,
+            Some(&cookie)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let roots = json_request(
+        app(state),
+        "GET",
+        "/api/v1/media-roots/health",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(roots.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body[0]["readable"], true);
+    assert!(body[0]["uid"].is_number());
+}
+
+#[tokio::test]
+async fn artwork_route_serves_only_the_artwork_bound_to_an_indexed_asset() {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("ART-101.mp4"), b"secret video").unwrap();
+    std::fs::write(root.join("ART-101.jpg"), b"jpeg artwork").unwrap();
+    config.media_roots.push(root);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let login = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/auth/login",
+        r#"{"password":"a strong password"}"#,
+        None,
+    )
+    .await;
+    let cookie = login.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let listed = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/assets",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let url = body["items"][0]["artwork_url"].as_str().unwrap();
+    let artwork = json_request(app(state.clone()), "GET", url, "", Some(&cookie)).await;
+    assert_eq!(
+        to_bytes(artwork.into_body(), usize::MAX).await.unwrap(),
+        "jpeg artwork"
+    );
+    assert_eq!(
+        json_request(
+            app(state),
+            "GET",
+            "/api/v1/assets/../../etc/passwd/artwork",
+            "",
+            Some(&cookie)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
 }
 
 async fn json_request(
@@ -80,6 +257,13 @@ fn native_and_container_listen_addresses_are_safe_by_default() {
     assert_eq!(config.listen_addr().to_string(), "127.0.0.1:9317");
     config.container = true;
     assert_eq!(config.listen_addr().to_string(), "0.0.0.0:9317");
+}
+
+#[test]
+fn unavailable_truenas_host_path_starts_with_degraded_index_instead_of_crashing_service() {
+    let (dir, mut config) = fixture();
+    config.media_roots.push(dir.path().join("not-mounted"));
+    assert!(AppState::new(config, TestClock(100)).is_ok());
 }
 
 #[test]
@@ -305,6 +489,51 @@ async fn embedded_management_interface_exposes_task_creation_and_live_lifecycle(
     assert!(javascript.contains("Management Tasks"));
     assert!(javascript.contains("/api/v1/tasks"));
     assert!(javascript.contains("EventSource"));
+    assert!(javascript.contains("Media Root"));
+    assert!(javascript.contains("Operation"));
+    assert!(javascript.contains("Preview"));
+    assert!(javascript.contains("Apply changes"));
+    assert!(javascript.contains("Start task"));
+    assert!(javascript.contains("Lifecycle"));
+    assert!(javascript.contains("Refresh"));
+    assert!(javascript.contains("item outcome"));
+    assert!(javascript.contains("All Assets"));
+    assert!(javascript.contains("Search code, title, or path"));
+    assert!(javascript.contains("/api/v1/assets"));
+}
+
+#[tokio::test]
+async fn embedded_browser_shell_has_asset_search_state_filters_and_responsive_navigation() {
+    let (_dir, config) = fixture();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let javascript = app(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/assets/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let javascript = to_bytes(javascript.into_body(), usize::MAX).await.unwrap();
+    let javascript = std::str::from_utf8(&javascript).unwrap();
+    assert!(javascript.contains("All Assets"));
+    assert!(javascript.contains("/api/v1/assets"));
+    assert!(javascript.contains("Synchronizing"));
+    let css = app(state)
+        .oneshot(
+            Request::builder()
+                .uri("/assets/app.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let css = to_bytes(css.into_body(), usize::MAX).await.unwrap();
+    let css = std::str::from_utf8(&css).unwrap();
+    assert!(css.contains("grid-template-columns:repeat(2"));
+    assert!(css.contains("bottom-nav"));
+    assert!(css.contains("sidebar"));
 }
 
 #[tokio::test]
@@ -414,5 +643,12 @@ async fn generated_openapi_describes_task_rest_and_sse_contracts() {
     assert_eq!(
         document["components"]["schemas"]["ManagementTask"]["required"][0],
         "id"
+    );
+    assert!(document["paths"]["/api/v1/assets"]["get"].is_object());
+    assert!(document["paths"]["/api/v1/assets/scan"]["post"].is_object());
+    assert!(document["paths"]["/api/v1/assets/{asset_id}/artwork"]["get"].is_object());
+    assert_eq!(
+        document["components"]["schemas"]["MediaAsset"]["properties"]["state"]["enum"][2],
+        "exception"
     );
 }
