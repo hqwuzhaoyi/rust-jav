@@ -2,11 +2,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::migration_verifier::types::{
-    MigrationAction, MigrationActionKind, MigrationScope,
-};
-use crate::migration_verifier::fs_scan::scan_scope;
-use crate::migration_verifier::{summary_from_error, verify_actor_links};
+use crate::migration_verifier::types::{MigrationAction, MigrationActionKind, MigrationScope};
 use crate::report::{ActionItem, ActionStatus, CommandReport, OutputMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +87,7 @@ pub fn plan_actor_links(source_dir: &Path, actors_root: &Path) -> io::Result<Vec
     Ok(plans)
 }
 
-pub fn execute_actor_links_command(
+pub(crate) fn run_actor_links_command(
     source_dir: PathBuf,
     actors_root: PathBuf,
     apply: bool,
@@ -107,12 +103,15 @@ pub fn execute_actor_links_command(
         source_dir.clone(),
         vec!["actor-links".to_string()],
     );
+    let verification = crate::application::ApplicationServices::new().verification();
     let before_source = if apply {
-        match scan_scope(&source_dir, MigrationScope::Source, false) {
+        match verification.scan(&source_dir, MigrationScope::Source, false) {
             Ok(scope) => Some(scope),
             Err(error) => {
-                report.errors.push(format!("verification pre-scan failed: {error}"));
-                report.verification = Some(summary_from_error());
+                report
+                    .errors
+                    .push(format!("verification pre-scan failed: {error}"));
+                report.verification = Some(verification.error_summary());
                 report.finalize();
                 return Ok(report);
             }
@@ -121,11 +120,13 @@ pub fn execute_actor_links_command(
         None
     };
     let before_actors = if apply {
-        match scan_scope(&actors_root, MigrationScope::ActorsRoot, true) {
+        match verification.scan(&actors_root, MigrationScope::ActorsRoot, true) {
             Ok(scope) => Some(scope),
             Err(error) => {
-                report.errors.push(format!("verification pre-scan failed: {error}"));
-                report.verification = Some(summary_from_error());
+                report
+                    .errors
+                    .push(format!("verification pre-scan failed: {error}"));
+                report.verification = Some(verification.error_summary());
                 report.finalize();
                 return Ok(report);
             }
@@ -136,8 +137,10 @@ pub fn execute_actor_links_command(
     let plans = match plan_actor_links(&source_dir, &actors_root) {
         Ok(plans) => plans,
         Err(error) => {
-            report.errors.push(format!("actor-links planning failed: {error}"));
-            report.verification = Some(summary_from_error());
+            report
+                .errors
+                .push(format!("actor-links planning failed: {error}"));
+            report.verification = Some(verification.error_summary());
             report.finalize();
             return Ok(report);
         }
@@ -149,7 +152,8 @@ pub fn execute_actor_links_command(
         report.warnings.extend(plan.warnings);
         for action in &plan.actions {
             action_counter += 1;
-            if let Some(migration_action) = action_item_to_migration_action(action, action_counter) {
+            if let Some(migration_action) = action_item_to_migration_action(action, action_counter)
+            {
                 migration_actions.push(migration_action);
             }
         }
@@ -208,7 +212,7 @@ pub fn execute_actor_links_command(
 
     report.finalize();
     if apply {
-        match verify_actor_links(
+        match verification.verify_actor_view(
             source_dir,
             actors_root,
             before_source.expect("apply flow must have pre-scanned source"),
@@ -221,11 +225,26 @@ pub fn execute_actor_links_command(
             Ok((summary, _detailed)) => report.verification = Some(summary),
             Err(error) => {
                 report.errors.push(format!("verification failed: {error}"));
-                report.verification = Some(summary_from_error());
+                report.verification = Some(verification.error_summary());
             }
         }
     }
     Ok(report)
+}
+
+pub fn execute_actor_links_command(
+    source_dir: PathBuf,
+    actors_root: PathBuf,
+    apply: bool,
+) -> io::Result<CommandReport> {
+    let request = if apply {
+        crate::application::ActorViewRequest::apply(source_dir, actors_root)
+    } else {
+        crate::application::ActorViewRequest::preview(source_dir, actors_root)
+    };
+    crate::application::ApplicationServices::new()
+        .actor_view()
+        .run(request)
 }
 
 fn extract_tag(contents: &str, tag: &str) -> Option<String> {
@@ -260,10 +279,10 @@ fn collect_files_with_extension(
             collect_files_with_extension(&path, extension, results)?;
         } else if file_type.is_file()
             && path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.eq_ignore_ascii_case(extension))
-            .unwrap_or(false)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case(extension))
+                .unwrap_or(false)
         {
             results.push(path);
         }

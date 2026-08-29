@@ -2,6 +2,7 @@ use clap::Parser;
 use color_eyre::Result;
 use tokio::sync::mpsc;
 
+use rust_jav::application::ReportingService;
 use rust_jav::cli::Cli;
 use rust_jav::report::OutputFormat;
 use rust_jav::runtime::{resolve_run_request, RunRequest};
@@ -38,9 +39,6 @@ async fn main() -> Result<()> {
 }
 
 fn print_report(report: &rust_jav::report::CommandReport, format: OutputFormat) {
-    let output = match format {
-        OutputFormat::Text => report.to_text(),
-        OutputFormat::Json => report.to_json(),
-    };
+    let output = ReportingService::render(report, format);
     println!("{output}");
 }

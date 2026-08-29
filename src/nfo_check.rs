@@ -43,9 +43,7 @@ fn scan_dir(
         return Ok(());
     }
 
-    let entries: Vec<_> = fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .collect();
+    let entries: Vec<_> = fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
 
     // Determine if *this* directory is a "movie directory" (has media files but no NFO).
     // We only flag directories that contain at least one media file.
@@ -54,7 +52,11 @@ fn scan_dir(
         e.path().is_file()
             && e.path()
                 .extension()
-                .map(|ext| media_exts.iter().any(|m| m == &ext.to_string_lossy().to_lowercase()))
+                .map(|ext| {
+                    media_exts
+                        .iter()
+                        .any(|m| m == &ext.to_string_lossy().to_lowercase())
+                })
                 .unwrap_or(false)
     });
     let has_nfo = entries.iter().any(|e| {
@@ -101,17 +103,12 @@ fn scan_dir(
     Ok(())
 }
 
-pub fn execute_nfo_check_command(
+pub(crate) fn run_nfo_check_command(
     dir: PathBuf,
     max_depth: usize,
     skip: Vec<String>,
 ) -> CommandReport {
-    let mut report = CommandReport::new(
-        "nfo-check",
-        OutputMode::Preview,
-        dir.clone(),
-        vec![],
-    );
+    let mut report = CommandReport::new("nfo-check", OutputMode::Preview, dir.clone(), vec![]);
 
     match check_missing_nfos(&dir, max_depth, &skip) {
         Ok(missing) => {
@@ -145,12 +142,22 @@ pub fn execute_nfo_check_command(
     report
 }
 
-/// Return just the movie codes for directories missing NFOs (one per line).
-pub fn missing_codes_only(
-    dir: &Path,
+pub fn execute_nfo_check_command(
+    dir: PathBuf,
     max_depth: usize,
-    skip: &[String],
-) -> io::Result<String> {
+    skip: Vec<String>,
+) -> CommandReport {
+    crate::application::ApplicationServices::new().nfo().check(
+        crate::application::NfoCheckRequest {
+            source_dir: dir,
+            max_depth,
+            skip,
+        },
+    )
+}
+
+/// Return just the movie codes for directories missing NFOs (one per line).
+pub fn missing_codes_only(dir: &Path, max_depth: usize, skip: &[String]) -> io::Result<String> {
     let missing = check_missing_nfos(dir, max_depth, skip)?;
     let codes: Vec<&str> = missing
         .iter()

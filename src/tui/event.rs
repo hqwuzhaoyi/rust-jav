@@ -83,8 +83,10 @@ pub async fn run_app(terminal: &mut Tui, mut app: App) -> Result<()> {
 
     // Analyze operations to find affected files
     app.add_log(super::state::LogEntry::info("Analyzing operations..."));
-    let executor = super::executor::OperationExecutor::new(app.source_dir.clone(), true);
-    let analysis = executor.analyze_operations().await;
+    let analysis = crate::application::ApplicationServices::new()
+        .operations()
+        .analyze(app.source_dir.clone())
+        .await;
     app.operations.update_all_affected(analysis);
     app.add_log(super::state::LogEntry::success(
         "Operation analysis complete",
@@ -132,8 +134,10 @@ pub async fn run_app(terminal: &mut Tui, mut app: App) -> Result<()> {
             app.add_log(super::state::LogEntry::info("Refreshing file list..."));
             app.file_tree.scan_directory().await;
             // Re-analyze operations after refresh
-            let executor = super::executor::OperationExecutor::new(app.source_dir.clone(), true);
-            let analysis = executor.analyze_operations().await;
+            let analysis = crate::application::ApplicationServices::new()
+                .operations()
+                .analyze(app.source_dir.clone())
+                .await;
             app.operations.update_all_affected(analysis);
             app.add_log(super::state::LogEntry::success("File list refreshed"));
             // Update preview
@@ -437,8 +441,10 @@ async fn run_execution_step(app: &mut App) {
         app.file_tree.scan_directory().await;
 
         // Re-analyze operations
-        let executor = super::executor::OperationExecutor::new(app.source_dir.clone(), true);
-        let analysis = executor.analyze_operations().await;
+        let analysis = crate::application::ApplicationServices::new()
+            .operations()
+            .analyze(app.source_dir.clone())
+            .await;
         app.operations.update_all_affected(analysis);
 
         app.add_log(super::state::LogEntry::success("File list refreshed"));
@@ -462,8 +468,10 @@ async fn run_execution_step(app: &mut App) {
         app.file_tree.scan_directory().await;
 
         // Re-analyze operations
-        let executor = super::executor::OperationExecutor::new(app.source_dir.clone(), true);
-        let analysis = executor.analyze_operations().await;
+        let analysis = crate::application::ApplicationServices::new()
+            .operations()
+            .analyze(app.source_dir.clone())
+            .await;
         app.operations.update_all_affected(analysis);
 
         app.add_log(super::state::LogEntry::success("File list refreshed"));
@@ -481,12 +489,10 @@ async fn run_execution_step(app: &mut App) {
         total
     )));
 
-    // Create a temporary operation for the executor
-    let temp_op = super::state::Operation::new(op_type);
-
-    // Execute the operation using the executor (T111 fix: use dry_run=false for real execution)
-    let executor = super::executor::OperationExecutor::new(app.source_dir.clone(), false);
-    let result = executor.execute(&temp_op).await;
+    let result = crate::application::ApplicationServices::new()
+        .operations()
+        .execute(app.source_dir.clone(), op_type)
+        .await;
 
     // Log the result
     if result.success {

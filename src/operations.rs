@@ -1,15 +1,11 @@
 use std::path::PathBuf;
 
-use crate::migration_verifier::types::{
-    MigrationAction, MigrationActionKind, MigrationScope,
-};
-use crate::migration_verifier::fs_scan::scan_scope;
-use crate::migration_verifier::{summary_from_error, verify_ops};
+use crate::migration_verifier::types::{MigrationAction, MigrationActionKind, MigrationScope};
 use crate::report::{ActionItem, ActionStatus, CommandReport, OutputMode};
 use crate::tui::executor::{OperationExecutor, OperationPlan, PlannedAction};
 use crate::tui::state::{Operation, OperationType};
 
-pub async fn execute_operations_command(
+pub(crate) async fn run_operations_command(
     source_dir: PathBuf,
     selected_ops: Vec<OperationType>,
     apply: bool,
@@ -31,15 +27,18 @@ pub async fn execute_operations_command(
     });
 
     let executor = OperationExecutor::new(source_dir.clone(), !apply);
+    let verification = crate::application::ApplicationServices::new().verification();
     let mut report = CommandReport::new("ops", mode, source_dir, op_names);
     let mut migration_actions = Vec::new();
     let mut action_counter = 0usize;
     let before_source = if apply {
-        match scan_scope(&report.source_dir, MigrationScope::Source, false) {
+        match verification.scan(&report.source_dir, MigrationScope::Source, false) {
             Ok(scope) => Some(scope),
             Err(error) => {
-                report.errors.push(format!("verification pre-scan failed: {error}"));
-                report.verification = Some(summary_from_error());
+                report
+                    .errors
+                    .push(format!("verification pre-scan failed: {error}"));
+                report.verification = Some(verification.error_summary());
                 report.finalize();
                 return report;
             }
@@ -109,7 +108,7 @@ pub async fn execute_operations_command(
 
     report.finalize();
     if apply {
-        match verify_ops(
+        match verification.verify_operations(
             report.source_dir.clone(),
             before_source.expect("apply flow must have pre-scanned source"),
             migration_actions,
@@ -121,11 +120,27 @@ pub async fn execute_operations_command(
             Ok((summary, _detailed)) => report.verification = Some(summary),
             Err(error) => {
                 report.errors.push(format!("verification failed: {error}"));
-                report.verification = Some(summary_from_error());
+                report.verification = Some(verification.error_summary());
             }
         }
     }
     report
+}
+
+pub async fn execute_operations_command(
+    source_dir: PathBuf,
+    selected_ops: Vec<OperationType>,
+    apply: bool,
+) -> CommandReport {
+    let request = if apply {
+        crate::application::OperationsRequest::apply(source_dir, selected_ops)
+    } else {
+        crate::application::OperationsRequest::preview(source_dir, selected_ops)
+    };
+    crate::application::ApplicationServices::new()
+        .operations()
+        .run(request)
+        .await
 }
 
 fn planned_action_to_item(action: PlannedAction, status: ActionStatus) -> ActionItem {
