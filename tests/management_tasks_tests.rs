@@ -1,6 +1,43 @@
 use std::{sync::Arc, time::Duration};
 
 use rust_jav::management_tasks::{NewTask, TaskCoordinator, TaskKind, TaskStatus, TaskStore};
+
+#[test]
+fn operation_plan_and_final_report_survive_reopening_the_task_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tasks.sqlite3");
+    let store = TaskStore::open(&path).unwrap();
+    let task = store
+        .create(NewTask::preview("operations", "/media/a"), 100)
+        .unwrap();
+
+    store
+        .save_operation_plan(
+            &task.id,
+            1_000,
+            r#"{"operations":["delete_ad_files","standardize_names"],"actions":[{"path":"/media/a/ad.txt","destructive":true}]}"#,
+        )
+        .unwrap();
+    store
+        .save_report(
+            &task.id,
+            r#"{"summary":{"failed_actions":1},"verification":{"verification_status":"failed"}}"#,
+        )
+        .unwrap();
+    drop(store);
+
+    let task = TaskStore::open(&path)
+        .unwrap()
+        .get(&task.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.plan_expires_at, Some(1_000));
+    assert_eq!(
+        task.operation_plan.unwrap()["actions"][0]["path"],
+        "/media/a/ad.txt"
+    );
+    assert_eq!(task.report.unwrap()["summary"]["failed_actions"], 1);
+}
 use tokio::sync::{mpsc, Barrier};
 
 #[test]

@@ -59,6 +59,17 @@ type DeletionPlan = {
   paths: Array<{ path: string; type: string; video_warning: string | null }>;
   discovered_hard_links: Array<{ path: string }>;
 };
+type OperationPlan = {
+  operations: string[];
+  actions: Array<{
+    kind: string;
+    path: string | null;
+    destructive: boolean;
+    warning: string | null;
+  }>;
+  warnings: string[];
+  requires_confirmation: boolean;
+};
 type Task = {
   id: string;
   task_type: string;
@@ -67,6 +78,9 @@ type Task = {
   status: "queued" | "running" | "completed" | "failed" | "interrupted";
   created_at: number;
   error: string | null;
+  plan_expires_at: number | null;
+  operation_plan: OperationPlan | null;
+  report: Record<string, unknown> | null;
   items: Array<{
     id: number;
     kind: string;
@@ -75,6 +89,16 @@ type Task = {
     message: string | null;
   }>;
 };
+const operations = [
+  ["delete_ad_files", "Delete ad files"],
+  ["organize_by_code", "Organize by code"],
+  ["clean_empty_dirs", "Clean empty directories"],
+  ["standardize_names", "Standardize names"],
+  ["extract_codes", "Extract codes"],
+  ["categorize_files", "Categorize files"],
+  ["move_origin", "Move to ORIGIN"],
+  ["remove_duplicates", "Remove duplicates"],
+] as const;
 const labels: Record<AssetState, string> = {
   normal: "Normal",
   synchronizing: "Synchronizing",
@@ -101,8 +125,9 @@ export function App() {
     );
   const [tasks, setTasks] = useState<Task[]>([]),
     [mediaRoot, setMediaRoot] = useState(""),
-    [mode, setMode] = useState<"preview" | "apply">("preview"),
-    [operation, setOperation] = useState("delete_ad_files");
+    [selectedOps, setSelectedOps] = useState<string[]>(
+      operations.map(([key]) => key),
+    );
   const [inspectedAsset, setInspectedAsset] = useState<Asset | null>(null);
   const [assetDetail, setAssetDetail] = useState<AssetDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -334,12 +359,32 @@ export function App() {
       body: JSON.stringify({
         task_type: "operations",
         media_root: mediaRoot,
-        mode,
-        operations: [operation],
+        mode: "preview",
+        operations: selectedOps,
       }),
     });
     if (!response.ok) {
       setMessage((await response.text()) || "Task request rejected.");
+      return;
+    }
+    const task = (await response.json()) as Task;
+    setTasks((current) => [task, ...current]);
+    watchTask(task.id);
+  }
+  async function confirmPlan(planId: string) {
+    setMessage("");
+    const response = await fetch("/api/v1/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        task_type: "operations",
+        mode: "apply",
+        plan_id: planId,
+        confirmed: true,
+      }),
+    });
+    if (!response.ok) {
+      setMessage((await response.text()) || "Confirmation rejected.");
       return;
     }
     const task = (await response.json()) as Task;
@@ -597,11 +642,10 @@ export function App() {
             tasks={tasks}
             mediaRoot={mediaRoot}
             setMediaRoot={setMediaRoot}
-            mode={mode}
-            setMode={setMode}
-            operation={operation}
-            setOperation={setOperation}
+            selectedOps={selectedOps}
+            setSelectedOps={setSelectedOps}
             createTask={createTask}
+            confirmPlan={confirmPlan}
             refresh={loadTasks}
             message={message}
           />
@@ -1034,29 +1078,33 @@ function TaskPanel({
   tasks,
   mediaRoot,
   setMediaRoot,
-  mode,
-  setMode,
-  operation,
-  setOperation,
+  selectedOps,
+  setSelectedOps,
   createTask,
+  confirmPlan,
   refresh,
   message,
 }: {
   tasks: Task[];
   mediaRoot: string;
   setMediaRoot: (v: string) => void;
-  mode: "preview" | "apply";
-  setMode: (v: "preview" | "apply") => void;
-  operation: string;
-  setOperation: (v: string) => void;
+  selectedOps: string[];
+  setSelectedOps: (v: string[]) => void;
   createTask: (e: FormEvent) => void;
+  confirmPlan: (id: string) => Promise<void>;
   refresh: () => Promise<void>;
   message: string;
 }) {
+  const toggle = (key: string) =>
+    setSelectedOps(
+      selectedOps.includes(key)
+        ? selectedOps.filter((value) => value !== key)
+        : [...selectedOps, key],
+    );
   return (
     <div className="task-dashboard">
       <section className="task-create">
-        <h2>New task</h2>
+        <h2>New Operation Plan</h2>
         <form className="task-form" onSubmit={createTask}>
           <label htmlFor="media-root">Media Root</label>
           <input
@@ -1066,27 +1114,30 @@ function TaskPanel({
             placeholder="/media/library"
             required
           />
-          <label htmlFor="operation">Operation</label>
-          <select
-            id="operation"
-            value={operation}
-            onChange={(e) => setOperation(e.target.value)}
-          >
-            <option value="delete_ad_files">Delete ad files</option>
-            <option value="standardize_names">Standardize names</option>
-            <option value="clean_empty_dirs">Clean empty directories</option>
-            <option value="remove_duplicates">Remove duplicates</option>
-          </select>
-          <label htmlFor="mode">Mode</label>
-          <select
-            id="mode"
-            value={mode}
-            onChange={(e) => setMode(e.target.value as "preview" | "apply")}
-          >
-            <option value="preview">Preview</option>
-            <option value="apply">Apply changes</option>
-          </select>
-          <button type="submit">Start task</button>
+          <div className="operation-heading">
+            <label>Operations</label>
+            <button
+              type="button"
+              onClick={() => setSelectedOps(operations.map(([key]) => key))}
+            >
+              Full pipeline
+            </button>
+          </div>
+          <div className="operation-list">
+            {operations.map(([key, label]) => (
+              <label key={key}>
+                <input
+                  type="checkbox"
+                  checked={selectedOps.includes(key)}
+                  onChange={() => toggle(key)}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+          <button type="submit" disabled={!selectedOps.length}>
+            Preview 15-minute plan
+          </button>
         </form>
         {message && (
           <p className="notice" role="status">
@@ -1098,7 +1149,7 @@ function TaskPanel({
         <div className="task-title">
           <div>
             <h2>Lifecycle</h2>
-            <p>Durable history and per-item outcomes</p>
+            <p>Durable history, live progress, reports and verification</p>
           </div>
           <button className="refresh" onClick={() => void refresh()}>
             Refresh
@@ -1122,6 +1173,41 @@ function TaskPanel({
                   {task.items.length === 1 ? "" : "s"} · {task.id}
                 </small>
                 {task.error && <p className="task-error">{task.error}</p>}
+                {task.operation_plan && (
+                  <div className="plan">
+                    <b>Review final paths</b>
+                    <small>
+                      Expires{" "}
+                      {new Date(
+                        task.plan_expires_at! * 1000,
+                      ).toLocaleTimeString()}
+                    </small>
+                    {task.operation_plan.warnings.map((warning) => (
+                      <p className="task-error" key={warning}>
+                        {warning}
+                      </p>
+                    ))}
+                    <ul>
+                      {task.operation_plan.actions.map((action, index) => (
+                        <li
+                          className={action.destructive ? "destructive" : ""}
+                          key={index}
+                        >
+                          <span>
+                            {action.destructive ? "DESTRUCTIVE" : action.kind}
+                          </span>
+                          <code>{action.path ?? "—"}</code>
+                        </li>
+                      ))}
+                    </ul>
+                    {task.status === "completed" &&
+                      Date.now() / 1000 <= task.plan_expires_at! && (
+                        <button onClick={() => void confirmPlan(task.id)}>
+                          Confirm and execute
+                        </button>
+                      )}
+                  </div>
+                )}
                 {task.items.length > 0 && (
                   <ul className="task-items">
                     {task.items.map((item) => (
@@ -1133,6 +1219,12 @@ function TaskPanel({
                       </li>
                     ))}
                   </ul>
+                )}
+                {task.report && (
+                  <details>
+                    <summary>Final report and migration verification</summary>
+                    <pre>{JSON.stringify(task.report, null, 2)}</pre>
+                  </details>
                 )}
               </li>
             ))}
