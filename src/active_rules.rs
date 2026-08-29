@@ -140,6 +140,15 @@ impl ActiveRuleSet {
         ad_patterns::filename_matches_any_compiled(basename, &self.compiled_patterns)
     }
 
+    /// Returns the first enabled Deletion Rule matching a basename. Rule order
+    /// is significant and is preserved from the Active Rule Set document.
+    pub fn matching_pattern(&self, basename: &str) -> Option<&str> {
+        self.compiled_patterns
+            .iter()
+            .position(|pattern| pattern.is_match(basename))
+            .map(|index| self.enabled_patterns[index].as_str())
+    }
+
     pub(crate) fn compiled_patterns(&self) -> &[Regex] {
         &self.compiled_patterns
     }

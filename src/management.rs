@@ -5,7 +5,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     pin::Pin,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -37,6 +37,10 @@ use std::convert::Infallible;
 use crate::{
     application::{ApplicationServices, OperationsRequest},
     asset_index::{AssetIndex, AssetQuery, AssetState, ScanMode},
+    deletion_plan::{
+        DeletionOutcomeStatus, FileType as DeletionFileType, PermanentDeletionPlan,
+        PermanentDeletionPlanner, RelatedHardLink,
+    },
     management_tasks::{NewTask, TaskCoordinator, TaskKind, TaskStore},
     tui::state::OperationType,
 };
@@ -315,6 +319,16 @@ pub struct AppState {
     tasks: TaskStore,
     coordinator: TaskCoordinator,
     assets: AssetIndex,
+    deletion_plans: Arc<Mutex<HashMap<String, StoredDeletionPlan>>>,
+}
+
+#[derive(Clone)]
+struct StoredDeletionPlan {
+    plan: PermanentDeletionPlan,
+    selection: String,
+    rule_version: u32,
+    rules: Vec<String>,
+    discovered_hard_links: Vec<RelatedHardLink>,
 }
 
 #[derive(Clone)]
@@ -426,6 +440,7 @@ impl AppState {
             tasks,
             coordinator: TaskCoordinator::new(),
             assets,
+            deletion_plans: Arc::new(Mutex::new(HashMap::new())),
         })
     }
     pub fn set_clock(&self, clock: impl Clock) {
@@ -474,6 +489,13 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v1/assets/health", get(asset_health))
         .route("/api/v1/assets/scan", post(scan_assets))
         .route("/api/v1/assets/:asset_id/artwork", get(indexed_artwork))
+        .route("/api/v1/deletion-candidates", get(deletion_candidates))
+        .route("/api/v1/deletion-plans", post(create_deletion_plan))
+        .route(
+            "/api/v1/deletion-plans/:plan_id/execute",
+            post(execute_deletion_plan),
+        )
+        .route("/api/v1/deletion-audits", get(deletion_audits))
         .route("/api/v1/media-roots/health", get(media_root_health))
         .route(
             "/api/v1/rules/active",
@@ -877,6 +899,280 @@ async fn indexed_artwork(
         .into_response()
 }
 
+fn deletion_file_type(value: DeletionFileType) -> &'static str {
+    match value {
+        DeletionFileType::RegularFile => "file",
+        DeletionFileType::Directory => "directory",
+        DeletionFileType::Symlink => "symlink",
+        DeletionFileType::Other => "other",
+    }
+}
+
+fn system_time_seconds(value: SystemTime) -> u64 {
+    value
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn plan_json(id: &str, stored: &StoredDeletionPlan) -> serde_json::Value {
+    let plan = &stored.plan;
+    serde_json::json!({
+        "id": id,
+        "selection": stored.selection,
+        "rule_set_version": stored.rule_version,
+        "rules": stored.rules,
+        "created_at": system_time_seconds(plan.created_at),
+        "expires_at": system_time_seconds(plan.expires_at),
+        "logical_size": plan.logical_size,
+        "reclaimable_space": plan.reclaimable_space,
+        "hard_link_search_roots": plan.hard_link_search_roots,
+        "paths": plan.approved_paths.iter().map(|path| serde_json::json!({
+            "path": path.path,
+            "type": deletion_file_type(path.file_type),
+            "filesystem_identity": {"device": path.identity.device, "inode": path.identity.inode},
+            "logical_size": path.logical_size,
+            "allocated_size": path.allocated_size,
+            "observed_link_count": path.observed_link_count,
+            "video_warning": plan.video_warnings.iter().find(|warning| warning.path == path.path).map(|warning| warning.message.clone())
+        })).collect::<Vec<_>>(),
+        "discovered_hard_links": stored.discovered_hard_links.iter().map(|link| serde_json::json!({
+            "path": link.path,
+            "type": deletion_file_type(link.file_type),
+            "filesystem_identity": {"device": link.identity.device, "inode": link.identity.inode}
+        })).collect::<Vec<_>>()
+    })
+}
+
+fn discover_candidates(root: &Path, rules: &ActiveRuleSet, found: &mut Vec<(PathBuf, String)>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            discover_candidates(&path, rules, found);
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if let Some(pattern) = rules.matching_pattern(name) {
+            found.push((path, pattern.to_owned()));
+        }
+    }
+}
+
+async fn deletion_candidates(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(status) = authorize(&state, &headers) {
+        return status.into_response();
+    }
+    let rules = state.rules.read().unwrap().active.clone();
+    let mut found = Vec::new();
+    for root in &state.config.media_roots {
+        discover_candidates(root, &rules, &mut found);
+    }
+    found.sort_by(|left, right| left.0.cmp(&right.0));
+    let planner = PermanentDeletionPlanner::new(state.config.media_roots.clone());
+    let now = UNIX_EPOCH + Duration::from_secs(state.now());
+    let candidates = found
+        .into_iter()
+        .filter_map(|(path, rule)| {
+            let plan = planner
+                .create_plan(vec![path.clone()], Duration::from_secs(600), now)
+                .ok()?;
+            let item = plan.approved_paths.iter().find(|item| item.path == path)?;
+            Some(serde_json::json!({
+                "path": path,
+                "matching_rule": rule,
+                "type": deletion_file_type(item.file_type),
+                "video_warning": plan.video_warnings.first().map(|warning| warning.message.clone()),
+                "logical_size": item.logical_size,
+                "reclaimable_space": plan.reclaimable_space
+            }))
+        })
+        .collect::<Vec<_>>();
+    Json(serde_json::json!({"rule_set_version": rules.version(), "items": candidates}))
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct CreateDeletionPlanRequest {
+    paths: Vec<PathBuf>,
+    selection: String,
+}
+
+async fn create_deletion_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<CreateDeletionPlanRequest>,
+) -> impl IntoResponse {
+    if let Err(status) = authorize(&state, &headers) {
+        return status.into_response();
+    }
+    if input.paths.is_empty() || !matches!(input.selection.as_str(), "selected" | "unified") {
+        return (
+            StatusCode::BAD_REQUEST,
+            "paths are required and selection must be selected or unified",
+        )
+            .into_response();
+    }
+    let rule_state = state.rules.read().unwrap().clone();
+    if input.paths.iter().any(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| rule_state.active.matching_pattern(name))
+            .is_none()
+    }) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "every selected path must match the Active Rule Set",
+        )
+            .into_response();
+    }
+    let planner = PermanentDeletionPlanner::new(state.config.media_roots.clone());
+    let now = UNIX_EPOCH + Duration::from_secs(state.now());
+    let preview = match planner.create_plan(input.paths, Duration::from_secs(600), now) {
+        Ok(plan) => plan,
+        Err(error) => return (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response(),
+    };
+    let discovered_hard_links = preview.related_hard_links.clone();
+    let plan = if input.selection == "unified" {
+        let mut paths = preview
+            .approved_paths
+            .iter()
+            .map(|item| item.path.clone())
+            .collect::<Vec<_>>();
+        paths.extend(
+            preview
+                .related_hard_links
+                .iter()
+                .map(|item| item.path.clone()),
+        );
+        match planner.create_plan(paths, Duration::from_secs(600), now) {
+            Ok(plan) => plan,
+            Err(error) => {
+                return (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response()
+            }
+        }
+    } else {
+        preview
+    };
+    let id = random_token();
+    let stored = StoredDeletionPlan {
+        plan,
+        selection: input.selection,
+        rule_version: rule_state.active.version(),
+        rules: rule_state.active.enabled_patterns(),
+        discovered_hard_links,
+    };
+    let response = plan_json(&id, &stored);
+    state.deletion_plans.lock().unwrap().insert(id, stored);
+    (StatusCode::CREATED, Json(response)).into_response()
+}
+
+#[derive(Deserialize)]
+struct ExecuteDeletionPlanRequest {
+    irreversible: bool,
+    confirmation: String,
+}
+
+async fn execute_deletion_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(plan_id): AxumPath<String>,
+    Json(input): Json<ExecuteDeletionPlanRequest>,
+) -> impl IntoResponse {
+    if let Err(status) = authorize(&state, &headers) {
+        return status.into_response();
+    }
+    if !input.irreversible || input.confirmation != "PERMANENTLY DELETE" {
+        return (
+            StatusCode::CONFLICT,
+            "explicit irreversible confirmation is required",
+        )
+            .into_response();
+    }
+    let Some(stored) = state.deletion_plans.lock().unwrap().remove(&plan_id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let task = match state.tasks.create(
+        NewTask::mutation(
+            "permanent_deletion",
+            stored
+                .plan
+                .hard_link_search_roots
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+        state.now(),
+    ) {
+        Ok(task) => task,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let _lease = state.coordinator.mutation(&task.media_root).await;
+    if state.tasks.mark_running(&task.id, state.now()).is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    let planner = PermanentDeletionPlanner::new(stored.plan.hard_link_search_roots.clone());
+    let result = match planner.execute(&stored.plan, UNIX_EPOCH + Duration::from_secs(state.now()))
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = state
+                .tasks
+                .mark_failed(&task.id, state.now(), &error.to_string());
+            return (StatusCode::CONFLICT, error.to_string()).into_response();
+        }
+    };
+    for outcome in &result.outcomes {
+        let status = match outcome.status {
+            DeletionOutcomeStatus::Deleted => "deleted",
+            DeletionOutcomeStatus::Changed => "changed",
+            DeletionOutcomeStatus::Failed => "failed",
+        };
+        let _ = state.tasks.finish_item(
+            &task.id,
+            "permanent_deletion",
+            Some(&outcome.path.display().to_string()),
+            status,
+            outcome.message.as_deref(),
+        );
+    }
+    let audit = serde_json::json!({
+        "administrator": "Administrator", "time": state.now(), "task_id": task.id,
+        "active_rule_set": {"version": stored.rule_version, "rules": stored.rules},
+        "operation_plan": plan_json(&plan_id, &stored),
+        "outcomes": result.outcomes.iter().map(|outcome| serde_json::json!({"path":outcome.path,"status":format!("{:?}", outcome.status).to_ascii_lowercase(),"message":outcome.message})).collect::<Vec<_>>(),
+        "partial": result.partial, "rolled_back": false
+    });
+    let _ = state
+        .tasks
+        .record_deletion_audit(&task.id, state.now(), &audit);
+    let _ = state.tasks.mark_completed(&task.id, state.now());
+    match state.tasks.get(&task.id) {
+        Ok(Some(task)) => (StatusCode::ACCEPTED, Json(task)).into_response(),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn deletion_audits(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(status) = authorize(&state, &headers) {
+        return status.into_response();
+    }
+    match state.tasks.deletion_audits() {
+        Ok(records) => Json(records).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 fn authorized(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
     let secrets = state
         .store
@@ -1118,6 +1414,10 @@ fn openapi_document() -> serde_json::Value {
             "/api/v1/assets/health":{"get":{"summary":"Get Asset Index reconciliation health","responses":{"200":{"description":"Index health"}}}},
             "/api/v1/assets/scan":{"post":{"summary":"Run manual or incremental reconciliation","requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ScanAssetsRequest"}}}},"responses":{"200":{"description":"Reconciled"},"422":{"description":"Filesystem scan failed"}}}},
             "/api/v1/assets/{asset_id}/artwork":{"get":{"summary":"Serve artwork belonging to an indexed Media Asset","parameters":[{"name":"asset_id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Indexed image","content":{"image/jpeg":{},"image/png":{},"image/webp":{}}},"404":{"description":"No indexed artwork"}}}},
+            "/api/v1/deletion-candidates":{"get":{"summary":"Browse Active Rule Set Deletion Candidates","responses":{"200":{"description":"Current candidates and sizes"}}}},
+            "/api/v1/deletion-plans":{"post":{"summary":"Create a selected or unified permanent-deletion Operation Plan","responses":{"201":{"description":"Time-limited plan"}}}},
+            "/api/v1/deletion-plans/{plan_id}/execute":{"post":{"summary":"Consume and execute an irreversibly confirmed Operation Plan","responses":{"202":{"description":"Persistent Management Task"},"409":{"description":"Expired or unconfirmed"}}}},
+            "/api/v1/deletion-audits":{"get":{"summary":"List indefinite permanent-deletion audit records","responses":{"200":{"description":"Audit records"}}}},
             "/api/v1/media-roots/health":{"get":{"summary":"Report TrueNAS Host Path access and process UID/GID","responses":{"200":{"description":"Media Root permission reports"}}}}
         },
         "components": {"schemas": {

@@ -16,7 +16,9 @@ fn versioned_yaml_supports_required_pattern_optional_enabled_and_note() {
     assert_eq!(rules.version(), 1);
     assert_eq!(rules.enabled_patterns(), vec!["*.HTML"]);
     assert!(rules.matches_basename("offer.html"));
+    assert_eq!(rules.matching_pattern("offer.html"), Some("*.HTML"));
     assert!(!rules.matches_basename("disabled-offer.txt"));
+    assert_eq!(rules.matching_pattern("disabled-offer.txt"), None);
 }
 
 #[test]

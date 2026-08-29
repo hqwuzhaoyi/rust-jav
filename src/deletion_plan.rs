@@ -69,6 +69,8 @@ struct FileSnapshot {
     size: u64,
     modified_seconds: i64,
     modified_nanoseconds: i64,
+    allocated_size: u64,
+    link_count: u64,
 }
 
 impl FileSnapshot {
@@ -79,6 +81,8 @@ impl FileSnapshot {
             size: metadata.len(),
             modified_seconds: metadata.mtime(),
             modified_nanoseconds: metadata.mtime_nsec(),
+            allocated_size: metadata.blocks().saturating_mul(512),
+            link_count: metadata.nlink(),
         }
     }
 }
@@ -286,10 +290,19 @@ impl PermanentDeletionPlanner {
             return Err(PlanExecutionError::Expired);
         }
 
+        // Revalidate the complete plan before the first unlink. Otherwise the
+        // first approved hard link would legitimately change link counts for
+        // later approved paths and make a unified deletion invalidate itself.
+        let validations = plan
+            .approved_paths
+            .iter()
+            .map(revalidate_path)
+            .collect::<Vec<_>>();
         let outcomes = plan
             .approved_paths
             .iter()
-            .map(execute_path)
+            .zip(validations)
+            .map(|(path, invalid)| invalid.unwrap_or_else(|| remove_path(path)))
             .collect::<Vec<_>>();
         let deleted = outcomes
             .iter()
@@ -508,17 +521,17 @@ fn is_video(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn execute_path(path: &PlannedDeletionPath) -> DeletionOutcome {
+fn revalidate_path(path: &PlannedDeletionPath) -> Option<DeletionOutcome> {
     let metadata = match fs::symlink_metadata(&path.path) {
         Ok(metadata) => metadata,
         Err(error) => {
-            return DeletionOutcome {
+            return Some(DeletionOutcome {
                 path: path.path.clone(),
                 status: DeletionOutcomeStatus::Changed,
                 message: Some(format!(
                     "filesystem identity cannot be revalidated: {error}"
                 )),
-            }
+            })
         }
     };
     let current = FileSnapshot::from_metadata(&metadata);
@@ -528,13 +541,20 @@ fn execute_path(path: &PlannedDeletionPath) -> DeletionOutcome {
         current != path.snapshot
     };
     if changed {
-        return DeletionOutcome {
+        return Some(DeletionOutcome {
             path: path.path.clone(),
             status: DeletionOutcomeStatus::Changed,
-            message: Some("device, inode, size, or modification time changed".to_string()),
-        };
+            message: Some(
+                "device, inode, size, modification time, allocation, or link count changed"
+                    .to_string(),
+            ),
+        });
     }
 
+    None
+}
+
+fn remove_path(path: &PlannedDeletionPath) -> DeletionOutcome {
     let removal = if path.file_type == FileType::Directory {
         fs::remove_dir(&path.path)
     } else {
