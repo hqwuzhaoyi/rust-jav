@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::active_rules::ActiveRuleSet;
 use crate::migration_verifier::types::{MigrationAction, MigrationActionKind, MigrationScope};
 use crate::report::{ActionItem, ActionStatus, CommandReport, OutputMode};
 use crate::tui::executor::{OperationExecutor, OperationPlan, PlannedAction};
@@ -9,6 +10,7 @@ pub(crate) async fn run_operations_command(
     source_dir: PathBuf,
     selected_ops: Vec<OperationType>,
     apply: bool,
+    active_rules: ActiveRuleSet,
 ) -> CommandReport {
     let mode = if apply {
         OutputMode::Apply
@@ -26,7 +28,7 @@ pub(crate) async fn run_operations_command(
         )
     });
 
-    let executor = OperationExecutor::new(source_dir.clone(), !apply);
+    let executor = OperationExecutor::with_rules(source_dir.clone(), !apply, active_rules);
     let verification = crate::application::ApplicationServices::new().verification();
     let mut report = CommandReport::new("ops", mode, source_dir, op_names);
     let mut migration_actions = Vec::new();

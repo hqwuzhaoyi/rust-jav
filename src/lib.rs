@@ -2,6 +2,7 @@
 //!
 //! Core functionality for JAV file processing and TUI application.
 
+pub mod active_rules;
 pub mod actor_links;
 pub mod application;
 pub mod cli;
