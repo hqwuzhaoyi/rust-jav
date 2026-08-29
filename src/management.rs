@@ -625,10 +625,15 @@ fn authorized(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
 #[derive(Debug, Deserialize)]
 struct CreateTaskRequest {
     task_type: String,
-    media_root: PathBuf,
+    #[serde(default)]
+    media_root: Option<PathBuf>,
     mode: String,
     #[serde(default)]
     operations: Vec<String>,
+    #[serde(default)]
+    plan_id: Option<String>,
+    #[serde(default)]
+    confirmed: bool,
 }
 
 async fn create_task(
@@ -646,14 +651,19 @@ async fn create_task(
         )
             .into_response();
     }
-    let operations = match input
-        .operations
-        .iter()
-        .map(|value| parse_operation(value))
-        .collect::<Option<Vec<_>>>()
-    {
-        Some(operations) if !operations.is_empty() => operations,
-        _ => {
+    if input.mode == "apply" {
+        return confirm_operation_plan(state, input).await;
+    }
+    let Some(media_root) = input.media_root else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "media_root is required for preview",
+        )
+            .into_response();
+    };
+    let operations = match canonical_operations(&input.operations) {
+        Some(operations) => operations,
+        None => {
             return (
                 StatusCode::BAD_REQUEST,
                 "operations must contain known operation names",
@@ -661,28 +671,80 @@ async fn create_task(
                 .into_response()
         }
     };
-    let media_root = input.media_root.display().to_string();
-    let kind = if input.mode == "apply" {
-        TaskKind::Mutation
-    } else {
-        TaskKind::Preview
-    };
-    let new_task = if kind == TaskKind::Mutation {
-        NewTask::mutation(&input.task_type, &media_root)
-    } else {
-        NewTask::preview(&input.task_type, &media_root)
-    };
+    let media_root_text = media_root.display().to_string();
+    let kind = TaskKind::Preview;
+    let new_task = NewTask::preview(&input.task_type, &media_root_text);
     let task = match state.tasks.create(new_task, state.now()) {
         Ok(task) => task,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let task_id = task.id.clone();
     tokio::spawn(run_operations_task(
+        state, task_id, media_root, operations, kind,
+    ));
+    (StatusCode::ACCEPTED, Json(task)).into_response()
+}
+
+async fn confirm_operation_plan(
+    state: AppState,
+    input: CreateTaskRequest,
+) -> axum::response::Response {
+    if !input.confirmed {
+        return (
+            StatusCode::BAD_REQUEST,
+            "confirmed must be true to execute an Operation Plan",
+        )
+            .into_response();
+    }
+    let Some(plan_id) = input.plan_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "plan_id is required to apply operations",
+        )
+            .into_response();
+    };
+    let plan_task = match state.tasks.get(&plan_id) {
+        Ok(Some(task)) => task,
+        Ok(None) => return (StatusCode::BAD_REQUEST, "Operation Plan not found").into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if plan_task.kind != TaskKind::Preview
+        || plan_task.status != crate::management_tasks::TaskStatus::Completed
+    {
+        return (StatusCode::BAD_REQUEST, "Operation Plan is not ready").into_response();
+    }
+    if plan_task
+        .plan_expires_at
+        .is_none_or(|expires| state.now() > expires)
+    {
+        return (StatusCode::BAD_REQUEST, "Operation Plan has expired").into_response();
+    }
+    let Some(plan) = plan_task.operation_plan else {
+        return (StatusCode::BAD_REQUEST, "Operation Plan is unavailable").into_response();
+    };
+    let operation_names = plan["operations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    let Some(operations) = canonical_operations(&operation_names) else {
+        return (StatusCode::BAD_REQUEST, "Operation Plan is invalid").into_response();
+    };
+    let media_root = PathBuf::from(&plan_task.media_root);
+    let task = match state.tasks.create(
+        NewTask::mutation("operations", &plan_task.media_root),
+        state.now(),
+    ) {
+        Ok(task) => task,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    tokio::spawn(run_operations_task(
         state,
-        task_id,
-        input.media_root,
+        task.id.clone(),
+        media_root,
         operations,
-        kind,
+        TaskKind::Mutation,
     ));
     (StatusCode::ACCEPTED, Json(task)).into_response()
 }
@@ -712,17 +774,19 @@ async fn run_operations_task(
         return;
     }
     let request = if kind == TaskKind::Mutation {
-        OperationsRequest::apply(media_root, operations)
+        OperationsRequest::apply(media_root, operations.clone())
     } else {
-        OperationsRequest::preview(media_root, operations)
+        OperationsRequest::preview(media_root, operations.clone())
     };
     let report = ApplicationServices::new().operations().run(request).await;
     for action in &report.actions {
-        let path = action
-            .source
-            .as_ref()
-            .or(action.target.as_ref())
-            .map(|path| path.display().to_string());
+        let destructive = matches!(action.kind.as_str(), "delete-file" | "delete-dir");
+        let path = if destructive {
+            action.source.as_ref()
+        } else {
+            action.target.as_ref().or(action.source.as_ref())
+        }
+        .map(|path| path.display().to_string());
         if state
             .tasks
             .finish_item(
@@ -736,6 +800,53 @@ async fn run_operations_task(
         {
             return;
         }
+    }
+    if kind == TaskKind::Preview {
+        let operations = operations.iter().map(operation_key).collect::<Vec<_>>();
+        let actions = report
+            .actions
+            .iter()
+            .map(|action| {
+                let destructive = matches!(action.kind.as_str(), "delete-file" | "delete-dir");
+                let path = if destructive {
+                    action.source.as_ref()
+                } else {
+                    action.target.as_ref().or(action.source.as_ref())
+                };
+                serde_json::json!({
+                    "kind": action.kind,
+                    "path": path.map(|path| path.display().to_string()),
+                    "source": action.source.as_ref().map(|path| path.display().to_string()),
+                    "target": action.target.as_ref().map(|path| path.display().to_string()),
+                    "destructive": destructive,
+                    "warning": action.reason,
+                })
+            })
+            .collect::<Vec<_>>();
+        let plan = serde_json::json!({
+            "operations": operations,
+            "actions": actions,
+            "warnings": report.warnings,
+            "requires_confirmation": true,
+        });
+        if state
+            .tasks
+            .save_operation_plan(
+                &task_id,
+                state.now().saturating_add(15 * 60),
+                &plan.to_string(),
+            )
+            .is_err()
+        {
+            return;
+        }
+    }
+    if state
+        .tasks
+        .save_report(&task_id, &report.to_json())
+        .is_err()
+    {
+        return;
     }
     let now = state.now();
     if report.summary.failed_actions > 0 || !report.errors.is_empty() {
@@ -823,6 +934,35 @@ fn parse_operation(value: &str) -> Option<OperationType> {
     })
 }
 
+fn operation_key(value: &OperationType) -> &'static str {
+    match value {
+        OperationType::DeleteAdFiles => "delete_ad_files",
+        OperationType::OrganizeByCode => "organize_by_code",
+        OperationType::CleanEmptyDirs => "clean_empty_dirs",
+        OperationType::StandardizeNames => "standardize_names",
+        OperationType::ExtractCodes => "extract_codes",
+        OperationType::CategorizeFiles => "categorize_files",
+        OperationType::MoveOrigin => "move_origin",
+        OperationType::RemoveDuplicates => "remove_duplicates",
+    }
+}
+
+fn canonical_operations(values: &[String]) -> Option<Vec<OperationType>> {
+    if values.is_empty() || values.iter().any(|value| parse_operation(value).is_none()) {
+        return None;
+    }
+    Some(
+        OperationType::all()
+            .into_iter()
+            .filter(|candidate| {
+                values
+                    .iter()
+                    .any(|value| parse_operation(value) == Some(*candidate))
+            })
+            .collect(),
+    )
+}
+
 async fn openapi(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     if let Err(status) = authorized(&state, &headers) {
         return status.into_response();
@@ -850,15 +990,15 @@ fn openapi_document() -> serde_json::Value {
             "/api/v1/media-roots/health":{"get":{"summary":"Report TrueNAS Host Path access and process UID/GID","responses":{"200":{"description":"Media Root permission reports"}}}}
         },
         "components": {"schemas": {
-            "CreateTaskRequest": {"type":"object","required":["task_type","media_root","mode","operations"],"properties":{
-                "task_type":{"type":"string","const":"operations"},"media_root":{"type":"string"},"mode":{"type":"string","enum":["preview","apply"]},"operations":{"type":"array","minItems":1,"items":{"type":"string"}}
+            "CreateTaskRequest": {"type":"object","required":["task_type","mode"],"properties":{
+                "task_type":{"type":"string","const":"operations"},"media_root":{"type":"string"},"mode":{"type":"string","enum":["preview","apply"]},"operations":{"type":"array","minItems":1,"items":{"type":"string","enum":["delete_ad_files","organize_by_code","clean_empty_dirs","standardize_names","extract_codes","categorize_files","move_origin","remove_duplicates"]}},"plan_id":{"type":"string"},"confirmed":{"type":"boolean"}
             }},
             "TaskItem": {"type":"object","required":["id","kind","status"],"properties":{"id":{"type":"integer"},"kind":{"type":"string"},"path":{"type":["string","null"]},"status":{"type":"string"},"message":{"type":["string","null"]}}},
             "ScanAssetsRequest":{"type":"object","required":["mode"],"properties":{"mode":{"type":"string","enum":["manual","incremental"]},"media_root":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}}}},
             "MediaAsset":{"type":"object","required":["id","media_root","path","device","inode","observed_at","captured_date","state"],"properties":{"id":{"type":"string"},"media_root":{"type":"string"},"path":{"type":"string"},"device":{"type":"integer"},"inode":{"type":"integer"},"jav_code":{"type":["string","null"]},"title":{"type":["string","null"]},"nfo_path":{"type":["string","null"]},"artwork_url":{"type":["string","null"]},"observed_at":{"type":"integer"},"captured_date":{"type":"string","format":"date"},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]}}},
             "AssetPage":{"type":"object","required":["items","groups","page","per_page","total","total_pages"],"properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/MediaAsset"}},"groups":{"type":"array","items":{"type":"object","properties":{"date":{"type":"string","format":"date"},"count":{"type":"integer"}}}},"page":{"type":"integer"},"per_page":{"type":"integer"},"total":{"type":"integer"},"total_pages":{"type":"integer"}}},
             "ManagementTask": {"type":"object","required":["id","task_type","media_root","kind","status","created_at","items"],"properties":{
-                "id":{"type":"string"},"task_type":{"type":"string"},"media_root":{"type":"string"},"kind":{"type":"string","enum":["preview","mutation"]},"status":{"type":"string","enum":["queued","running","completed","failed","interrupted"]},"created_at":{"type":"integer"},"started_at":{"type":["integer","null"]},"finished_at":{"type":["integer","null"]},"error":{"type":["string","null"]},"items":{"type":"array","items":{"$ref":"#/components/schemas/TaskItem"}}
+                "id":{"type":"string"},"task_type":{"type":"string"},"media_root":{"type":"string"},"kind":{"type":"string","enum":["preview","mutation"]},"status":{"type":"string","enum":["queued","running","completed","failed","interrupted"]},"created_at":{"type":"integer"},"started_at":{"type":["integer","null"]},"finished_at":{"type":["integer","null"]},"error":{"type":["string","null"]},"plan_expires_at":{"type":["integer","null"]},"operation_plan":{"type":["object","null"]},"report":{"type":["object","null"]},"items":{"type":"array","items":{"$ref":"#/components/schemas/TaskItem"}}
             }}
         }}
     })

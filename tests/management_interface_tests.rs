@@ -492,8 +492,8 @@ async fn embedded_management_interface_exposes_task_creation_and_live_lifecycle(
     assert!(javascript.contains("Media Root"));
     assert!(javascript.contains("Operation"));
     assert!(javascript.contains("Preview"));
-    assert!(javascript.contains("Apply changes"));
-    assert!(javascript.contains("Start task"));
+    assert!(javascript.contains("Confirm and execute"));
+    assert!(javascript.contains("Preview 15-minute plan"));
     assert!(javascript.contains("Lifecycle"));
     assert!(javascript.contains("Refresh"));
     assert!(javascript.contains("item outcome"));
@@ -534,6 +534,39 @@ async fn embedded_browser_shell_has_asset_search_state_filters_and_responsive_na
     assert!(css.contains("grid-template-columns:repeat(2"));
     assert!(css.contains("bottom-nav"));
     assert!(css.contains("sidebar"));
+}
+
+#[tokio::test]
+async fn management_ui_exposes_every_operation_full_pipeline_and_plan_confirmation() {
+    let (_dir, config) = fixture();
+    let javascript = app(AppState::new(config, TestClock(100)).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/assets/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let javascript = to_bytes(javascript.into_body(), usize::MAX).await.unwrap();
+    let javascript = std::str::from_utf8(&javascript).unwrap();
+    for label in [
+        "Delete ad files",
+        "Organize by code",
+        "Clean empty directories",
+        "Standardize names",
+        "Extract codes",
+        "Categorize files",
+        "Move to ORIGIN",
+        "Remove duplicates",
+        "Full pipeline",
+    ] {
+        assert!(javascript.contains(label), "missing {label}");
+    }
+    assert!(javascript.contains("Review final paths"));
+    assert!(javascript.contains("Confirm and execute"));
+    assert!(javascript.contains("plan_id"));
+    assert!(javascript.contains("confirmed"));
 }
 
 #[tokio::test]
@@ -584,6 +617,132 @@ async fn authenticated_versioned_api_creates_and_recovers_a_preview_task() {
     assert_eq!(task["media_root"], dir.path().display().to_string());
     assert_eq!(task["items"][0]["status"], "planned");
     assert!(dir.path().join("新片首发每天更新.txt").exists());
+}
+
+#[tokio::test]
+async fn operation_preview_is_a_fifteen_minute_plan_in_canonical_pipeline_order() {
+    let (dir, state, cookie) = authenticated_fixture().await;
+    std::fs::write(dir.path().join("新片首发每天更新.txt"), b"ad").unwrap();
+    let request = serde_json::json!({
+        "task_type": "operations",
+        "media_root": dir.path(),
+        "mode": "preview",
+        "operations": ["standardize_names", "delete_ad_files", "organize_by_code"]
+    });
+    let created = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &request.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let created: serde_json::Value =
+        serde_json::from_slice(&to_bytes(created.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let id = created["id"].as_str().unwrap();
+    let task = wait_for_task(&state, &cookie, id, "completed").await;
+
+    assert_eq!(task["plan_expires_at"], 1_000);
+    assert_eq!(task["operation_plan"]["operations"][0], "delete_ad_files");
+    assert_eq!(task["operation_plan"]["operations"][1], "organize_by_code");
+    assert_eq!(task["operation_plan"]["operations"][2], "standardize_names");
+    assert_eq!(task["operation_plan"]["requires_confirmation"], true);
+    assert!(task["operation_plan"]["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|action| action["destructive"] == true
+            && action["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("新片首发每天更新.txt")));
+}
+
+#[tokio::test]
+async fn mutation_requires_explicit_confirmation_of_an_unexpired_preview_plan() {
+    let (dir, state, cookie) = authenticated_fixture().await;
+    let source = dir.path().join("[7sht.me]@ABP-123.mp4");
+    std::fs::write(&source, b"video").unwrap();
+    let preview_request = serde_json::json!({"task_type":"operations","media_root":dir.path(),"mode":"preview","operations":["standardize_names"]});
+    let preview = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &preview_request.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let preview: serde_json::Value =
+        serde_json::from_slice(&to_bytes(preview.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let plan_id = preview["id"].as_str().unwrap();
+    let _ = wait_for_task(&state, &cookie, plan_id, "completed").await;
+
+    let rejected = serde_json::json!({"task_type":"operations","mode":"apply","plan_id":plan_id,"confirmed":false});
+    assert_eq!(
+        json_request(
+            app(state.clone()),
+            "POST",
+            "/api/v1/tasks",
+            &rejected.to_string(),
+            Some(&cookie)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert!(source.exists());
+
+    let confirmed = serde_json::json!({"task_type":"operations","mode":"apply","plan_id":plan_id,"confirmed":true});
+    let mutation = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &confirmed.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(mutation.status(), StatusCode::ACCEPTED);
+    let mutation: serde_json::Value =
+        serde_json::from_slice(&to_bytes(mutation.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let task = wait_for_task(
+        &state,
+        &cookie,
+        mutation["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    assert!(!source.exists());
+    assert!(dir.path().join("ABP-123.mp4").exists());
+    assert!(task["report"]["verification"].is_object());
+}
+
+async fn wait_for_task(
+    state: &AppState,
+    cookie: &str,
+    id: &str,
+    status: &str,
+) -> serde_json::Value {
+    for _ in 0..200 {
+        let response = json_request(
+            app(state.clone()),
+            "GET",
+            &format!("/api/v1/tasks/{id}"),
+            "",
+            Some(cookie),
+        )
+        .await;
+        let task: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        if task["status"] == status {
+            return task;
+        }
+        if matches!(task["status"].as_str(), Some("failed" | "interrupted")) {
+            panic!("task ended unexpectedly: {task}");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("task did not reach {status}")
 }
 
 #[tokio::test]

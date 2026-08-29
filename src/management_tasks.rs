@@ -113,6 +113,9 @@ pub struct ManagementTask {
     pub started_at: Option<u64>,
     pub finished_at: Option<u64>,
     pub error: Option<String>,
+    pub plan_expires_at: Option<u64>,
+    pub operation_plan: Option<serde_json::Value>,
+    pub report: Option<serde_json::Value>,
     pub items: Vec<TaskItem>,
 }
 
@@ -131,7 +134,8 @@ impl TaskStore {
              CREATE TABLE IF NOT EXISTS management_tasks (
                id TEXT PRIMARY KEY, task_type TEXT NOT NULL, media_root TEXT NOT NULL,
                kind TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL,
-               started_at INTEGER, finished_at INTEGER, error TEXT
+               started_at INTEGER, finished_at INTEGER, error TEXT,
+               plan_expires_at INTEGER, operation_plan TEXT, report TEXT
              );
              CREATE TABLE IF NOT EXISTS management_task_items (
                id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
@@ -139,6 +143,13 @@ impl TaskStore {
                FOREIGN KEY(task_id) REFERENCES management_tasks(id) ON DELETE CASCADE
              );",
         )?;
+        for migration in [
+            "ALTER TABLE management_tasks ADD COLUMN plan_expires_at INTEGER",
+            "ALTER TABLE management_tasks ADD COLUMN operation_plan TEXT",
+            "ALTER TABLE management_tasks ADD COLUMN report TEXT",
+        ] {
+            let _ = connection.execute(migration, []);
+        }
         Ok(Self(Arc::new(Mutex::new(connection))))
     }
 
@@ -194,10 +205,31 @@ impl TaskStore {
         Ok(())
     }
 
+    pub fn save_operation_plan(
+        &self,
+        task_id: &str,
+        expires_at: u64,
+        plan_json: &str,
+    ) -> Result<(), Error> {
+        self.connection()?.execute(
+            "UPDATE management_tasks SET plan_expires_at=?2, operation_plan=?3 WHERE id=?1",
+            params![task_id, expires_at, plan_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_report(&self, task_id: &str, report_json: &str) -> Result<(), Error> {
+        self.connection()?.execute(
+            "UPDATE management_tasks SET report=?2 WHERE id=?1",
+            params![task_id, report_json],
+        )?;
+        Ok(())
+    }
+
     pub fn get(&self, id: &str) -> Result<Option<ManagementTask>, Error> {
         let connection = self.connection()?;
         let mut task = connection.query_row(
-            "SELECT id, task_type, media_root, kind, status, created_at, started_at, finished_at, error FROM management_tasks WHERE id=?1",
+            "SELECT id, task_type, media_root, kind, status, created_at, started_at, finished_at, error, plan_expires_at, operation_plan, report FROM management_tasks WHERE id=?1",
             [id], task_from_row,
         ).optional()?;
         if let Some(task) = task.as_mut() {
@@ -208,7 +240,7 @@ impl TaskStore {
 
     pub fn list(&self) -> Result<Vec<ManagementTask>, Error> {
         let connection = self.connection()?;
-        let mut statement = connection.prepare("SELECT id, task_type, media_root, kind, status, created_at, started_at, finished_at, error FROM management_tasks ORDER BY created_at DESC, id DESC")?;
+        let mut statement = connection.prepare("SELECT id, task_type, media_root, kind, status, created_at, started_at, finished_at, error, plan_expires_at, operation_plan, report FROM management_tasks ORDER BY created_at DESC, id DESC")?;
         let mut tasks = statement
             .query_map([], task_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
@@ -247,6 +279,13 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ManagementTask> {
         started_at: row.get(6)?,
         finished_at: row.get(7)?,
         error: row.get(8)?,
+        plan_expires_at: row.get(9)?,
+        operation_plan: row
+            .get::<_, Option<String>>(10)?
+            .and_then(|value| serde_json::from_str(&value).ok()),
+        report: row
+            .get::<_, Option<String>>(11)?
+            .and_then(|value| serde_json::from_str(&value).ok()),
         items: Vec::new(),
     })
 }
