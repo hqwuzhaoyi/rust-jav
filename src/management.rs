@@ -39,7 +39,7 @@ use std::convert::Infallible;
 
 use crate::{
     application::{ApplicationServices, OperationsRequest},
-    asset_index::{AssetIndex, AssetQuery, AssetState, ScanMode},
+    asset_index::{AssetIndex, AssetQuery, AssetState, MediaRootHealth, ScanMode},
     deletion_plan::{
         DeletionOutcomeStatus, FileType as DeletionFileType, PermanentDeletionPlan,
         PermanentDeletionPlanner, RelatedHardLink,
@@ -702,6 +702,7 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/v1/actors/:actor_name/poster", get(actor_poster))
         .route("/api/v1/media-roots/health", get(media_root_health))
+        .route("/api/v1/media-roots/storage", get(media_root_storage))
         .route(
             "/api/v1/rules/active",
             get(active_rules).put(activate_rules),
@@ -1114,6 +1115,22 @@ async fn media_root_health(State(state): State<AppState>, headers: HeaderMap) ->
             .collect::<Vec<_>>(),
     )
     .into_response()
+}
+
+async fn media_root_storage(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    let roots = state
+        .config
+        .media_roots
+        .iter()
+        .map(|root| state.assets.root_health(root))
+        .collect();
+    Json(MediaRootHealth::from_roots(roots)).into_response()
 }
 
 async fn indexed_artwork(
@@ -2341,7 +2358,8 @@ fn openapi_document() -> serde_json::Value {
             "/api/v1/deletion-audits":{"get":{"summary":"List indefinite permanent-deletion audit records","responses":{"200":{"description":"Audit records"}}}},
             "/api/v1/actors":{"get":{"summary":"Browse derived Actor Folders with inode-aware storage metrics","responses":{"200":{"description":"Actor Folders","content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/ActorFolder"}}}}}}}},
             "/api/v1/actors/{actor_name}":{"get":{"summary":"Recompute Actor Folder removal confirmation","responses":{"200":{"description":"Fresh confirmation metrics"}}},"delete":{"summary":"Remove derived paths as a Management Task","responses":{"202":{"description":"Accepted Management Task"},"404":{"description":"Actor Folder not found"}}}},
-            "/api/v1/media-roots/health":{"get":{"summary":"Report TrueNAS Host Path access and process UID/GID","responses":{"200":{"description":"Media Root permission reports"}}}},
+            "/api/v1/media-roots/health":{"get":{"summary":"Report TrueNAS Host Path access and process UID/GID","responses":{"200":{"description":"Media Root permission reports","content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/RootHealth"}}}}}}}},
+            "/api/v1/media-roots/storage":{"get":{"summary":"Report deduplicated Media Root filesystem capacity","responses":{"200":{"description":"Per-root and aggregate capacity in the process mount namespace","content":{"application/json":{"schema":{"$ref":"#/components/schemas/MediaRootStorage"}}}}}}},
             "/api/v1/jellyfin/config":{"get":{"summary":"Get non-secret Jellyfin configuration","responses":{"200":{"description":"Configuration without API key"}}},"put":{"summary":"Store Jellyfin configuration and server-only API key","responses":{"204":{"description":"Saved"}}}},
             "/api/v1/jellyfin/test":{"post":{"summary":"Test Jellyfin connectivity and selected libraries","responses":{"200":{"description":"Connected"},"502":{"description":"Jellyfin unavailable"}}}},
             "/api/v1/jellyfin/refresh":{"get":{"summary":"Get separately tracked refresh status","responses":{"200":{"description":"Refresh status"}}},"post":{"summary":"Manually refresh once with bounded retries","responses":{"200":{"description":"Completed"},"502":{"description":"Manual retry required"}}}}
@@ -2355,6 +2373,10 @@ fn openapi_document() -> serde_json::Value {
             "MediaAsset":{"type":"object","required":["id","media_root","path","device","inode","observed_at","captured_date","state"],"properties":{"id":{"type":"string"},"media_root":{"type":"string"},"path":{"type":"string"},"device":{"type":"integer"},"inode":{"type":"integer"},"jav_code":{"type":["string","null"]},"title":{"type":["string","null"]},"nfo_path":{"type":["string","null"]},"artwork_url":{"type":["string","null"]},"observed_at":{"type":"integer"},"captured_date":{"type":"string","format":"date"},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]}}},
             "AssetActor":{"type":"object","required":["name"],"properties":{"name":{"type":"string"},"poster_url":{"type":["string","null"]},"actor_folder_url":{"type":["string","null"]}}},
             "ActorFolder":{"type":"object","required":["name","movie_count","derived_file_count","unique_inode_count","hard_link_count","logical_size","reclaimable_space","linked_assets"],"properties":{"name":{"type":"string"},"movie_count":{"type":"integer"},"derived_file_count":{"type":"integer"},"unique_inode_count":{"type":"integer"},"hard_link_count":{"type":"integer","description":"Compatibility alias for derived_file_count"},"logical_size":{"type":"integer"},"reclaimable_space":{"type":"integer"},"poster_url":{"type":["string","null"]},"linked_assets":{"type":"array","items":{"$ref":"#/components/schemas/MediaAsset"}}}},
+            "RootCapacity":{"type":"object","required":["status","filesystem_id","total_bytes","used_bytes","available_bytes","error"],"properties":{"status":{"type":"string","enum":["healthy","degraded"]},"filesystem_id":{"type":["integer","null"]},"total_bytes":{"type":["integer","null"],"minimum":0},"used_bytes":{"type":["integer","null"],"minimum":0},"available_bytes":{"type":["integer","null"],"minimum":0},"error":{"type":["string","null"]}}},
+            "RootHealth":{"type":"object","required":["path","readable","writable","uid","gid","owner_uid","owner_gid","action","capacity"],"properties":{"path":{"type":"string"},"readable":{"type":"boolean"},"writable":{"type":"boolean"},"uid":{"type":"integer"},"gid":{"type":"integer"},"owner_uid":{"type":["integer","null"]},"owner_gid":{"type":["integer","null"]},"action":{"type":["string","null"]},"capacity":{"$ref":"#/components/schemas/RootCapacity"}}},
+            "AggregateCapacity":{"type":"object","required":["status","filesystem_count","total_bytes","used_bytes","available_bytes"],"properties":{"status":{"type":"string","enum":["healthy","degraded"]},"filesystem_count":{"type":"integer","minimum":0},"total_bytes":{"type":["integer","null"],"minimum":0},"used_bytes":{"type":["integer","null"],"minimum":0},"available_bytes":{"type":["integer","null"],"minimum":0}}},
+            "MediaRootStorage":{"type":"object","required":["roots","aggregate"],"properties":{"roots":{"type":"array","items":{"$ref":"#/components/schemas/RootHealth"}},"aggregate":{"$ref":"#/components/schemas/AggregateCapacity"}}},
             "AssetDetail":{"type":"object","required":["id","path","actors","tags","parse_status","state"],"properties":{"id":{"type":"string"},"path":{"type":"string"},"title":{"type":["string","null"]},"actors":{"type":"array","items":{"$ref":"#/components/schemas/AssetActor"}},"studio":{"type":["string","null"]},"release_date":{"type":["string","null"],"format":"date"},"runtime_minutes":{"type":["integer","null"]},"director":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"plot":{"type":["string","null"]},"parse_status":{"type":"string","enum":["valid","missing","invalid"]},"source_path":{"type":["string","null"]},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]},"jellyfin":{"type":"object","description":"Read-only association, playback state, and Jellyfin web URL; uncertain metadata matches never authorize deletion."}}},
             "AssetPage":{"type":"object","required":["items","groups","page","per_page","total","total_pages"],"properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/MediaAsset"}},"groups":{"type":"array","items":{"type":"object","properties":{"date":{"type":"string","format":"date"},"count":{"type":"integer"}}}},"page":{"type":"integer"},"per_page":{"type":"integer"},"total":{"type":"integer"},"total_pages":{"type":"integer"}}},
             "ManagementTask": {"type":"object","required":["id","task_type","media_root","kind","status","created_at","items"],"properties":{

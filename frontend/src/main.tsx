@@ -7,6 +7,7 @@ import {
   Clock3,
   Film,
   Grid2X2,
+  HardDrive,
   Image as ImageIcon,
   ListTodo,
   LogOut,
@@ -83,6 +84,27 @@ type Page = {
   total_pages: number;
 };
 type Health = { state: string; mode: string | null };
+type StorageHealth = {
+  roots: Array<{
+    path: string;
+    readable: boolean;
+    writable: boolean;
+    action: string | null;
+    capacity: {
+      status: "healthy" | "degraded";
+      total_bytes: number | null;
+      used_bytes: number | null;
+      available_bytes: number | null;
+    };
+  }>;
+  aggregate: {
+    status: "healthy" | "degraded";
+    filesystem_count: number;
+    total_bytes: number | null;
+    used_bytes: number | null;
+    available_bytes: number | null;
+  };
+};
 type Candidate = {
   path: string;
   matching_rule: string;
@@ -191,6 +213,8 @@ export function App() {
     [query, setQuery] = useState(""),
     [filter, setFilter] = useState<AssetState | "">(""),
     [health, setHealth] = useState<Health | null>(null),
+    [storage, setStorage] = useState<StorageHealth | null>(null),
+    [storageOpen, setStorageOpen] = useState(false),
     [page, setPage] = useState(1),
     [nav, setNav] = useState<
       | "assets"
@@ -501,9 +525,10 @@ export function App() {
     const p = new URLSearchParams({ page: String(page), per_page: "48" });
     if (query) p.set("q", query);
     if (filter) p.set("state", filter);
-    const [a, h] = await Promise.all([
+    const [a, h, storageResponse] = await Promise.all([
       fetch(`/api/v1/assets?${p}`),
       fetch("/api/v1/assets/health"),
+      fetch("/api/v1/media-roots/storage"),
     ]);
     if (a.ok) {
       const body = (await a.json().catch(() => null)) as Page | null;
@@ -515,6 +540,10 @@ export function App() {
     if (h.ok) {
       const body = (await h.json().catch(() => null)) as Health | null;
       if (body) setHealth(body);
+    }
+    if (storageResponse.ok) {
+      const body = (await storageResponse.json().catch(() => null)) as StorageHealth | null;
+      if (body?.aggregate && Array.isArray(body.roots)) setStorage(body);
     }
   }
   async function scan() {
@@ -786,6 +815,7 @@ export function App() {
             <span><Settings aria-hidden="true" /></span> 设置
           </button>
         </nav>
+        {storage && <MediaStorageStatus storage={storage} />}
         <div className="root-card">
           <small>资产索引</small>
           <b>
@@ -835,6 +865,16 @@ export function App() {
                     : `${libraryTotal || assets.total} 个项目 · 文件系统为准`}
             </small>
           </div>
+          {storage && (
+            <button
+              className="mobile-storage-entry"
+              aria-label="媒体存储"
+              onClick={() => setStorageOpen(true)}
+            >
+              <HardDrive aria-hidden="true" />
+              <span>媒体存储</span>
+            </button>
+          )}
           {(nav === "assets" || nav === "recent" || nav === "exceptions") && (
             <button className="scan" onClick={scan} aria-label="Reconcile">
               <RefreshCw aria-hidden="true" /> <span>重新扫描</span>
@@ -1201,6 +1241,30 @@ export function App() {
         }
         onDismiss={() => setMessage("")}
       />
+      <MorphingModal
+        viewId={storageOpen && storage ? "media-storage" : null}
+        placement="center"
+        className="storage-modal"
+        onClose={() => setStorageOpen(false)}
+      >
+        {storage && (
+          <section
+            className="storage-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="媒体存储"
+          >
+            <button
+              className="storage-dialog-close"
+              aria-label="关闭媒体存储"
+              onClick={() => setStorageOpen(false)}
+            >
+              <X aria-hidden="true" />
+            </button>
+            <MediaStorageStatus storage={storage} compact />
+          </section>
+        )}
+      </MorphingModal>
       <nav className="bottom-nav">
         <button
           aria-label="Library"
@@ -1656,6 +1720,63 @@ function ActorRemovalDialog({
     </section>
   );
 }
+function MediaStorageStatus({
+  storage,
+  compact = false,
+}: {
+  storage: StorageHealth;
+  compact?: boolean;
+}) {
+  const { aggregate } = storage;
+  const total = aggregate.total_bytes;
+  const used = aggregate.used_bytes;
+  const available = aggregate.available_bytes;
+  const healthy =
+    aggregate.status === "healthy" &&
+    total !== null &&
+    used !== null &&
+    available !== null;
+  const percentage = healthy && total > 0
+    ? Math.round((used / total) * 100)
+    : 0;
+  const action = storage.roots.find((root) => root.action)?.action;
+
+  return (
+    <section
+      className={`media-storage-card${compact ? " compact" : ""}`}
+      role="region"
+      aria-label="媒体存储"
+    >
+      <div className="media-storage-title">
+        <HardDrive aria-hidden="true" />
+        <span>媒体存储</span>
+      </div>
+      {healthy ? (
+        <>
+          <b>{formatBytes(total!)} 总量</b>
+          <span>{formatBytes(used!)} 已用</span>
+          <span>{formatBytes(available!)} 剩余</span>
+          <div
+            className="storage-progress"
+            role="progressbar"
+            aria-label={`媒体存储已使用 ${percentage}%`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percentage}
+          >
+            <i style={{ width: `${percentage}%` }} />
+          </div>
+        </>
+      ) : (
+        <>
+          <b>容量不可用</b>
+          <span>{action ?? "无法读取媒体根目录容量"}</span>
+        </>
+      )}
+    </section>
+  );
+}
+
 function Empty() {
   return (
     <div className="empty">

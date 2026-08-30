@@ -1,6 +1,8 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
+    mem::MaybeUninit,
+    os::fd::AsRawFd,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -148,6 +150,149 @@ pub struct RootHealth {
     pub owner_uid: Option<u32>,
     pub owner_gid: Option<u32>,
     pub action: Option<String>,
+    pub capacity: RootCapacity,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RootCapacity {
+    pub status: String,
+    pub filesystem_id: Option<u64>,
+    pub total_bytes: Option<u64>,
+    pub used_bytes: Option<u64>,
+    pub available_bytes: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregateCapacity {
+    pub status: String,
+    pub filesystem_count: usize,
+    pub total_bytes: Option<u64>,
+    pub used_bytes: Option<u64>,
+    pub available_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaRootHealth {
+    pub roots: Vec<RootHealth>,
+    pub aggregate: AggregateCapacity,
+}
+
+impl MediaRootHealth {
+    pub fn from_roots(mut roots: Vec<RootHealth>) -> Self {
+        let mut observed: HashMap<u64, RootCapacity> = HashMap::new();
+        for root in &mut roots {
+            let Some(filesystem_id) = root.capacity.filesystem_id else {
+                continue;
+            };
+            if let Some(capacity) = observed.get(&filesystem_id) {
+                root.capacity = capacity.clone();
+            } else {
+                observed.insert(filesystem_id, root.capacity.clone());
+            }
+        }
+        let mut filesystems = HashSet::new();
+        let mut total = 0_u64;
+        let mut used = 0_u64;
+        let mut available = 0_u64;
+        let mut degraded = false;
+
+        for capacity in roots.iter().map(|root| &root.capacity) {
+            let Some(filesystem_id) = capacity.filesystem_id else {
+                degraded = true;
+                continue;
+            };
+            if capacity.status != "healthy" || !filesystems.insert(filesystem_id) {
+                degraded |= capacity.status != "healthy";
+                continue;
+            }
+            let Some(next_total) = capacity
+                .total_bytes
+                .and_then(|value| total.checked_add(value))
+            else {
+                degraded = true;
+                continue;
+            };
+            let Some(next_used) = capacity
+                .used_bytes
+                .and_then(|value| used.checked_add(value))
+            else {
+                degraded = true;
+                continue;
+            };
+            let Some(next_available) = capacity
+                .available_bytes
+                .and_then(|value| available.checked_add(value))
+            else {
+                degraded = true;
+                continue;
+            };
+            total = next_total;
+            used = next_used;
+            available = next_available;
+        }
+
+        let aggregate = AggregateCapacity {
+            status: if degraded { "degraded" } else { "healthy" }.to_owned(),
+            filesystem_count: filesystems.len(),
+            total_bytes: (!degraded).then_some(total),
+            used_bytes: (!degraded).then_some(used),
+            available_bytes: (!degraded).then_some(available),
+        };
+        Self { roots, aggregate }
+    }
+}
+
+fn root_capacity(path: &Path) -> RootCapacity {
+    let result = (|| {
+        let directory = fs::File::open(path).map_err(|error| error.to_string())?;
+        let metadata = directory.metadata().map_err(|error| error.to_string())?;
+        let mut statistics = MaybeUninit::<libc::statvfs>::uninit();
+        if unsafe { libc::fstatvfs(directory.as_raw_fd(), statistics.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        let statistics = unsafe { statistics.assume_init() };
+        let fragment_size = statistics.f_frsize as u64;
+        let blocks = statistics.f_blocks as u64;
+        if fragment_size == 0 || blocks == 0 {
+            return Err("Media Root capacity is unsupported".to_owned());
+        }
+        let free_blocks = statistics.f_bfree as u64;
+        let available_blocks = statistics.f_bavail as u64;
+        if free_blocks > blocks || available_blocks > blocks {
+            return Err("Media Root capacity counters are invalid".to_owned());
+        }
+        let total_bytes = blocks
+            .checked_mul(fragment_size)
+            .ok_or_else(|| "Media Root total capacity overflowed".to_owned())?;
+        let used_bytes = blocks
+            .checked_sub(free_blocks)
+            .and_then(|value| value.checked_mul(fragment_size))
+            .ok_or_else(|| "Media Root used capacity overflowed".to_owned())?;
+        let available_bytes = available_blocks
+            .checked_mul(fragment_size)
+            .ok_or_else(|| "Media Root available capacity overflowed".to_owned())?;
+        Ok((metadata.dev(), total_bytes, used_bytes, available_bytes))
+    })();
+
+    match result {
+        Ok((filesystem_id, total_bytes, used_bytes, available_bytes)) => RootCapacity {
+            status: "healthy".to_owned(),
+            filesystem_id: Some(filesystem_id),
+            total_bytes: Some(total_bytes),
+            used_bytes: Some(used_bytes),
+            available_bytes: Some(available_bytes),
+            error: None,
+        },
+        Err(error) => RootCapacity {
+            status: "degraded".to_owned(),
+            filesystem_id: None,
+            total_bytes: None,
+            used_bytes: None,
+            available_bytes: None,
+            error: Some(error),
+        },
+    }
 }
 
 #[derive(Clone)]
@@ -459,6 +604,7 @@ impl AssetIndex {
             owner_uid: metadata.as_ref().map(MetadataExt::uid),
             owner_gid: metadata.as_ref().map(MetadataExt::gid),
             action,
+            capacity: root_capacity(path),
         }
     }
 
