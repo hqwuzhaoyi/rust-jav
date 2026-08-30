@@ -2,7 +2,12 @@ use clap::Parser;
 use color_eyre::Result;
 use tokio::sync::mpsc;
 
+use rust_jav::application::ReportingService;
+use rust_jav::cli::AdministratorAction;
 use rust_jav::cli::Cli;
+use rust_jav::management::{
+    init_administrator, reset_password_from_env, ManagementConfig, SecretsStore,
+};
 use rust_jav::report::OutputFormat;
 use rust_jav::runtime::{resolve_run_request, RunRequest};
 use rust_jav::tui;
@@ -34,13 +39,31 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        RunRequest::Serve { config } => {
+            let config = ManagementConfig::load(&config)?;
+            rust_jav::management::serve(config).await?;
+            Ok(())
+        }
+        RunRequest::Administrator { action } => {
+            match action {
+                AdministratorAction::Init(args) => {
+                    let config = ManagementConfig::load(&args.config)?;
+                    let address = config.listen_addr();
+                    let token = init_administrator(&SecretsStore::new(config.secrets_file))?;
+                    println!("http://{address}/initialize?token={token}");
+                }
+                AdministratorAction::ResetPassword(args) => {
+                    let config = ManagementConfig::load(&args.config)?;
+                    reset_password_from_env(&SecretsStore::new(config.secrets_file))?;
+                    println!("Administrator password reset; all server sessions end when the service restarts.");
+                }
+            }
+            Ok(())
+        }
     }
 }
 
 fn print_report(report: &rust_jav::report::CommandReport, format: OutputFormat) {
-    let output = match format {
-        OutputFormat::Text => report.to_text(),
-        OutputFormat::Json => report.to_json(),
-    };
+    let output = ReportingService::render(report, format);
     println!("{output}");
 }

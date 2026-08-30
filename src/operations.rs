@@ -1,13 +1,16 @@
 use std::path::PathBuf;
 
+use crate::active_rules::ActiveRuleSet;
+use crate::migration_verifier::types::{MigrationAction, MigrationActionKind, MigrationScope};
 use crate::report::{ActionItem, ActionStatus, CommandReport, OutputMode};
 use crate::tui::executor::{OperationExecutor, OperationPlan, PlannedAction};
 use crate::tui::state::{Operation, OperationType};
 
-pub async fn execute_operations_command(
+pub(crate) async fn run_operations_command(
     source_dir: PathBuf,
     selected_ops: Vec<OperationType>,
     apply: bool,
+    active_rules: ActiveRuleSet,
 ) -> CommandReport {
     let mode = if apply {
         OutputMode::Apply
@@ -18,12 +21,44 @@ pub async fn execute_operations_command(
         .iter()
         .map(|op| op.name().to_string())
         .collect::<Vec<_>>();
+    let requires_manual_confirm = selected_ops.iter().any(|op| {
+        matches!(
+            op,
+            OperationType::DeleteAdFiles | OperationType::RemoveDuplicates
+        )
+    });
 
-    let executor = OperationExecutor::new(source_dir.clone(), !apply);
+    let executor = OperationExecutor::with_rules(source_dir.clone(), !apply, active_rules);
+    let verification = crate::application::ApplicationServices::new().verification();
     let mut report = CommandReport::new("ops", mode, source_dir, op_names);
+    let mut migration_actions = Vec::new();
+    let mut action_counter = 0usize;
+    let before_source = if apply {
+        match verification.scan(&report.source_dir, MigrationScope::Source, false) {
+            Ok(scope) => Some(scope),
+            Err(error) => {
+                report
+                    .errors
+                    .push(format!("verification pre-scan failed: {error}"));
+                report.verification = Some(verification.error_summary());
+                report.finalize();
+                return report;
+            }
+        }
+    } else {
+        None
+    };
 
     for op_type in selected_ops {
         let plan = executor.plan_operation(op_type).await;
+        for action in &plan.actions {
+            action_counter += 1;
+            if let Some(migration_action) =
+                planned_action_to_migration_action(action, action_counter)
+            {
+                migration_actions.push(migration_action);
+            }
+        }
 
         if !apply {
             report.actions.extend(
@@ -74,7 +109,40 @@ pub async fn execute_operations_command(
     }
 
     report.finalize();
+    if apply {
+        match verification.verify_operations(
+            report.source_dir.clone(),
+            before_source.expect("apply flow must have pre-scanned source"),
+            migration_actions,
+            requires_manual_confirm,
+            report.summary.failed_actions,
+            report.warnings.clone(),
+            report.errors.clone(),
+        ) {
+            Ok((summary, _detailed)) => report.verification = Some(summary),
+            Err(error) => {
+                report.errors.push(format!("verification failed: {error}"));
+                report.verification = Some(verification.error_summary());
+            }
+        }
+    }
     report
+}
+
+pub async fn execute_operations_command(
+    source_dir: PathBuf,
+    selected_ops: Vec<OperationType>,
+    apply: bool,
+) -> CommandReport {
+    let request = if apply {
+        crate::application::OperationsRequest::apply(source_dir, selected_ops)
+    } else {
+        crate::application::OperationsRequest::preview(source_dir, selected_ops)
+    };
+    crate::application::ApplicationServices::new()
+        .operations()
+        .run(request)
+        .await
 }
 
 fn planned_action_to_item(action: PlannedAction, status: ActionStatus) -> ActionItem {
@@ -89,3 +157,24 @@ fn planned_action_to_item(action: PlannedAction, status: ActionStatus) -> Action
 
 #[allow(dead_code)]
 fn _keep_public_types(_: &OperationPlan) {}
+
+fn planned_action_to_migration_action(
+    action: &PlannedAction,
+    counter: usize,
+) -> Option<MigrationAction> {
+    let kind = match action.kind.as_str() {
+        "move" => MigrationActionKind::Move,
+        "rename" | "extract-code" => MigrationActionKind::Rename,
+        "delete-file" => MigrationActionKind::DeleteFile,
+        _ => return None,
+    };
+
+    Some(MigrationAction {
+        action_id: format!("act-{counter:04}"),
+        kind,
+        scope: MigrationScope::Source,
+        source: action.source.clone(),
+        target: action.target.clone(),
+        reason: action.reason.clone(),
+    })
+}

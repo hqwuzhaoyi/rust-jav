@@ -1,0 +1,189 @@
+/* Canonical BeUI / Apple Photos design layer. Keep component styling here. */
+:root {
+  --ds-bg: #f5f5f7;
+  --ds-surface: rgba(255, 255, 255, 0.78);
+  --ds-surface-solid: #fff;
+  --ds-raised: #fff;
+  --ds-muted: rgba(0, 0, 0, 0.055);
+  --ds-hover: rgba(0, 0, 0, 0.075);
+  --ds-line: rgba(0, 0, 0, 0.09);
+  --ds-text: #1d1d1f;
+  --ds-secondary: #6e6e73;
+  --ds-tertiary: #98989d;
+  --ds-accent: #087ff5;
+  --ds-accent-soft: #e4f0ff;
+  --ds-danger: #c9342c;
+  --ds-danger-soft: #fee9e7;
+  --ds-success: #248a3d;
+  --ds-success-soft: #e3f4e7;
+  --ds-warning: #946900;
+  --ds-warning-soft: #fff2c6;
+  --ds-radius-sm: 9px;
+  --ds-radius-md: 12px;
+  --ds-radius-lg: 18px;
+  --ds-radius-sheet: 26px;
+  --ds-shadow-card: 0 1px 2px rgba(0, 0, 0, .05), 0 10px 30px rgba(0, 0, 0, .06);
+  --ds-shadow-sheet: -18px 0 50px rgba(0, 0, 0, .14);
+  --ds-focus: 0 0 0 3px rgba(8, 127, 245, .24);
+  --ds-control: 44px;
+  --blue: var(--ds-accent);
+  --line: var(--ds-line);
+}
+
+body { color: var(--ds-text); background: var(--ds-bg); }
+
+.sidebar {
+  width: 230px;
+  border-color: var(--ds-line);
+  background: rgba(250, 250, 252, .76);
+  box-shadow: 1px 0 0 rgba(255, 255, 255, .6);
+  backdrop-filter: blur(30px) saturate(160%);
+}
+.content { margin-left: 230px; }
+.sidebar nav button, .signout {
+  min-height: var(--ds-control);
+  border-radius: var(--ds-radius-sm);
+  color: var(--ds-secondary);
+  transition: color .16s ease, background-color .16s ease, transform .16s ease;
+}
+.sidebar nav button:hover, .signout:hover { color: var(--ds-text); background: var(--ds-hover); }
+.sidebar nav button:active, .signout:active { transform: scale(.985); }
+.sidebar nav button.active { color: var(--ds-accent); background: var(--ds-accent-soft); }
+
+.content > header, .toolbar {
+  background: color-mix(in srgb, var(--ds-bg) 86%, transparent);
+  backdrop-filter: blur(24px) saturate(160%);
+}
+
+.search, .task-form input, .rules-settings input, .rules-settings textarea,
+.confirm-dialog input, .delete-confirm input {
+  min-height: var(--ds-control);
+  border: 1px solid transparent;
+  border-radius: var(--ds-radius-md);
+  color: var(--ds-text);
+  background: var(--ds-muted);
+  transition: background-color .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+.search:hover, .task-form input:hover, .rules-settings input:hover, .rules-settings textarea:hover {
+  background: var(--ds-hover);
+}
+.search:focus-within, .task-form input:focus, .rules-settings input:focus,
+.rules-settings textarea:focus, .confirm-dialog input:focus, .delete-confirm input:focus {
+  border-color: color-mix(in srgb, var(--ds-accent) 40%, transparent);
+  box-shadow: var(--ds-focus);
+  outline: none;
+}
+
+.filters {
+  gap: 0;
+  padding: 3px;
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-muted);
+}
+.filters button {
+  min-height: 36px;
+  padding-inline: 14px;
+  border: 0;
+  border-radius: var(--ds-radius-sm);
+  color: var(--ds-secondary);
+  background: transparent;
+  transition: color .16s ease, background-color .16s ease, box-shadow .16s ease;
+}
+.filters button:hover { color: var(--ds-text); }
+.filters button.selected {
+  color: var(--ds-text);
+  background: var(--ds-surface-solid);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .12);
+}
+
+.detail-tabs { margin-top: 20px; }
+.beui-tabs-list {
+  position: relative;
+  display: flex;
+  width: 100%;
+  border-bottom: 1px solid var(--ds-line);
+}
+.beui-tabs-list[data-variant="underline"] > button {
+  position: relative;
+  isolation: isolate;
+  flex: 1;
+  min-height: var(--ds-control);
+  padding: 8px 12px 10px;
+  border: 0;
+  color: var(--ds-secondary);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 560;
+  transition: color .16s ease;
+}
+.beui-tabs-list[data-variant="underline"] > button:hover { color: var(--ds-text); }
+.beui-tabs-list[data-variant="underline"] > button[aria-selected="true"] {
+  color: var(--ds-text);
+  background: transparent;
+  font-weight: 680;
+}
+.beui-tab-indicator {
+  position: absolute;
+  inset: auto 0 -1px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--ds-accent);
+}
+
+.photos-tile .poster, .actor-folder-poster, .linked-asset-grid button {
+  border-radius: var(--ds-radius-md);
+  box-shadow: none;
+}
+.photos-tile .poster, .actor-folder-poster { transition: transform .2s ease, box-shadow .2s ease; }
+@media (hover: hover) {
+  .photos-tile:hover .poster, .actor-folder-card:hover .actor-folder-poster {
+    transform: translateY(-2px);
+    box-shadow: var(--ds-shadow-card);
+  }
+}
+
+.asset-inspector {
+  border-color: var(--ds-line);
+  background: rgba(252, 252, 253, .9);
+  box-shadow: var(--ds-shadow-sheet);
+  backdrop-filter: blur(28px) saturate(150%);
+}
+.confirm-dialog, .delete-confirm, .task-create, .task-history,
+.rules-settings, .deletion-intro {
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-raised);
+  box-shadow: var(--ds-shadow-card);
+}
+.notice {
+  border: 1px solid color-mix(in srgb, var(--ds-accent) 18%, transparent);
+  border-radius: var(--ds-radius-md);
+  color: #24527f;
+  background: #edf5ff;
+}
+.state-banner.normal { color: var(--ds-success); background: var(--ds-success-soft); }
+.state-banner.synchronizing { color: var(--ds-warning); background: var(--ds-warning-soft); }
+.state-banner.exception { color: var(--ds-danger); background: var(--ds-danger-soft); }
+.tags span { color: #075ea8; background: var(--ds-accent-soft); }
+
+.scan, .task-form > button[type="submit"], .rule-actions button {
+  border: 0;
+  border-radius: var(--ds-radius-md);
+  transition: transform .16s ease, filter .16s ease;
+}
+.scan:hover, .task-form > button[type="submit"]:hover, .rule-actions button:hover { filter: brightness(.97); }
+.scan:active, .task-form > button[type="submit"]:active, .rule-actions button:active { transform: scale(.985); }
+.danger, .actor-detail-remove { color: var(--ds-danger); background: var(--ds-danger-soft); }
+
+@media (max-width: 760px) {
+  .content { margin-left: 0; }
+  .asset-inspector {
+    border-radius: var(--ds-radius-sheet) var(--ds-radius-sheet) 0 0;
+    box-shadow: 0 -18px 50px rgba(0, 0, 0, .16);
+  }
+  .filters { overflow-x: auto; scrollbar-width: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}

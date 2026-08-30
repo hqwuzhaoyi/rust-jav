@@ -34,6 +34,20 @@ cargo run -- ops --dir ./examples/test --json
 cargo run -- ops --dir ./examples/test --apply --json
 ```
 
+执行后，输出里会附带统一迁移验收摘要：
+
+- `verification.verification_status`
+- `verification.approval_status`
+- `verification.exit_code`
+- `verification.report_path`
+
+退出码语义：
+
+- `0`：技术结果正确，且可继续自动流程
+- `10`：技术结果正确，但 destructive 操作需要人工确认
+- `20`：实际结果与理论目标不一致
+- `30`：验收层自身出错，例如预扫描或报告写入失败
+
 #### 只执行指定操作
 
 ```bash
@@ -67,6 +81,11 @@ cargo run -- actor-links --source ./examples/test/actor-links --actors-root ./ac
 cargo run -- actor-links --source ./examples/test/actor-links --actors-root ./actors --apply --json
 ```
 
+`actor-links --apply` 的统一迁移验收会同时验证：
+
+- `source` scope 是否保持不变
+- `actors_root` scope 是否精确等于理论目标
+
 ## 推荐工作流
 
 ### 第一次使用：先预览，再执行
@@ -96,6 +115,29 @@ cargo run -- ops --dir /path/to/media --op delete-ad-files --apply --json
 cargo run -- actor-links --source /path/to/media --actors-root /path/to/actors --apply --json
 ```
 
+### 检查迁移前后有没有遗漏文件
+
+优先看 `--apply --json` 输出里的统一迁移验收结果，而不是先跑外部脚本：
+
+```bash
+cargo run -- ops --dir /path/to/media --apply --json
+cargo run -- actor-links --source /path/to/media --actors-root /path/to/actors --apply --json
+```
+
+重点字段：
+
+- `verification.verification_status`
+- `verification.approval_status`
+- `verification.report_path`
+
+其中：
+
+- `verification_status=ok`：实际结果与理论目标一致
+- `approval_status=auto_pass`：可继续自动流程
+- `approval_status=manual_confirm_required`：结果技术上正确，但 destructive 操作需要人工确认
+
+详细文件清单 diff 会在 `report_path` 对应的 JSON 报告里。
+
 ## 示例 fixtures
 
 如果你想用仓库自带示例快速体验，先重新生成 fixtures：
@@ -103,6 +145,8 @@ cargo run -- actor-links --source /path/to/media --actors-root /path/to/actors -
 ```bash
 bash examples/create_test_files.sh ./examples/test
 ```
+
+注意：如果你之前已经对 `./examples/test` 跑过 `--apply`，要再次重跑上面的脚本把示例目录重置回初始状态。
 
 会生成这些场景目录：
 

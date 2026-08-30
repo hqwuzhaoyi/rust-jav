@@ -102,3 +102,38 @@ async fn runtime_routes_actor_links_preview_with_zero_exit_code() {
     fs::remove_dir_all(source_dir).unwrap();
     fs::remove_dir_all(actors_root).unwrap();
 }
+
+#[tokio::test]
+async fn runtime_routes_delete_ad_apply_with_manual_confirm_exit_code() {
+    let source_dir = unique_temp_dir("runtime-delete-ad-apply");
+    write_file(&source_dir.join("新片首发每天更新.txt"), b"ad");
+    write_file(&source_dir.join("PRED-456.mp4"), b"video");
+
+    let cli = Cli::try_parse_from([
+        "rust-jav",
+        "ops",
+        "--dir",
+        source_dir.to_str().unwrap(),
+        "--op",
+        "delete-ad-files",
+        "--apply",
+        "--json",
+    ])
+    .unwrap();
+    let request = resolve_run_request(cli).await.unwrap();
+
+    match request {
+        RunRequest::Report {
+            report,
+            format,
+            exit_code,
+        } => {
+            assert_eq!(format, OutputFormat::Json);
+            assert_eq!(exit_code, 10);
+            assert!(report.verification.is_some());
+        }
+        other => panic!("expected report request, got {other:?}"),
+    }
+
+    fs::remove_dir_all(source_dir).unwrap();
+}

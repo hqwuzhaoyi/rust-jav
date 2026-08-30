@@ -2,9 +2,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use clap::Parser;
+use rust_jav::active_rules::ActiveRuleSet;
 use rust_jav::actor_links::execute_actor_links_command;
+use rust_jav::application::{ApplicationServices, OperationsRequest};
+use rust_jav::cli::Cli;
+use rust_jav::migration_verifier::types::{ApprovalStatus, MigrationScope, VerificationStatus};
 use rust_jav::operations::execute_operations_command;
 use rust_jav::report::{ActionStatus, OutputMode};
+use rust_jav::runtime::resolve_run_request;
 use rust_jav::tui::state::OperationType;
 
 fn unique_temp_dir(label: &str) -> PathBuf {
@@ -87,6 +93,40 @@ async fn ops_apply_mutates_files_when_explicit() {
     fs::remove_dir_all(source_dir).unwrap();
 }
 
+#[tokio::test]
+async fn ops_apply_adds_verification_summary_and_report_path() {
+    let source_dir = unique_temp_dir("ops-verify");
+    let source_file = source_dir.join("[7sht.me]@ABP-123.mp4");
+    write_file(&source_file, b"video");
+
+    let report = execute_operations_command(
+        source_dir.clone(),
+        vec![OperationType::StandardizeNames],
+        true,
+    )
+    .await;
+
+    let verification = report
+        .verification
+        .as_ref()
+        .expect("apply should include verification summary");
+    assert_eq!(verification.verification_status, VerificationStatus::Ok);
+    assert_eq!(verification.approval_status, ApprovalStatus::AutoPass);
+    assert_eq!(verification.exit_code, 0);
+    assert!(verification
+        .report_path
+        .as_ref()
+        .is_some_and(|path| path.exists()));
+    assert!(verification.scopes.iter().any(|scope| {
+        scope.scope == MigrationScope::Source
+            && scope.before_count == 1
+            && scope.expected_count == 1
+            && scope.after_count == 1
+    }));
+
+    fs::remove_dir_all(source_dir).unwrap();
+}
+
 #[test]
 fn actor_links_preview_does_not_create_targets() {
     let source_dir = unique_temp_dir("actor-preview-source");
@@ -149,6 +189,223 @@ fn actor_links_apply_creates_directory_style_links() {
             fs::metadata(&linked_video).unwrap().ino()
         );
     }
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(actors_root).unwrap();
+}
+
+#[test]
+fn actor_links_conventional_movie_nfo_preserves_recursive_movie_layout() {
+    let source_dir = unique_temp_dir("actor-conventional-source");
+    let actors_root = unique_temp_dir("actor-conventional-target");
+    let movie_dir = source_dir.join("MIAB-492-C");
+    let source_video = movie_dir.join("MIAB-492-C.mp4");
+    let source_trickplay = movie_dir.join("MIAB-492-C.trickplay/320 - 10x10/0.jpg");
+    write_file(&source_video, b"video");
+    write_file(&source_trickplay, b"trickplay");
+    write_file(&movie_dir.join("folder.jpg"), b"poster");
+    write_file(
+        &movie_dir.join("movie.nfo"),
+        b"<movie><actor><name>AIKA</name></actor></movie>",
+    );
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        source_dir.join("outside.jpg"),
+        movie_dir.join("MIAB-492-C.trickplay/ignored.jpg"),
+    )
+    .unwrap();
+
+    let report =
+        execute_actor_links_command(source_dir.clone(), actors_root.clone(), true).unwrap();
+    let target_movie = actors_root.join("AIKA/MIAB-492-C");
+
+    assert_eq!(report.summary.failed_actions, 0);
+    assert!(target_movie.join("MIAB-492-C.mp4").exists());
+    assert!(target_movie.join("movie.nfo").exists());
+    assert!(target_movie.join("folder.jpg").exists());
+    assert!(target_movie
+        .join("MIAB-492-C.trickplay/320 - 10x10/0.jpg")
+        .exists());
+    assert!(!target_movie
+        .join("MIAB-492-C.trickplay/ignored.jpg")
+        .exists());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&source_trickplay).unwrap().ino(),
+            fs::metadata(target_movie.join("MIAB-492-C.trickplay/320 - 10x10/0.jpg"))
+                .unwrap()
+                .ino()
+        );
+    }
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(actors_root).unwrap();
+}
+
+#[test]
+fn actor_links_apply_adds_dual_scope_verification_summary() {
+    let source_dir = unique_temp_dir("actor-verify-source");
+    let actors_root = unique_temp_dir("actor-verify-target");
+    write_file(&source_dir.join("REBD-615.mp4"), b"video");
+    write_file(
+        &source_dir.join("REBD-615.nfo"),
+        include_str!("../REBD-615.nfo").as_bytes(),
+    );
+    write_file(&source_dir.join("REBD-615-poster.jpg"), b"poster");
+    write_file(&source_dir.join("REBD-615-backdrop.jpg"), b"fanart");
+
+    let report =
+        execute_actor_links_command(source_dir.clone(), actors_root.clone(), true).unwrap();
+    let verification = report
+        .verification
+        .as_ref()
+        .expect("apply should include verification summary");
+
+    assert_eq!(verification.verification_status, VerificationStatus::Ok);
+    assert_eq!(verification.approval_status, ApprovalStatus::AutoPass);
+    assert_eq!(verification.exit_code, 0);
+    assert_eq!(verification.scopes.len(), 2);
+    assert!(verification.scopes.iter().any(|scope| {
+        scope.scope == MigrationScope::Source
+            && scope.before_count == 4
+            && scope.expected_count == 4
+            && scope.after_count == 4
+    }));
+    assert!(verification.scopes.iter().any(|scope| {
+        scope.scope == MigrationScope::ActorsRoot
+            && scope.before_count == 0
+            && scope.expected_count == 4
+            && scope.after_count == 4
+    }));
+    assert!(verification
+        .report_path
+        .as_ref()
+        .is_some_and(|path| path.exists()));
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(actors_root).unwrap();
+}
+
+#[test]
+fn actor_links_apply_detects_wrong_preexisting_targets() {
+    let source_dir = unique_temp_dir("actor-verify-mismatch-source");
+    let actors_root = unique_temp_dir("actor-verify-mismatch-target");
+    write_file(&source_dir.join("REBD-615.mp4"), b"video");
+    write_file(
+        &source_dir.join("REBD-615.nfo"),
+        include_str!("../REBD-615.nfo").as_bytes(),
+    );
+    write_file(&source_dir.join("REBD-615-poster.jpg"), b"poster");
+    write_file(&source_dir.join("REBD-615-backdrop.jpg"), b"fanart");
+
+    let target_dir = actors_root.join("miru").join("REBD-615");
+    write_file(&target_dir.join("REBD-615.mp4"), b"video");
+    write_file(
+        &target_dir.join("REBD-615.nfo"),
+        include_str!("../REBD-615.nfo").as_bytes(),
+    );
+    write_file(&target_dir.join("REBD-615-poster.jpg"), b"poster");
+    write_file(&target_dir.join("REBD-615-backdrop.jpg"), b"fanart");
+
+    let report =
+        execute_actor_links_command(source_dir.clone(), actors_root.clone(), true).unwrap();
+    let verification = report
+        .verification
+        .as_ref()
+        .expect("apply should include verification summary");
+
+    assert_eq!(
+        verification.verification_status,
+        VerificationStatus::Mismatch
+    );
+    assert_eq!(verification.approval_status, ApprovalStatus::Blocked);
+    assert_eq!(verification.exit_code, 20);
+    let report_path = verification
+        .report_path
+        .as_ref()
+        .expect("mismatch should still write a report");
+    let detailed = fs::read_to_string(report_path).unwrap();
+    assert!(detailed.contains("\"expected_existing_links\":0"));
+    assert!(detailed.contains("\"expected_new_links\":4"));
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(actors_root).unwrap();
+}
+
+#[test]
+fn actor_links_rerun_report_tracks_existing_links() {
+    let source_dir = unique_temp_dir("actor-verify-rerun-source");
+    let actors_root = unique_temp_dir("actor-verify-rerun-target");
+    write_file(&source_dir.join("REBD-615.mp4"), b"video");
+    write_file(
+        &source_dir.join("REBD-615.nfo"),
+        include_str!("../REBD-615.nfo").as_bytes(),
+    );
+    write_file(&source_dir.join("REBD-615-poster.jpg"), b"poster");
+    write_file(&source_dir.join("REBD-615-backdrop.jpg"), b"fanart");
+
+    let first = execute_actor_links_command(source_dir.clone(), actors_root.clone(), true).unwrap();
+    let first_report_path = first
+        .verification
+        .as_ref()
+        .and_then(|verification| verification.report_path.as_ref())
+        .expect("first apply should write a report")
+        .clone();
+    let first_report = fs::read_to_string(&first_report_path).unwrap();
+    assert!(first_report.contains("\"expected_new_links\":4"));
+    assert!(first_report.contains("\"expected_existing_links\":0"));
+
+    let second =
+        execute_actor_links_command(source_dir.clone(), actors_root.clone(), true).unwrap();
+    let second_report_path = second
+        .verification
+        .as_ref()
+        .and_then(|verification| verification.report_path.as_ref())
+        .expect("second apply should write a report")
+        .clone();
+    let second_report = fs::read_to_string(&second_report_path).unwrap();
+    assert!(second_report.contains("\"expected_new_links\":0"));
+    assert!(second_report.contains("\"expected_existing_links\":4"));
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(actors_root).unwrap();
+}
+
+#[test]
+fn actor_links_report_records_duplicate_target_plan_conflicts() {
+    let source_dir = unique_temp_dir("actor-verify-conflict-source");
+    let actors_root = unique_temp_dir("actor-verify-conflict-target");
+
+    for subdir in ["disc-a", "disc-b"] {
+        let movie_dir = source_dir.join(subdir);
+        write_file(&movie_dir.join("REBD-615.mp4"), b"video");
+        write_file(
+            &movie_dir.join("REBD-615.nfo"),
+            include_str!("../REBD-615.nfo").as_bytes(),
+        );
+        write_file(&movie_dir.join("REBD-615-poster.jpg"), b"poster");
+        write_file(&movie_dir.join("REBD-615-backdrop.jpg"), b"fanart");
+    }
+
+    let report =
+        execute_actor_links_command(source_dir.clone(), actors_root.clone(), true).unwrap();
+    let verification = report
+        .verification
+        .as_ref()
+        .expect("apply should include verification summary");
+    assert_eq!(
+        verification.verification_status,
+        VerificationStatus::Mismatch
+    );
+    let report_path = verification
+        .report_path
+        .as_ref()
+        .expect("conflict should still write a report");
+    let detailed = fs::read_to_string(report_path).unwrap();
+    assert!(detailed.contains("duplicate actor-link target"));
 
     fs::remove_dir_all(source_dir).unwrap();
     fs::remove_dir_all(actors_root).unwrap();
@@ -435,6 +692,126 @@ fn actor_links_preview_warns_when_nfo_has_no_actor() {
 // ── delete-ad-files tests ────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn yaml_rules_drive_compatible_preview_and_apply_matching() {
+    let yaml = r#"
+version: 1
+rules:
+  - pattern: "offer.*"
+  - pattern: "disabled*"
+    enabled: false
+"#;
+    let active_rules = ActiveRuleSet::from_yaml(yaml, false).unwrap();
+    let source_dir = unique_temp_dir("yaml-rules-preview-apply");
+    write_file(&source_dir.join("OFFER.HTML"), b"ad");
+    write_file(&source_dir.join("offerXhtml"), b"literal-dot");
+    write_file(&source_dir.join("disabled-offer.html"), b"disabled");
+
+    let preview = ApplicationServices::new()
+        .operations()
+        .run(OperationsRequest::preview_with_rules(
+            source_dir.clone(),
+            vec![OperationType::DeleteAdFiles],
+            active_rules.clone(),
+        ))
+        .await;
+    assert_eq!(preview.summary.planned_actions, 1);
+    assert!(source_dir.join("OFFER.HTML").exists());
+
+    let apply = ApplicationServices::new()
+        .operations()
+        .run(OperationsRequest::apply_with_rules(
+            source_dir.clone(),
+            vec![OperationType::DeleteAdFiles],
+            active_rules,
+        ))
+        .await;
+    assert_eq!(apply.summary.applied_actions, 1);
+    assert!(!source_dir.join("OFFER.HTML").exists());
+    assert!(source_dir.join("offerXhtml").exists());
+    assert!(source_dir.join("disabled-offer.html").exists());
+
+    fs::remove_dir_all(source_dir).unwrap();
+}
+
+#[tokio::test]
+async fn explicitly_confirmed_empty_yaml_rule_set_is_a_safe_noop() {
+    let active_rules = ActiveRuleSet::from_yaml("version: 1\nrules: []\n", true).unwrap();
+    let source_dir = unique_temp_dir("yaml-rules-empty");
+    write_file(&source_dir.join("新片首发每天更新.txt"), b"ad");
+
+    let report = ApplicationServices::new()
+        .operations()
+        .run(OperationsRequest::apply_with_rules(
+            source_dir.clone(),
+            vec![OperationType::DeleteAdFiles],
+            active_rules,
+        ))
+        .await;
+
+    assert_eq!(report.summary.applied_actions, 0);
+    assert!(source_dir.join("新片首发每天更新.txt").exists());
+    fs::remove_dir_all(source_dir).unwrap();
+}
+
+#[tokio::test]
+async fn cli_rejects_invalid_yaml_before_preview_or_apply() {
+    let source_dir = unique_temp_dir("yaml-rules-invalid-source");
+    let rules_dir = unique_temp_dir("yaml-rules-invalid-config");
+    let rules_path = rules_dir.join("rules.yaml");
+    write_file(&source_dir.join("offer.html"), b"keep");
+    write_file(&rules_path, b"version: 1\nrules: [not valid");
+
+    for apply in [false, true] {
+        let mut argv = vec![
+            "rust-jav".to_string(),
+            "ops".to_string(),
+            "--dir".to_string(),
+            source_dir.display().to_string(),
+            "--rules".to_string(),
+            rules_path.display().to_string(),
+            "--op".to_string(),
+            "delete-ad-files".to_string(),
+        ];
+        if apply {
+            argv.push("--apply".to_string());
+        }
+        let error = resolve_run_request(Cli::try_parse_from(argv).unwrap())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid rule set YAML"));
+        assert!(source_dir.join("offer.html").exists());
+    }
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(rules_dir).unwrap();
+}
+
+#[tokio::test]
+async fn cli_requires_confirmation_for_empty_yaml_rule_set() {
+    let source_dir = unique_temp_dir("yaml-rules-empty-cli-source");
+    let rules_dir = unique_temp_dir("yaml-rules-empty-cli-config");
+    let rules_path = rules_dir.join("rules.yaml");
+    write_file(&rules_path, b"version: 1\nrules: []\n");
+
+    let cli = Cli::try_parse_from([
+        "rust-jav",
+        "ops",
+        "--dir",
+        source_dir.to_str().unwrap(),
+        "--rules",
+        rules_path.to_str().unwrap(),
+        "--op",
+        "delete-ad-files",
+    ])
+    .unwrap();
+    let error = resolve_run_request(cli).await.unwrap_err();
+    assert!(error.to_string().contains("--confirm-empty-rules"));
+
+    fs::remove_dir_all(source_dir).unwrap();
+    fs::remove_dir_all(rules_dir).unwrap();
+}
+
+#[tokio::test]
 async fn delete_ad_files_preview_plans_matched_files_without_deleting() {
     let source_dir = unique_temp_dir("delete-ad-preview");
     write_file(&source_dir.join("新片首发每天更新.txt"), b"ad");
@@ -505,6 +882,30 @@ async fn delete_ad_files_apply_deletes_matching_video_file() {
         "ad video deleted"
     );
     assert!(source_dir.join("PRED-456.mp4").exists(), "real video kept");
+
+    fs::remove_dir_all(source_dir).unwrap();
+}
+
+#[tokio::test]
+async fn delete_ad_files_apply_requires_manual_confirmation_when_verified() {
+    let source_dir = unique_temp_dir("delete-ad-manual-confirm");
+    write_file(&source_dir.join("新片首发每天更新.txt"), b"ad");
+    write_file(&source_dir.join("PRED-456.mp4"), b"real-video");
+
+    let report =
+        execute_operations_command(source_dir.clone(), vec![OperationType::DeleteAdFiles], true)
+            .await;
+
+    let verification = report
+        .verification
+        .as_ref()
+        .expect("destructive apply should include verification summary");
+    assert_eq!(verification.verification_status, VerificationStatus::Ok);
+    assert_eq!(
+        verification.approval_status,
+        ApprovalStatus::ManualConfirmRequired
+    );
+    assert_eq!(verification.exit_code, 10);
 
     fs::remove_dir_all(source_dir).unwrap();
 }

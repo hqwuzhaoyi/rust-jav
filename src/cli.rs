@@ -20,6 +20,40 @@ pub enum Command {
     Ops(OpsArgs),
     /// Preview or apply actor directory hard links derived from NFO metadata
     ActorLinks(ActorLinksArgs),
+    /// Check which movie directories are missing NFO metadata files
+    NfoCheck(NfoCheckArgs),
+    /// Run the independently deployable Management Interface
+    Serve(ServeArgs),
+    /// Configure the single local Management Interface Administrator
+    Administrator(AdministratorArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ServeArgs {
+    /// YAML file containing non-secret server settings
+    #[arg(long, default_value = "management.yaml")]
+    pub config: PathBuf,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AdministratorArgs {
+    #[command(subcommand)]
+    pub action: AdministratorAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum AdministratorAction {
+    /// Create a one-use browser initialization link
+    Init(AdministratorConfigArgs),
+    /// Reset the password from RUST_JAV_ADMIN_PASSWORD
+    ResetPassword(AdministratorConfigArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AdministratorConfigArgs {
+    /// YAML file containing non-secret server settings
+    #[arg(long, default_value = "management.yaml")]
+    pub config: PathBuf,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -46,6 +80,14 @@ pub struct OpsArgs {
     /// Limit execution to one or more specific operations
     #[arg(long = "op", value_enum)]
     pub ops: Vec<CliOperation>,
+
+    /// Load the Active Rule Set from a versioned YAML document
+    #[arg(long)]
+    pub rules: Option<PathBuf>,
+
+    /// Explicitly allow an Active Rule Set with no enabled rules
+    #[arg(long, requires = "rules")]
+    pub confirm_empty_rules: bool,
 }
 
 impl OpsArgs {
@@ -75,6 +117,29 @@ pub struct ActorLinksArgs {
     /// Emit machine-readable JSON output
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct NfoCheckArgs {
+    /// Source directory containing movie subdirectories
+    #[arg(short = 'd', long)]
+    pub dir: PathBuf,
+
+    /// Only check top-level subdirectories (default: 2 levels deep)
+    #[arg(long, default_value_t = 2)]
+    pub max_depth: usize,
+
+    /// Skip directories matching these names (can be repeated)
+    #[arg(long)]
+    pub skip: Vec<String>,
+
+    /// Emit machine-readable JSON output
+    #[arg(long)]
+    pub json: bool,
+
+    /// Output movie codes only (one per line), useful for piping to other tools
+    #[arg(long)]
+    pub codes_only: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]

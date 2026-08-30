@@ -96,6 +96,7 @@ pub struct OperationExecutor {
     source_dir: PathBuf,
     /// Whether to run in dry-run mode (simulation)
     dry_run: bool,
+    active_rules: crate::active_rules::ActiveRuleSet,
 }
 
 impl OperationExecutor {
@@ -104,6 +105,19 @@ impl OperationExecutor {
         Self {
             source_dir,
             dry_run,
+            active_rules: crate::active_rules::ActiveRuleSet::embedded(),
+        }
+    }
+
+    pub fn with_rules(
+        source_dir: PathBuf,
+        dry_run: bool,
+        active_rules: crate::active_rules::ActiveRuleSet,
+    ) -> Self {
+        Self {
+            source_dir,
+            dry_run,
+            active_rules,
         }
     }
 
@@ -354,24 +368,15 @@ impl OperationExecutor {
 
     // === Ad-file helpers ===
 
-    /// Return the list of ad-patterns loaded from the embedded patterns.txt.
-    fn ad_patterns() -> Vec<String> {
-        if let Some(guard) = crate::config::get_config() {
-            guard.patterns.clone()
-        } else {
-            // Fall back to the embedded static patterns when global config is not initialised.
-            ad_patterns::embedded_patterns()
-        }
-    }
-
     /// Walk `source_dir` recursively and collect every file whose name matches at least one
     /// ad-pattern.  Video files are **not** excluded — spec decision #6.
     async fn find_ad_files(&self) -> Vec<PathBuf> {
-        let patterns = Self::ad_patterns();
-        let regexes = ad_patterns::compile_patterns(&patterns);
-
         let mut matches = Vec::new();
-        Self::walk_files_for_ad(&self.source_dir, &regexes, &mut matches);
+        Self::walk_files_for_ad(
+            &self.source_dir,
+            self.active_rules.compiled_patterns(),
+            &mut matches,
+        );
         matches
     }
 
@@ -428,7 +433,7 @@ impl OperationExecutor {
                     kind: "delete-file".to_string(),
                     source: Some(file),
                     target: None,
-                    reason: Some("filename matches ad/spam pattern".to_string()),
+                    reason: Some("basename matches an active Deletion Rule".to_string()),
                 })
                 .collect(),
             warnings,
