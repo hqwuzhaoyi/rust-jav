@@ -1,6 +1,6 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 import { App } from "./main";
@@ -171,6 +171,18 @@ describe("Active Rule Set settings", () => {
     );
     await userEvent.click(
       screen.getByRole("button", { name: "Save Active Rule Set" }),
+    );
+    expect(
+      requests.some(
+        (request) =>
+          request.url === "/api/v1/rules/active" && request.method === "PUT",
+      ),
+    ).toBe(false);
+    const dialog = await screen.findByRole("dialog", {
+      name: "Activate Rule Set",
+    });
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Activate Rule Set" }),
     );
     expect(
       requests.some(

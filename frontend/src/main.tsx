@@ -27,9 +27,21 @@ import { EASE_OUT } from "./lib/ease";
 import "./style.css";
 import "./design-system.css";
 type View = "loading" | "initialize" | "login" | "ready";
+type Navigation =
+  | "assets"
+  | "recent"
+  | "exceptions"
+  | "actors"
+  | "deletion"
+  | "tasks"
+  | "settings";
 const DEFAULT_RULE_SOURCE =
   "https://raw.githubusercontent.com/hqwuzhaoyi/rust-jav/feature/web-jellyfin-truenas/rules.yaml";
 type Validation = { valid: true; empty: boolean; yaml: string } | null;
+type RuleActivation = { yaml: string; empty: boolean } | null;
+type JellyfinBaseline = { url: string; libraries: string };
+type JellyfinLoadState = "idle" | "loading" | "ready" | "error";
+const EMPTY_JELLYFIN_BASELINE: JellyfinBaseline = { url: "", libraries: "" };
 type AssetState = "normal" | "synchronizing" | "exception";
 type Asset = {
   id: string;
@@ -268,6 +280,13 @@ function useMobileBreakpoint() {
   }, []);
   return mobile;
 }
+function normalizeLibraryIds(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join(", ");
+}
 function actorRoute(name: string) {
   const bytes = new TextEncoder().encode(name);
   let binary = "";
@@ -314,15 +333,9 @@ export function App() {
     [storage, setStorage] = useState<StorageHealth | null>(null),
     [storageOpen, setStorageOpen] = useState(false),
     [page, setPage] = useState(initialGalleryState.page),
-    [nav, setNav] = useState<
-      | "assets"
-      | "recent"
-      | "exceptions"
-      | "actors"
-      | "deletion"
-      | "tasks"
-      | "settings"
-    >(actorNameFromPath() || isActorListPath() ? "actors" : "assets");
+    [nav, setNav] = useState<Navigation>(
+      actorNameFromPath() || isActorListPath() ? "actors" : "assets",
+    );
   const [tasks, setTasks] = useState<Task[]>([]),
     [taskTotal, setTaskTotal] = useState(0),
     [hasMoreTasks, setHasMoreTasks] = useState(false),
@@ -345,14 +358,37 @@ export function App() {
   const assetRequest = useRef(0);
   const detailRequest = useRef(0);
   const [yaml, setYaml] = useState("");
+  const [activeYaml, setActiveYaml] = useState("");
   const [sourceUrl, setSourceUrl] = useState(DEFAULT_RULE_SOURCE);
   const [editing, setEditing] = useState(false);
   const [validation, setValidation] = useState<Validation>(null);
   const [rulesMessage, setRulesMessage] = useState("");
+  const [rulesError, setRulesError] = useState("");
+  const [rulesPending, setRulesPending] = useState<
+    "download" | "validate" | "activate" | null
+  >(null);
+  const [ruleActivation, setRuleActivation] = useState<RuleActivation>(null);
+  const ruleHeadingRef = useRef<HTMLHeadingElement>(null);
+  const focusRuleHeadingAfterActivationRef = useRef(false);
   const [jfUrl, setJfUrl] = useState("");
   const [jfLibraries, setJfLibraries] = useState("");
   const [jfKey, setJfKey] = useState("");
   const [jfKeyConfigured, setJfKeyConfigured] = useState(false);
+  const [jfBaseline, setJfBaseline] = useState<JellyfinBaseline>(EMPTY_JELLYFIN_BASELINE);
+  const [jfLoadState, setJfLoadState] = useState<JellyfinLoadState>("idle");
+  const [jfSaving, setJfSaving] = useState(false);
+  const [jfError, setJfError] = useState("");
+  const [pendingNavigation, setPendingNavigation] = useState<{
+    run: () => void;
+  } | null>(null);
+  const rulesLoadGeneration = useRef(0);
+  const rulesChangeGeneration = useRef(0);
+  const jellyfinLoadGeneration = useRef(0);
+  const jellyfinChangeGeneration = useRef(0);
+  const navRef = useRef<Navigation>(nav);
+  const settingsDirtyRef = useRef(false);
+  const restoringSettingsPopRef = useRef(false);
+  const allowSettingsPopRef = useRef(false);
   const [candidates, setCandidates] = useState<Candidate[]>([]),
     [selected, setSelected] = useState<string[]>([]),
     [plan, setPlan] = useState<DeletionPlan | null>(null),
@@ -385,6 +421,12 @@ export function App() {
   useEffect(() => {
     inspectedActorRef.current = inspectedActor;
   }, [inspectedActor]);
+  useEffect(() => {
+    if (ruleActivation || !focusRuleHeadingAfterActivationRef.current) return;
+    focusRuleHeadingAfterActivationRef.current = false;
+    const frame = requestAnimationFrame(() => ruleHeadingRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [ruleActivation]);
   useEffect(() => () => {
     taskSourcesRef.current.forEach((source) => source.close());
     taskSourcesRef.current.clear();
@@ -426,6 +468,23 @@ export function App() {
       void inspectById(selectedId);
     }
     const onPopState = () => {
+      if (restoringSettingsPopRef.current) {
+        restoringSettingsPopRef.current = false;
+        return;
+      }
+      if (allowSettingsPopRef.current) {
+        allowSettingsPopRef.current = false;
+      } else if (navRef.current === "settings" && settingsDirtyRef.current) {
+        restoringSettingsPopRef.current = true;
+        setPendingNavigation({
+          run: () => {
+            allowSettingsPopRef.current = true;
+            history.back();
+          },
+        });
+        history.forward();
+        return;
+      }
       const poppedActor = actorNameFromPath();
       const poppedAssetId = assetIdFromPath();
       setAssetBackActor(null);
@@ -472,37 +531,87 @@ export function App() {
     return () => removeEventListener("popstate", onPopState);
   }, [view]);
   async function loadJellyfinConfig() {
-    const response = await fetch("/api/v1/jellyfin/config");
-    if (response.ok) {
+    const generation = ++jellyfinLoadGeneration.current;
+    const changeGeneration = jellyfinChangeGeneration.current;
+    const mayHydrateDraft = !jfDirty;
+    setJfLoadState("loading");
+    setJfError("");
+    try {
+      const response = await fetch("/api/v1/jellyfin/config");
+      if (!response.ok) throw new Error(await response.text());
       const config = (await response.json().catch(() => null)) as {
-        url?: string;
+        url?: string | null;
         library_ids?: string[];
         api_key_configured?: boolean;
       } | null;
-      if (!config) return;
-      setJfUrl(config.url ?? "");
-      setJfLibraries((config.library_ids ?? []).join(", "));
+      if (!config) throw new Error("Jellyfin configuration could not be loaded.");
+      if (
+        generation !== jellyfinLoadGeneration.current ||
+        changeGeneration !== jellyfinChangeGeneration.current
+      ) return;
+      const baseline = {
+        url: config.url ?? "",
+        libraries: (config.library_ids ?? []).join(", "),
+      };
+      setJfBaseline(baseline);
       setJfKeyConfigured(config.api_key_configured ?? false);
+      if (mayHydrateDraft && changeGeneration === jellyfinChangeGeneration.current) {
+        setJfUrl(baseline.url);
+        setJfLibraries(baseline.libraries);
+        setJfKey("");
+      }
+      setJfLoadState("ready");
+    } catch (error) {
+      if (generation !== jellyfinLoadGeneration.current) return;
+      setJfLoadState("error");
+      setJfError(
+        error instanceof Error && error.message
+          ? error.message
+          : "Jellyfin configuration could not be loaded.",
+      );
     }
   }
   async function saveJellyfin(event: FormEvent) {
     event.preventDefault();
-    const response = await fetch("/api/v1/jellyfin/config", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url: jfUrl,
-        library_ids: jfLibraries
-          .split(",")
-          .map((value) => value.trim())
-          .filter(Boolean),
-        api_key: jfKey,
-      }),
-    });
-    setMessage(
-      response.ok ? "Jellyfin configuration saved." : await response.text(),
-    );
-    if (response.ok) setJfKey("");
+    if (jfSaving) return;
+    const snapshot = {
+      url: jfUrl,
+      libraries: normalizeLibraryIds(jfLibraries),
+      apiKey: jfKey,
+    };
+    const changeGeneration = jellyfinChangeGeneration.current;
+    setJfSaving(true);
+    setJfError("");
+    try {
+      const response = await fetch("/api/v1/jellyfin/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: snapshot.url,
+          library_ids: snapshot.libraries.split(", ").filter(Boolean),
+          api_key: snapshot.apiKey,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error((await response.text()) || "Jellyfin configuration could not be saved.");
+      }
+      setJfBaseline({ url: snapshot.url, libraries: snapshot.libraries });
+      setJfKeyConfigured(jfKeyConfigured || Boolean(snapshot.apiKey));
+      setJfLoadState("ready");
+      if (changeGeneration === jellyfinChangeGeneration.current) {
+        setJfLibraries(snapshot.libraries);
+        setJfKey("");
+      }
+      setMessage("Jellyfin configuration saved.");
+    } catch (error) {
+      setJfError(
+        error instanceof Error && error.message
+          ? error.message
+          : "Jellyfin configuration could not be saved.",
+      );
+    } finally {
+      setJfSaving(false);
+    }
   }
   async function testJellyfin() {
     const response = await fetch("/api/v1/jellyfin/test", {
@@ -670,75 +779,135 @@ export function App() {
     } else setMessage(await r.text());
   }
   async function loadRules() {
-    const response = await fetch("/api/v1/rules/active");
-    if (response.ok) {
+    const generation = ++rulesLoadGeneration.current;
+    const changeGeneration = rulesChangeGeneration.current;
+    setRulesError("");
+    try {
+      const response = await fetch("/api/v1/rules/active");
+      if (!response.ok) throw new Error("Active Rule Set could not be loaded.");
       const body = (await response.json().catch(() => null)) as { yaml?: string } | null;
-      if (typeof body?.yaml === "string") setYaml(body.yaml);
+      if (typeof body?.yaml !== "string")
+        throw new Error("Active Rule Set could not be loaded.");
+      if (
+        generation !== rulesLoadGeneration.current ||
+        changeGeneration !== rulesChangeGeneration.current
+      ) return;
+      setYaml(body.yaml);
+      setActiveYaml(body.yaml);
+    } catch (error) {
+      if (generation !== rulesLoadGeneration.current) return;
+      setRulesError(
+        error instanceof Error ? error.message : "Active Rule Set could not be loaded.",
+      );
     }
   }
   function updateYaml(value: string) {
+    rulesChangeGeneration.current += 1;
     setYaml(value);
     setValidation(null);
     setRulesMessage("");
+    setRulesError("");
   }
   async function downloadProposal() {
+    if (rulesPending) return;
+    setRulesPending("download");
+    setRulesError("");
     setRulesMessage("Downloading proposal…");
-    const response = await fetch("/api/v1/rules/download", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: sourceUrl }),
-    });
-    const body = (await response.json()) as { yaml?: string; error?: string };
-    if (!response.ok || !body.yaml) {
-      setRulesMessage(body.error ?? "Download failed.");
-      return;
+    try {
+      const response = await fetch("/api/v1/rules/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: sourceUrl }),
+      });
+      const body = (await response.json().catch(() => null)) as {
+        yaml?: string;
+        error?: string;
+      } | null;
+      if (!response.ok || !body?.yaml) {
+        throw new Error(body?.error ?? "Download failed.");
+      }
+      updateYaml(body.yaml);
+      setEditing(true);
+      setRulesMessage("Proposal downloaded. Validate it before saving.");
+    } catch (error) {
+      setRulesMessage("");
+      setRulesError(error instanceof Error ? error.message : "Download failed.");
+    } finally {
+      setRulesPending(null);
     }
-    updateYaml(body.yaml);
-    setEditing(true);
-    setRulesMessage("Proposal downloaded. Validate it before saving.");
   }
   async function validateRules() {
+    if (rulesPending) return;
     const candidate = yaml;
+    const changeGeneration = rulesChangeGeneration.current;
+    setRulesPending("validate");
+    setRulesError("");
     setRulesMessage("Validating…");
-    const response = await fetch("/api/v1/rules/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ yaml: candidate }),
-    });
-    const body = (await response.json()) as {
-      valid?: boolean;
-      empty?: boolean;
-      error?: string;
-    };
-    if (!response.ok || !body.valid) {
-      setValidation(null);
-      setRulesMessage(body.error ?? "Validation failed.");
-      return;
-    }
-    setValidation({ valid: true, empty: Boolean(body.empty), yaml: candidate });
-    setRulesMessage(
-      body.empty
-        ? "Valid, but empty. A separate confirmation is required."
-        : "Valid proposal. Ready to save.",
-    );
-  }
-  async function saveRules(confirmEmpty = false) {
-    const response = await fetch("/api/v1/rules/active", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ yaml, confirm_empty: confirmEmpty }),
-    });
-    if (!response.ok) {
-      const body = (await response.json()) as { error?: string };
+    try {
+      const response = await fetch("/api/v1/rules/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ yaml: candidate }),
+      });
+      const body = (await response.json().catch(() => null)) as {
+        valid?: boolean;
+        empty?: boolean;
+        error?: string;
+      } | null;
+      if (!response.ok || !body?.valid) throw new Error(body?.error ?? "Validation failed.");
+      if (changeGeneration !== rulesChangeGeneration.current) return;
+      setValidation({ valid: true, empty: Boolean(body.empty), yaml: candidate });
       setRulesMessage(
-        body.error ??
-          "Save failed; the previous Active Rule Set remains active.",
+        body.empty
+          ? "Valid, but empty. A separate confirmation is required."
+          : "Valid proposal. Ready to save.",
       );
-      return;
+    } catch (error) {
+      setValidation(null);
+      setRulesMessage("");
+      setRulesError(error instanceof Error ? error.message : "Validation failed.");
+    } finally {
+      setRulesPending(null);
     }
-    setEditing(false);
-    setValidation(null);
-    setRulesMessage("Active Rule Set saved atomically.");
+  }
+  function reviewRuleActivation() {
+    if (!validation || validation.yaml !== yaml || rulesPending) return;
+    setRuleActivation({ yaml: validation.yaml, empty: validation.empty });
+  }
+  async function saveRules(candidate: Exclude<RuleActivation, null>) {
+    if (rulesPending) return;
+    setRulesPending("activate");
+    setRulesError("");
+    try {
+      const response = await fetch("/api/v1/rules/active", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ yaml: candidate.yaml, confirm_empty: candidate.empty }),
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(
+          body?.error ?? "Save failed; the previous Active Rule Set remains active.",
+        );
+      }
+      setActiveYaml(candidate.yaml);
+      setEditing(false);
+      setValidation(null);
+      focusRuleHeadingAfterActivationRef.current = true;
+      setRuleActivation(null);
+      setRulesMessage("Active Rule Set saved atomically.");
+    } catch (error) {
+      setRulesError(
+        error instanceof Error && error.message
+          ? error.message
+          : "Save failed; the previous Active Rule Set remains active.",
+      );
+      setRuleActivation(null);
+    } finally {
+      setRulesPending(null);
+    }
   }
   async function loadAssets() {
     const request = ++assetRequest.current;
@@ -1136,6 +1305,26 @@ export function App() {
         .filter((g) => g.items.length),
     [assets],
   );
+  const jfDirty =
+    jfUrl !== jfBaseline.url ||
+    normalizeLibraryIds(jfLibraries) !== jfBaseline.libraries ||
+    jfKey !== "";
+  const settingsDirty = yaml !== activeYaml || jfDirty;
+  navRef.current = nav;
+  settingsDirtyRef.current = settingsDirty;
+  function requestNavigation(run: () => void) {
+    if (nav === "settings" && settingsDirty) {
+      setPendingNavigation({ run });
+      return;
+    }
+    run();
+  }
+  useEffect(() => {
+    if (!settingsDirty) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => event.preventDefault();
+    addEventListener("beforeunload", warnBeforeUnload);
+    return () => removeEventListener("beforeunload", warnBeforeUnload);
+  }, [settingsDirty]);
   if (view === "loading") return <div className="auth ui-foundation">Checking session…</div>;
   if (view === "initialize" || view === "login")
     return (
@@ -1197,10 +1386,12 @@ export function App() {
             aria-current={nav === "assets" ? "page" : undefined}
             className={nav === "assets" ? "active" : ""}
             onClick={() => {
-              setNav("assets");
-              setFilter("");
-              setPage(1);
-              history.pushState({}, "", galleryUrl(query, "", 1));
+              requestNavigation(() => {
+                setNav("assets");
+                setFilter("");
+                setPage(1);
+                history.pushState({}, "", galleryUrl(query, "", 1));
+              });
             }}
           >
             <span><Grid2X2 aria-hidden="true" /></span> 所有资产 <em>{libraryTotal || assets.total}</em>
@@ -1210,10 +1401,12 @@ export function App() {
             aria-current={nav === "recent" ? "page" : undefined}
             className={nav === "recent" ? "active" : ""}
             onClick={() => {
-              setNav("recent");
-              setFilter("");
-              setPage(1);
-              history.pushState({}, "", galleryUrl(query, "", 1));
+              requestNavigation(() => {
+                setNav("recent");
+                setFilter("");
+                setPage(1);
+                history.pushState({}, "", galleryUrl(query, "", 1));
+              });
             }}
           >
             <span><Clock3 aria-hidden="true" /></span> 最近入库
@@ -1222,7 +1415,7 @@ export function App() {
             aria-label="Actors"
             aria-current={nav === "actors" ? "page" : undefined}
             className={nav === "actors" ? "active" : ""}
-            onClick={showActorFolders}
+            onClick={() => requestNavigation(showActorFolders)}
           >
             <span><Users aria-hidden="true" /></span> 演员
             <em>{actors.length}</em>
@@ -1231,7 +1424,7 @@ export function App() {
             aria-label="Deletion Candidates"
             aria-current={nav === "deletion" ? "page" : undefined}
             className={nav === "deletion" ? "active" : ""}
-            onClick={() => setNav("deletion")}
+            onClick={() => requestNavigation(() => setNav("deletion"))}
           >
             <span><Trash2 aria-hidden="true" /></span> 删除候选
           </button>
@@ -1240,7 +1433,7 @@ export function App() {
             aria-label="Management Tasks"
             aria-current={nav === "tasks" ? "page" : undefined}
             className={nav === "tasks" ? "active" : ""}
-            onClick={() => setNav("tasks")}
+            onClick={() => requestNavigation(() => setNav("tasks"))}
           >
             <span><ListTodo aria-hidden="true" /></span> 整理任务
           </button>
@@ -1249,10 +1442,12 @@ export function App() {
             aria-current={nav === "exceptions" ? "page" : undefined}
             className={nav === "exceptions" ? "active" : ""}
             onClick={() => {
-              setNav("exceptions");
-              setFilter("exception");
-              setPage(1);
-              history.pushState({}, "", galleryUrl(query, "exception", 1));
+              requestNavigation(() => {
+                setNav("exceptions");
+                setFilter("exception");
+                setPage(1);
+                history.pushState({}, "", galleryUrl(query, "exception", 1));
+              });
             }}
           >
             <span><AlertTriangle aria-hidden="true" /></span> 异常资产
@@ -1279,7 +1474,11 @@ export function App() {
               : "Filesystem authoritative"}
           </span>
         </div>
-        <button className="signout" onClick={logout} aria-label="Sign out">
+        <button
+          className="signout"
+          onClick={() => requestNavigation(() => void logout())}
+          aria-label="Sign out"
+        >
           <LogOut aria-hidden="true" /> 退出登录
         </button>
       </aside>
@@ -1555,7 +1754,7 @@ export function App() {
           <div className="settings-stack">
             <section className="rules-settings">
               <p className="eyebrow">DELETION RULES</p>
-              <h2>Active Rule Set</h2>
+              <h2 ref={ruleHeadingRef} tabIndex={-1}>Active Rule Set</h2>
               <p>
                 Remote YAML is only a proposal. The server validates and
                 atomically activates it; rules cannot select roots or authorize
@@ -1568,14 +1767,18 @@ export function App() {
                   type="url"
                   placeholder="https://raw.githubusercontent.com/…"
                   value={sourceUrl}
-                  onChange={(event) => setSourceUrl(event.target.value)}
+                  disabled={rulesPending !== null}
+                  onChange={(event) => {
+                    setSourceUrl(event.target.value);
+                    setRulesError("");
+                  }}
                 />
                 <button
                   type="button"
-                  disabled={!sourceUrl}
+                  disabled={!sourceUrl || rulesPending !== null}
                   onClick={downloadProposal}
                 >
-                  Download proposal
+                  {rulesPending === "download" ? "Downloading proposal…" : "Download proposal"}
                 </button>
               </div>
               <label htmlFor="rules-yaml">Active Rule Set YAML</label>
@@ -1583,6 +1786,7 @@ export function App() {
                 id="rules-yaml"
                 rows={18}
                 readOnly={!editing}
+                disabled={rulesPending !== null}
                 value={yaml}
                 onChange={(event) => updateYaml(event.target.value)}
               />
@@ -1599,15 +1803,15 @@ export function App() {
                   </button>
                 )}
                 {editing && (
-                  <button type="button" onClick={validateRules}>
-                    Validate
+                  <button type="button" disabled={rulesPending !== null} onClick={validateRules}>
+                    {rulesPending === "validate" ? "Validating…" : "Validate"}
                   </button>
                 )}
                 {editing && !validation?.empty && (
                   <button
                     type="button"
                     disabled={!validation || validation.yaml !== yaml}
-                    onClick={() => saveRules(false)}
+                    onClick={reviewRuleActivation}
                   >
                     Save Active Rule Set
                   </button>
@@ -1617,7 +1821,7 @@ export function App() {
                     type="button"
                     className="danger"
                     disabled={validation.yaml !== yaml}
-                    onClick={() => saveRules(true)}
+                    onClick={reviewRuleActivation}
                   >
                     Confirm empty and save
                   </button>
@@ -1628,8 +1832,16 @@ export function App() {
                   {rulesMessage}
                 </p>
               )}
+              {rulesError && (
+                <p role="alert" className="notice settings-error">
+                  {rulesError}
+                </p>
+              )}
             </section>
-            <section className="task-create jellyfin-settings">
+            <section
+              className="task-create jellyfin-settings"
+              aria-busy={jfLoadState === "loading" ? "true" : undefined}
+            >
               <p className="eyebrow">MEDIA SERVER</p>
               <h2>Jellyfin</h2>
               <p>
@@ -1637,12 +1849,18 @@ export function App() {
                 stays on this server.
               </p>
               <form className="task-form" onSubmit={saveJellyfin}>
+                {jfDirty && <p className="settings-dirty">Unsaved changes</p>}
                 <label htmlFor="jellyfin-url">Server URL</label>
                 <input
                   id="jellyfin-url"
                   type="url"
                   value={jfUrl}
-                  onChange={(event) => setJfUrl(event.target.value)}
+                  disabled={jfSaving}
+                  onChange={(event) => {
+                    jellyfinChangeGeneration.current += 1;
+                    setJfUrl(event.target.value);
+                    setJfError("");
+                  }}
                   placeholder="http://jellyfin:8096"
                   required
                 />
@@ -1650,7 +1868,12 @@ export function App() {
                 <input
                   id="jellyfin-libraries"
                   value={jfLibraries}
-                  onChange={(event) => setJfLibraries(event.target.value)}
+                  disabled={jfSaving}
+                  onChange={(event) => {
+                    jellyfinChangeGeneration.current += 1;
+                    setJfLibraries(event.target.value);
+                    setJfError("");
+                  }}
                   placeholder="movies, jav"
                   required
                 />
@@ -1660,16 +1883,33 @@ export function App() {
                   type="password"
                   autoComplete="off"
                   value={jfKey}
-                  onChange={(event) => setJfKey(event.target.value)}
+                  disabled={jfSaving}
+                  onChange={(event) => {
+                    jellyfinChangeGeneration.current += 1;
+                    setJfKey(event.target.value);
+                    setJfError("");
+                  }}
                   required={!jfKeyConfigured}
                 />
-                <button type="submit">Save Jellyfin</button>
+                <button type="submit" disabled={!jfDirty || jfSaving}>
+                  {jfSaving ? "Saving Jellyfin…" : "Save Jellyfin"}
+                </button>
+                {jfError && (
+                  <p role="alert" className="notice settings-error">
+                    {jfError}
+                  </p>
+                )}
+                {jfLoadState === "error" && (
+                  <button type="button" className="settings-retry" onClick={() => void loadJellyfinConfig()}>
+                    Retry Jellyfin settings
+                  </button>
+                )}
               </form>
               <div className="jellyfin-actions">
-                <button onClick={() => void testJellyfin()}>
+                <button type="button" disabled={jfDirty || jfSaving} onClick={() => void testJellyfin()}>
                   Test connection
                 </button>
-                <button onClick={() => void refreshJellyfin()}>
+                <button type="button" disabled={jfDirty || jfSaving} onClick={() => void refreshJellyfin()}>
                   Refresh Jellyfin
                 </button>
               </div>
@@ -1805,6 +2045,93 @@ export function App() {
         onDismiss={() => setMessage("")}
       />
       <MorphingModal
+        viewId={ruleActivation ? (ruleActivation.empty ? "activate-empty-rules" : "activate-rules") : null}
+        placement="center"
+        className="settings-confirmation-modal"
+        onClose={() => {
+          if (!rulesPending) setRuleActivation(null);
+        }}
+      >
+        {ruleActivation && (
+          <section
+            className="confirm-dialog settings-confirmation"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rule-activation-title"
+            aria-describedby="rule-activation-description"
+          >
+            <p className="eyebrow">
+              {ruleActivation.empty ? "HIGH-RISK CHANGE" : "RULE PROPOSAL"}
+            </p>
+            <h2 id="rule-activation-title">
+              {ruleActivation.empty ? "Activate empty Rule Set" : "Activate Rule Set"}
+            </h2>
+            <p id="rule-activation-description">
+              {ruleActivation.empty
+                ? "This Rule Set has no enabled rules. Deletion candidates will remain empty until another Rule Set is activated."
+                : "The validated proposal will replace the current Active Rule Set."}
+            </p>
+            <pre className="rule-activation-preview">{ruleActivation.yaml}</pre>
+            <div className="dialog-actions">
+              <button
+                type="button"
+                disabled={rulesPending === "activate"}
+                onClick={() => setRuleActivation(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={ruleActivation.empty ? "danger" : ""}
+                disabled={rulesPending === "activate"}
+                onClick={() => void saveRules(ruleActivation)}
+              >
+                {rulesPending === "activate"
+                  ? "Activating…"
+                  : ruleActivation.empty
+                    ? "Activate empty Rule Set"
+                    : "Activate Rule Set"}
+              </button>
+            </div>
+          </section>
+        )}
+      </MorphingModal>
+      <MorphingModal
+        viewId={pendingNavigation ? "discard-settings" : null}
+        placement="center"
+        className="settings-confirmation-modal"
+        onClose={() => setPendingNavigation(null)}
+      >
+        {pendingNavigation && (
+          <section
+            className="confirm-dialog settings-confirmation"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="discard-settings-title"
+          >
+            <p className="eyebrow">UNSAVED SETTINGS</p>
+            <h2 id="discard-settings-title">Discard unsaved changes?</h2>
+            <p>Your Rule and Jellyfin edits have not been saved.</p>
+            <div className="dialog-actions">
+              <button type="button" onClick={() => setPendingNavigation(null)}>
+                Keep editing
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => {
+                  const navigation = pendingNavigation.run;
+                  setPendingNavigation(null);
+                  navigation();
+                }}
+              >
+                Discard changes
+              </button>
+            </div>
+          </section>
+        )}
+      </MorphingModal>
+      <MorphingModal
         viewId={storageOpen && storage ? "media-storage" : null}
         placement="center"
         className="storage-modal"
@@ -1834,10 +2161,12 @@ export function App() {
           aria-current={nav === "assets" || nav === "recent" || nav === "exceptions" ? "page" : undefined}
           className={nav === "assets" || nav === "recent" || nav === "exceptions" ? "active" : ""}
           onClick={() => {
-            setNav("assets");
-            setFilter("");
-            setPage(1);
-            history.pushState({}, "", galleryUrl(query, "", 1));
+            requestNavigation(() => {
+              setNav("assets");
+              setFilter("");
+              setPage(1);
+              history.pushState({}, "", galleryUrl(query, "", 1));
+            });
           }}
         >
           <span><Grid2X2 aria-hidden="true" /></span>图库
@@ -1846,7 +2175,7 @@ export function App() {
           aria-label="Actors"
           aria-current={nav === "actors" ? "page" : undefined}
           className={nav === "actors" ? "active" : ""}
-          onClick={showActorFolders}
+          onClick={() => requestNavigation(showActorFolders)}
         >
           <span><Users aria-hidden="true" /></span>演员
         </button>
@@ -1854,7 +2183,7 @@ export function App() {
           aria-label="Delete"
           aria-current={nav === "deletion" ? "page" : undefined}
           className={nav === "deletion" ? "active" : ""}
-          onClick={() => setNav("deletion")}
+          onClick={() => requestNavigation(() => setNav("deletion"))}
         >
           <span><Trash2 aria-hidden="true" /></span>删除
         </button>
@@ -1862,7 +2191,7 @@ export function App() {
           aria-label="Tasks"
           aria-current={nav === "tasks" ? "page" : undefined}
           className={nav === "tasks" ? "active" : ""}
-          onClick={() => setNav("tasks")}
+          onClick={() => requestNavigation(() => setNav("tasks"))}
         >
           <span><ListTodo aria-hidden="true" /></span>任务
         </button>

@@ -1937,6 +1937,17 @@ async fn put_jellyfin_config(
     let Ok(mut secrets) = state.store.load() else {
         return StatusCode::INTERNAL_SERVER_ERROR;
     };
+    if input.api_key.trim().is_empty() && secrets.jellyfin_api_key.is_some() {
+        let Ok(existing_config) = load_jellyfin_config(&state) else {
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        };
+        let submitted_url = input.url.trim().trim_end_matches('/');
+        let same_server = existing_config
+            .is_some_and(|config| config.url.trim().trim_end_matches('/') == submitted_url);
+        if !same_server {
+            return StatusCode::BAD_REQUEST;
+        }
+    }
     let effective_key = if input.api_key.trim().is_empty() {
         secrets.jellyfin_api_key.clone()
     } else {
@@ -1990,7 +2001,13 @@ async fn get_jellyfin_config(
         .and_then(|s| s.jellyfin_api_key)
         .is_some();
     Json(match config {
-        Some(config) => serde_json::json!({"url":config.url,"library_ids":config.library_ids,"api_key_configured":configured}),
+        Some(config) => {
+            let public_url = Url::parse(&config.url)
+                .ok()
+                .filter(|url| url.username().is_empty() && url.password().is_none())
+                .map(|_| config.url);
+            serde_json::json!({"url":public_url,"library_ids":config.library_ids,"api_key_configured":configured})
+        }
         None => serde_json::json!({"url":null,"library_ids":[],"api_key_configured":false}),
     }).into_response()
 }

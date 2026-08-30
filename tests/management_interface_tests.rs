@@ -2352,6 +2352,138 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
 }
 
 #[tokio::test]
+async fn jellyfin_configuration_rejects_url_userinfo_and_get_exposes_only_safe_fields() {
+    let (_dir, config) = fixture();
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config.clone(), TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+    let rejected = json_request(
+        app(state.clone()),
+        "PUT",
+        "/api/v1/jellyfin/config",
+        &serde_json::json!({
+            "url": "http://embedded-user:embedded-password@jellyfin:8096",
+            "library_ids": ["jav"],
+            "api_key": "server-only-api-key"
+        })
+        .to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+
+    let connection = rusqlite::Connection::open(&config.database_file).unwrap();
+    connection
+        .execute(
+            "INSERT INTO jellyfin_config(singleton,url,library_ids) VALUES(1,?1,?2)",
+            rusqlite::params![
+                "http://legacy-user:legacy-password@jellyfin:8096",
+                "[\"jav\"]"
+            ],
+        )
+        .unwrap();
+
+    let returned = json_request(
+        app(state),
+        "GET",
+        "/api/v1/jellyfin/config",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(returned.status(), StatusCode::OK);
+    let body = to_bytes(returned.into_body(), usize::MAX).await.unwrap();
+    let text = std::str::from_utf8(&body).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let mut fields = document
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    fields.sort_unstable();
+    assert_eq!(fields, ["api_key_configured", "library_ids", "url"]);
+    for credential in [
+        "embedded-user",
+        "embedded-password",
+        "legacy-user",
+        "legacy-password",
+        "server-only-api-key",
+        "api_key\"",
+        "server_key",
+        "credential",
+    ] {
+        assert!(!text.contains(credential), "GET leaked {credential}");
+    }
+}
+
+#[tokio::test]
+async fn jellyfin_server_url_change_requires_a_new_api_key() {
+    let (_dir, state, cookie) = authenticated_fixture().await;
+    let original_url = "http://jellyfin-a:8096";
+    let configured = json_request(
+        app(state.clone()),
+        "PUT",
+        "/api/v1/jellyfin/config",
+        &serde_json::json!({
+            "url": original_url,
+            "library_ids": ["jav"],
+            "api_key": "server-a-key"
+        })
+        .to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(configured.status(), StatusCode::NO_CONTENT);
+
+    let rejected = json_request(
+        app(state.clone()),
+        "PUT",
+        "/api/v1/jellyfin/config",
+        &serde_json::json!({
+            "url": "http://jellyfin-b:8096",
+            "library_ids": ["jav"],
+            "api_key": ""
+        })
+        .to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+
+    let returned = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/jellyfin/config",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let returned: serde_json::Value =
+        serde_json::from_slice(&to_bytes(returned.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(returned["url"], original_url);
+
+    let preserved = json_request(
+        app(state),
+        "PUT",
+        "/api/v1/jellyfin/config",
+        &serde_json::json!({
+            "url": original_url,
+            "library_ids": ["jav", "movies"],
+            "api_key": ""
+        })
+        .to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(preserved.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 async fn embedded_ui_preserves_library_and_tasks_while_adding_jellyfin_controls() {
     let (_dir, config) = fixture();
     let javascript = app(AppState::new(config, TestClock(100)).unwrap())

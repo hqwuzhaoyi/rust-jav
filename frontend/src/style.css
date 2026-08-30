@@ -1317,6 +1317,37 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   gap: 10px;
   margin-top: 14px;
 }
+.settings-dirty {
+  margin: 12px 0 0;
+  color: var(--ds-warning);
+  font-size: 11px;
+  font-weight: 700;
+}
+.settings-error {
+  color: var(--ds-danger);
+  border-color: color-mix(in srgb, var(--ds-danger) 22%, transparent);
+  background: var(--ds-danger-soft);
+}
+.settings-confirmation-modal {
+  max-width: 520px;
+}
+.settings-confirmation {
+  width: 100%;
+  max-height: min(680px, calc(100vh - 48px));
+  overflow-y: auto;
+}
+.rule-activation-preview {
+  max-height: 260px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 10px;
+  color: var(--ds-text);
+  background: var(--ds-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.45;
+}
 .jellyfin-actions button,
 .jellyfin-status a {
   padding: 10px 14px;
@@ -1480,6 +1511,25 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   }
   .confirm-dialog {
     padding: 20px;
+  }
+  .rule-actions,
+  .jellyfin-actions,
+  .dialog-actions {
+    flex-direction: column;
+  }
+  .rule-actions > *,
+  .jellyfin-actions > button,
+  .dialog-actions > button {
+    width: 100%;
+    min-height: 44px;
+  }
+  .settings-confirmation-modal {
+    max-width: none;
+  }
+  .settings-confirmation {
+    max-height: min(82vh, 680px);
+    padding-bottom: calc(20px + env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
   }
 }
 .operation-heading {

@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub enum Error {
     #[error("invalid Jellyfin URL: {0}")]
     InvalidUrl(#[from] url::ParseError),
+    #[error("Jellyfin URL must not contain user credentials")]
+    CredentialsInUrl,
     #[error("Jellyfin request failed: {0}")]
     Request(#[from] reqwest::Error),
     #[error("configured Jellyfin library was not returned by the server: {0}")]
@@ -139,6 +141,9 @@ pub struct JellyfinClient {
 impl JellyfinClient {
     pub fn new(mut config: JellyfinConfig, api_key: String) -> Result<Self, Error> {
         let mut base_url = Url::parse(config.url.trim())?;
+        if !base_url.username().is_empty() || base_url.password().is_some() {
+            return Err(Error::CredentialsInUrl);
+        }
         if !base_url.path().ends_with('/') {
             base_url.set_path(&format!("{}/", base_url.path().trim_end_matches('/')));
         }
