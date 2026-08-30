@@ -73,6 +73,7 @@ pub struct NewTask {
     pub task_type: String,
     pub media_root: String,
     pub kind: TaskKind,
+    pub source_plan_id: Option<String>,
 }
 
 impl NewTask {
@@ -81,6 +82,7 @@ impl NewTask {
             task_type: task_type.into(),
             media_root: media_root.into(),
             kind: TaskKind::Preview,
+            source_plan_id: None,
         }
     }
 
@@ -89,6 +91,7 @@ impl NewTask {
             task_type: task_type.into(),
             media_root: media_root.into(),
             kind: TaskKind::Mutation,
+            source_plan_id: None,
         }
     }
 }
@@ -100,6 +103,22 @@ pub struct TaskItem {
     pub path: Option<String>,
     pub status: String,
     pub message: Option<String>,
+    pub source_path: Option<String>,
+    pub quarantine_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartedTaskItem {
+    pub id: i64,
+    pub quarantine_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningMutationItem {
+    pub id: i64,
+    pub media_root: String,
+    pub source_path: Option<String>,
+    pub quarantine_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +135,9 @@ pub struct ManagementTask {
     pub plan_expires_at: Option<u64>,
     pub operation_plan: Option<serde_json::Value>,
     pub report: Option<serde_json::Value>,
+    pub source_plan_id: Option<String>,
+    pub plan_consumed_at: Option<u64>,
+    pub planned_item_count: Option<u64>,
     pub items: Vec<TaskItem>,
 }
 
@@ -135,11 +157,13 @@ impl TaskStore {
                id TEXT PRIMARY KEY, task_type TEXT NOT NULL, media_root TEXT NOT NULL,
                kind TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL,
                started_at INTEGER, finished_at INTEGER, error TEXT,
-               plan_expires_at INTEGER, operation_plan TEXT, report TEXT
+               plan_expires_at INTEGER, operation_plan TEXT, report TEXT,
+               source_plan_id TEXT, plan_consumed_at INTEGER, planned_item_count INTEGER
              );
              CREATE TABLE IF NOT EXISTS management_task_items (
                id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
                kind TEXT NOT NULL, path TEXT, status TEXT NOT NULL, message TEXT,
+               source_path TEXT, quarantine_token TEXT,
                FOREIGN KEY(task_id) REFERENCES management_tasks(id) ON DELETE CASCADE
              );
              CREATE TABLE IF NOT EXISTS deletion_audit_records (
@@ -152,6 +176,11 @@ impl TaskStore {
             "ALTER TABLE management_tasks ADD COLUMN plan_expires_at INTEGER",
             "ALTER TABLE management_tasks ADD COLUMN operation_plan TEXT",
             "ALTER TABLE management_tasks ADD COLUMN report TEXT",
+            "ALTER TABLE management_tasks ADD COLUMN source_plan_id TEXT",
+            "ALTER TABLE management_tasks ADD COLUMN plan_consumed_at INTEGER",
+            "ALTER TABLE management_tasks ADD COLUMN planned_item_count INTEGER",
+            "ALTER TABLE management_task_items ADD COLUMN source_path TEXT",
+            "ALTER TABLE management_task_items ADD COLUMN quarantine_token TEXT",
         ] {
             let _ = connection.execute(migration, []);
         }
@@ -165,8 +194,8 @@ impl TaskStore {
     pub fn create(&self, input: NewTask, now: u64) -> Result<ManagementTask, Error> {
         let id = task_id();
         self.connection()?.execute(
-            "INSERT INTO management_tasks (id, task_type, media_root, kind, status, created_at) VALUES (?1, ?2, ?3, ?4, 'queued', ?5)",
-            params![id, input.task_type, input.media_root, input.kind.as_str(), now],
+            "INSERT INTO management_tasks (id, task_type, media_root, kind, status, created_at, source_plan_id) VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6)",
+            params![id, input.task_type, input.media_root, input.kind.as_str(), now, input.source_plan_id],
         )?;
         Ok(self.get(&id)?.expect("inserted task must exist"))
     }
@@ -210,15 +239,95 @@ impl TaskStore {
         Ok(())
     }
 
+    pub fn start_item(
+        &self,
+        task_id: &str,
+        kind: &str,
+        path: Option<&str>,
+        source_path: Option<&str>,
+    ) -> Result<StartedTaskItem, Error> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO management_task_items (task_id, kind, path, status, source_path) VALUES (?1, ?2, ?3, 'running', ?4)",
+            params![task_id, kind, path, source_path],
+        )?;
+        let id = transaction.last_insert_rowid();
+        let quarantine_token = format!(".rust-jav-quarantine-item-{id}");
+        transaction.execute(
+            "UPDATE management_task_items SET quarantine_token=?2 WHERE id=?1",
+            params![id, quarantine_token],
+        )?;
+        transaction.commit()?;
+        Ok(StartedTaskItem {
+            id,
+            quarantine_token,
+        })
+    }
+
+    pub fn running_mutation_items(&self) -> Result<Vec<RunningMutationItem>, Error> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT i.id, t.media_root, i.source_path, i.quarantine_token
+             FROM management_task_items i JOIN management_tasks t ON t.id=i.task_id
+             WHERE t.kind='mutation' AND t.status IN ('queued','running') AND i.status='running'
+             ORDER BY i.id",
+        )?;
+        let items = statement
+            .query_map([], |row| {
+                Ok(RunningMutationItem {
+                    id: row.get(0)?,
+                    media_root: row.get(1)?,
+                    source_path: row.get(2)?,
+                    quarantine_token: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(items)
+    }
+
+    pub fn interrupt_item(&self, item_id: i64, message: &str) -> Result<(), Error> {
+        self.connection()?.execute(
+            "UPDATE management_task_items SET status='interrupted', message=?2 WHERE id=?1 AND status='running'",
+            params![item_id, message],
+        )?;
+        Ok(())
+    }
+
+    pub fn complete_item(
+        &self,
+        task_id: &str,
+        item_id: i64,
+        status: &str,
+        message: Option<&str>,
+    ) -> Result<(), Error> {
+        let updated = self.connection()?.execute(
+            "UPDATE management_task_items SET status=?3, message=?4 WHERE id=?2 AND task_id=?1 AND status='running'",
+            params![task_id, item_id, status, message],
+        )?;
+        if updated == 1 {
+            Ok(())
+        } else {
+            Err(rusqlite::Error::QueryReturnedNoRows.into())
+        }
+    }
+
     pub fn save_operation_plan(
         &self,
         task_id: &str,
         expires_at: u64,
         plan_json: &str,
     ) -> Result<(), Error> {
+        let action_count = serde_json::from_str::<serde_json::Value>(plan_json)
+            .ok()
+            .and_then(|plan| {
+                plan["actions"]
+                    .as_array()
+                    .map(|actions| actions.len() as u64)
+            });
         self.connection()?.execute(
-            "UPDATE management_tasks SET plan_expires_at=?2, operation_plan=?3 WHERE id=?1",
-            params![task_id, expires_at, plan_json],
+            "UPDATE management_tasks SET plan_expires_at=?2, operation_plan=?3, planned_item_count=?4 WHERE id=?1",
+            params![task_id, expires_at, plan_json, action_count],
         )?;
         Ok(())
     }
@@ -231,10 +340,45 @@ impl TaskStore {
         Ok(())
     }
 
+    pub fn consume_plan_and_create_mutation(
+        &self,
+        plan_id: &str,
+        now: u64,
+    ) -> Result<Option<(ManagementTask, ManagementTask)>, Error> {
+        let mutation_id = task_id();
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let consumed = transaction.execute(
+            "UPDATE management_tasks SET plan_consumed_at=?2
+             WHERE id=?1 AND kind='preview' AND status='completed'
+               AND operation_plan IS NOT NULL AND plan_expires_at>=?2
+               AND plan_consumed_at IS NULL",
+            params![plan_id, now],
+        )?;
+        if consumed == 0 {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        transaction.execute(
+            "INSERT INTO management_tasks
+               (id, task_type, media_root, kind, status, created_at, source_plan_id, planned_item_count)
+             SELECT ?1, task_type, media_root, 'mutation', 'queued', ?3, id, planned_item_count
+             FROM management_tasks WHERE id=?2",
+            params![mutation_id, plan_id, now],
+        )?;
+        transaction.commit()?;
+        drop(connection);
+        let plan = self.get(plan_id)?.expect("consumed plan must exist");
+        let mutation = self
+            .get(&mutation_id)?
+            .expect("bound mutation task must exist");
+        Ok(Some((plan, mutation)))
+    }
+
     pub fn get(&self, id: &str) -> Result<Option<ManagementTask>, Error> {
         let connection = self.connection()?;
         let mut task = connection.query_row(
-            "SELECT id, task_type, media_root, kind, status, created_at, started_at, finished_at, error, plan_expires_at, operation_plan, report FROM management_tasks WHERE id=?1",
+            "SELECT id, task_type, media_root, kind, status, created_at, started_at, finished_at, error, plan_expires_at, operation_plan, report, source_plan_id, plan_consumed_at, planned_item_count FROM management_tasks WHERE id=?1",
             [id], task_from_row,
         ).optional()?;
         if let Some(task) = task.as_mut() {
@@ -244,14 +388,51 @@ impl TaskStore {
     }
 
     pub fn list(&self) -> Result<Vec<ManagementTask>, Error> {
+        self.list_page(None, 0)
+    }
+
+    pub fn count(&self) -> Result<usize, Error> {
+        Ok(self
+            .connection()?
+            .query_row("SELECT COUNT(*) FROM management_tasks", [], |row| {
+                row.get::<_, i64>(0)
+            })? as usize)
+    }
+
+    pub fn list_page(
+        &self,
+        limit: Option<usize>,
+        offset: usize,
+    ) -> Result<Vec<ManagementTask>, Error> {
         let connection = self.connection()?;
-        let mut statement = connection.prepare("SELECT id, task_type, media_root, kind, status, created_at, started_at, finished_at, error, plan_expires_at, operation_plan, report FROM management_tasks ORDER BY created_at DESC, id DESC")?;
+        let base = "SELECT id, task_type, media_root, kind, status, created_at, started_at, finished_at, error, plan_expires_at, operation_plan, report, source_plan_id, plan_consumed_at, planned_item_count FROM management_tasks ORDER BY created_at DESC, id DESC";
+        let mut tasks = if let Some(limit) = limit {
+            let mut statement = connection.prepare(&format!("{base} LIMIT ?1 OFFSET ?2"))?;
+            let tasks = statement
+                .query_map(params![limit as i64, offset as i64], task_from_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            tasks
+        } else {
+            let mut statement = connection.prepare(base)?;
+            let tasks = statement
+                .query_map([], task_from_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            tasks
+        };
+        hydrate_task_items(&connection, &mut tasks)?;
+        Ok(tasks)
+    }
+
+    pub fn list_active(&self) -> Result<Vec<ManagementTask>, Error> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, task_type, media_root, kind, status, created_at, started_at, finished_at, error, plan_expires_at, operation_plan, report, source_plan_id, plan_consumed_at, planned_item_count FROM management_tasks WHERE status IN ('queued','running') ORDER BY created_at DESC, id DESC",
+        )?;
         let mut tasks = statement
             .query_map([], task_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
-        for task in &mut tasks {
-            task.items = items(&connection, &task.id)?;
-        }
+        drop(statement);
+        hydrate_task_items(&connection, &mut tasks)?;
         Ok(tasks)
     }
 
@@ -298,6 +479,48 @@ impl TaskStore {
     }
 }
 
+fn hydrate_task_items(
+    connection: &Connection,
+    tasks: &mut [ManagementTask],
+) -> rusqlite::Result<()> {
+    let mut grouped = HashMap::<String, Vec<TaskItem>>::new();
+    for task_chunk in tasks.chunks(500) {
+        let placeholders = vec!["?"; task_chunk.len()].join(",");
+        if placeholders.is_empty() {
+            continue;
+        }
+        let mut statement = connection.prepare(&format!(
+            "SELECT id, task_id, kind, path, status, message, source_path, quarantine_token FROM management_task_items WHERE task_id IN ({placeholders}) ORDER BY id"
+        ))?;
+        let ids = task_chunk
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>();
+        let rows = statement.query_map(rusqlite::params_from_iter(ids), |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                TaskItem {
+                    id: row.get(0)?,
+                    kind: row.get(2)?,
+                    path: row.get(3)?,
+                    status: row.get(4)?,
+                    message: row.get(5)?,
+                    source_path: row.get(6)?,
+                    quarantine_token: row.get(7)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (task_id, item) = row?;
+            grouped.entry(task_id).or_default().push(item);
+        }
+    }
+    for task in tasks {
+        task.items = grouped.remove(&task.id).unwrap_or_default();
+    }
+    Ok(())
+}
+
 fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ManagementTask> {
     let kind: String = row.get(3)?;
     let status: String = row.get(4)?;
@@ -318,12 +541,15 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ManagementTask> {
         report: row
             .get::<_, Option<String>>(11)?
             .and_then(|value| serde_json::from_str(&value).ok()),
+        source_plan_id: row.get(12)?,
+        plan_consumed_at: row.get(13)?,
+        planned_item_count: row.get(14)?,
         items: Vec::new(),
     })
 }
 
 fn items(connection: &Connection, task_id: &str) -> rusqlite::Result<Vec<TaskItem>> {
-    let mut statement = connection.prepare("SELECT id, kind, path, status, message FROM management_task_items WHERE task_id=?1 ORDER BY id")?;
+    let mut statement = connection.prepare("SELECT id, kind, path, status, message, source_path, quarantine_token FROM management_task_items WHERE task_id=?1 ORDER BY id")?;
     let rows = statement.query_map([task_id], |row| {
         Ok(TaskItem {
             id: row.get(0)?,
@@ -331,6 +557,8 @@ fn items(connection: &Connection, task_id: &str) -> rusqlite::Result<Vec<TaskIte
             path: row.get(2)?,
             status: row.get(3)?,
             message: row.get(4)?,
+            source_path: row.get(5)?,
+            quarantine_token: row.get(6)?,
         })
     })?;
     rows.collect()

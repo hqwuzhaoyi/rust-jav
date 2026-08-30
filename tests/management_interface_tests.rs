@@ -267,7 +267,7 @@ async fn actor_folder_removal_rejects_links_without_an_indexed_media_asset() {
         .to_owned();
 
     let removal = json_request(
-        app(state),
+        app(state.clone()),
         "DELETE",
         "/api/v1/actors/Alice",
         "",
@@ -1254,6 +1254,60 @@ async fn authenticated_versioned_api_creates_and_recovers_a_preview_task() {
 }
 
 #[tokio::test]
+async fn task_list_supports_compatible_limit_offset_and_total_count() {
+    let (dir, state, cookie) = authenticated_fixture().await;
+    let store = rust_jav::management_tasks::TaskStore::open(&dir.path().join("management.sqlite3"))
+        .unwrap();
+    for index in 0..75 {
+        store
+            .create(
+                rust_jav::management_tasks::NewTask::preview(
+                    "operations",
+                    format!("/media/{index:03}"),
+                ),
+                1_000 + index,
+            )
+            .unwrap();
+    }
+    let first = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/tasks?limit=20&offset=0",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(first.headers()["x-total-count"], "75");
+    let first: serde_json::Value =
+        serde_json::from_slice(&to_bytes(first.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(first.as_array().unwrap().len(), 20);
+    let second = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/tasks?limit=20&offset=20",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(second.headers()["x-total-count"], "75");
+    let second: serde_json::Value =
+        serde_json::from_slice(&to_bytes(second.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(second.as_array().unwrap().len(), 20);
+    assert_ne!(first[0]["id"], second[0]["id"]);
+    let active = json_request(
+        app(state),
+        "GET",
+        "/api/v1/tasks?active=true",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let active: serde_json::Value =
+        serde_json::from_slice(&to_bytes(active.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(active.as_array().unwrap().len(), 75);
+}
+
+#[tokio::test]
 async fn operation_preview_is_a_fifteen_minute_plan_in_canonical_pipeline_order() {
     let (dir, state, cookie) = authenticated_fixture().await;
     std::fs::write(dir.path().join("新片首发每天更新.txt"), b"ad").unwrap();
@@ -1348,6 +1402,372 @@ async fn mutation_requires_explicit_confirmation_of_an_unexpired_preview_plan() 
     assert!(!source.exists());
     assert!(dir.path().join("ABP-123.mp4").exists());
     assert!(task["report"]["verification"].is_object());
+}
+
+#[tokio::test]
+async fn confirmed_operation_plan_is_bound_consumed_once_and_executes_only_its_snapshot() {
+    let (dir, state, cookie) = authenticated_fixture().await;
+    let planned_source = dir.path().join("[7sht.me]@ABP-123.mp4");
+    std::fs::write(&planned_source, b"planned").unwrap();
+    let preview_request = serde_json::json!({
+        "task_type": "operations",
+        "media_root": dir.path(),
+        "mode": "preview",
+        "operations": ["standardize_names"]
+    });
+    let preview = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &preview_request.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let preview: serde_json::Value =
+        serde_json::from_slice(&to_bytes(preview.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let plan_id = preview["id"].as_str().unwrap();
+    let _ = wait_for_task(&state, &cookie, plan_id, "completed").await;
+
+    let unconfirmed_source = dir.path().join("[7sht.me]@NEW-456.mp4");
+    std::fs::write(&unconfirmed_source, b"late arrival").unwrap();
+    let confirmed = serde_json::json!({
+        "task_type": "operations",
+        "mode": "apply",
+        "plan_id": plan_id,
+        "confirmed": true
+    });
+    let mutation = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &confirmed.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(mutation.status(), StatusCode::ACCEPTED);
+    let mutation: serde_json::Value =
+        serde_json::from_slice(&to_bytes(mutation.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(mutation["source_plan_id"], plan_id);
+    let _ = wait_for_task(
+        &state,
+        &cookie,
+        mutation["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+
+    assert!(!planned_source.exists());
+    assert!(dir.path().join("ABP-123.mp4").exists());
+    assert!(unconfirmed_source.exists());
+    assert!(!dir.path().join("NEW-456.mp4").exists());
+
+    let duplicate = json_request(
+        app(state),
+        "POST",
+        "/api/v1/tasks",
+        &confirmed.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn confirmed_multi_operation_snapshot_tracks_paths_changed_by_earlier_actions() {
+    let (dir, state, cookie) = authenticated_fixture().await;
+    let source = dir.path().join("[7sht.me]@ABP-123-UC.mp4");
+    std::fs::write(&source, b"video").unwrap();
+    let preview_request = serde_json::json!({
+        "task_type":"operations", "media_root":dir.path(), "mode":"preview",
+        "operations":["categorize_files", "standardize_names"]
+    });
+    let preview = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &preview_request.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let preview: serde_json::Value =
+        serde_json::from_slice(&to_bytes(preview.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let plan_id = preview["id"].as_str().unwrap();
+    let plan = wait_for_task(&state, &cookie, plan_id, "completed").await;
+    assert_eq!(
+        plan["operation_plan"]["operations"],
+        serde_json::json!(["standardize_names", "categorize_files"])
+    );
+
+    let confirmed = serde_json::json!({"task_type":"operations", "mode":"apply", "plan_id":plan_id, "confirmed":true});
+    let mutation = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &confirmed.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let mutation: serde_json::Value =
+        serde_json::from_slice(&to_bytes(mutation.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let task = wait_for_task(
+        &state,
+        &cookie,
+        mutation["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+
+    assert!(dir.path().join("UNCENSORED/ABP-123-UC.mp4").exists());
+    assert!(!source.exists());
+    assert_eq!(task["items"].as_array().unwrap().len(), 2);
+    assert!(task["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["status"] == "applied"));
+}
+
+#[tokio::test]
+async fn canonical_snapshot_generates_actions_that_only_exist_after_two_prior_stages() {
+    let (dir, state, cookie) = authenticated_fixture().await;
+    let incoming = dir.path().join("incoming");
+    std::fs::create_dir(&incoming).unwrap();
+    let source = incoming.join("[7sht.me]@ABP-123-UC.mp4");
+    std::fs::write(&source, b"video").unwrap();
+    let preview_request = serde_json::json!({
+        "task_type":"operations", "media_root":dir.path(), "mode":"preview",
+        "operations":["standardize_names", "clean_empty_dirs", "organize_by_code"]
+    });
+    let preview = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &preview_request.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let preview: serde_json::Value =
+        serde_json::from_slice(&to_bytes(preview.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let plan_id = preview["id"].as_str().unwrap();
+    let plan = wait_for_task(&state, &cookie, plan_id, "completed").await;
+    assert_eq!(
+        plan["operation_plan"]["actions"].as_array().unwrap().len(),
+        3
+    );
+    assert!(plan["operation_plan"]["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|action| action["kind"] == "delete-dir"
+            && action["source"].as_str().unwrap().ends_with("/incoming")));
+
+    let confirmed = serde_json::json!({"task_type":"operations","mode":"apply","plan_id":plan_id,"confirmed":true});
+    let mutation = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &confirmed.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let mutation: serde_json::Value =
+        serde_json::from_slice(&to_bytes(mutation.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(mutation["planned_item_count"], 3);
+    let task = wait_for_task(
+        &state,
+        &cookie,
+        mutation["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    assert!(!incoming.exists());
+    assert!(dir.path().join("ABP-123/ABP-123-UC.mp4").exists());
+    assert_eq!(task["items"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn confirmed_snapshot_rejects_a_source_replaced_at_the_same_path() {
+    let (dir, state, cookie) = authenticated_fixture().await;
+    let source = dir.path().join("新片首发每天更新.txt");
+    std::fs::write(&source, b"original").unwrap();
+    let preview_request = serde_json::json!({"task_type":"operations","media_root":dir.path(),"mode":"preview","operations":["delete_ad_files"]});
+    let preview = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &preview_request.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let preview: serde_json::Value =
+        serde_json::from_slice(&to_bytes(preview.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let plan_id = preview["id"].as_str().unwrap();
+    let plan = wait_for_task(&state, &cookie, plan_id, "completed").await;
+    assert!(plan["operation_plan"]["actions"][0]["source_identity"]["inode"].is_number());
+    std::fs::remove_file(&source).unwrap();
+    std::fs::write(&source, b"replacement").unwrap();
+
+    let confirmed = serde_json::json!({"task_type":"operations","mode":"apply","plan_id":plan_id,"confirmed":true});
+    let mutation = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &confirmed.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let mutation: serde_json::Value =
+        serde_json::from_slice(&to_bytes(mutation.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let task = wait_for_task(&state, &cookie, mutation["id"].as_str().unwrap(), "failed").await;
+    assert!(source.exists());
+    assert_eq!(std::fs::read(&source).unwrap(), b"replacement");
+    assert!(task["items"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("identity"));
+}
+
+#[tokio::test]
+async fn confirmed_snapshot_rejects_a_symlink_escape_in_the_target_parent_chain() {
+    use std::os::unix::fs::symlink;
+    let (dir, state, cookie) = authenticated_fixture().await;
+    let source = dir.path().join("ABP-123-UC.mp4");
+    std::fs::write(&source, b"video").unwrap();
+    let preview_request = serde_json::json!({"task_type":"operations","media_root":dir.path(),"mode":"preview","operations":["categorize_files"]});
+    let preview = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &preview_request.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let preview: serde_json::Value =
+        serde_json::from_slice(&to_bytes(preview.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let plan_id = preview["id"].as_str().unwrap();
+    let _ = wait_for_task(&state, &cookie, plan_id, "completed").await;
+    let outside = tempfile::tempdir().unwrap();
+    symlink(outside.path(), dir.path().join("UNCENSORED")).unwrap();
+
+    let confirmed = serde_json::json!({"task_type":"operations","mode":"apply","plan_id":plan_id,"confirmed":true});
+    let mutation = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &confirmed.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let mutation: serde_json::Value =
+        serde_json::from_slice(&to_bytes(mutation.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let task = wait_for_task(&state, &cookie, mutation["id"].as_str().unwrap(), "failed").await;
+    assert!(source.exists());
+    assert!(!outside.path().join("ABP-123-UC.mp4").exists());
+    assert!(task["items"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("symlink"));
+}
+
+#[tokio::test]
+async fn confirmed_snapshot_stops_after_outcome_persistence_fails() {
+    let (dir, state, cookie) = authenticated_fixture().await;
+    let sources = [
+        dir.path().join("[7sht.me]@AAA-111.mp4"),
+        dir.path().join("[7sht.me]@BBB-222.mp4"),
+    ];
+    for source in &sources {
+        std::fs::write(source, b"video").unwrap();
+    }
+    let preview_request = serde_json::json!({"task_type":"operations","media_root":dir.path(),"mode":"preview","operations":["standardize_names"]});
+    let preview = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &preview_request.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let preview: serde_json::Value =
+        serde_json::from_slice(&to_bytes(preview.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let plan_id = preview["id"].as_str().unwrap();
+    let _ = wait_for_task(&state, &cookie, plan_id, "completed").await;
+    let connection = rusqlite::Connection::open(dir.path().join("management.sqlite3")).unwrap();
+    connection.execute_batch("CREATE TRIGGER injected_item_failure BEFORE UPDATE OF status ON management_task_items WHEN OLD.status = 'running' BEGIN SELECT RAISE(FAIL, 'injected outcome persistence failure'); END;").unwrap();
+    drop(connection);
+
+    let confirmed = serde_json::json!({"task_type":"operations","mode":"apply","plan_id":plan_id,"confirmed":true});
+    let mutation = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/tasks",
+        &confirmed.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let mutation: serde_json::Value =
+        serde_json::from_slice(&to_bytes(mutation.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let task = wait_for_task(&state, &cookie, mutation["id"].as_str().unwrap(), "failed").await;
+    let originals = sources.iter().filter(|path| path.exists()).count();
+    let renamed = [
+        dir.path().join("AAA-111.mp4"),
+        dir.path().join("BBB-222.mp4"),
+    ]
+    .iter()
+    .filter(|path| path.exists())
+    .count();
+    assert_eq!((originals, renamed), (1, 1));
+    assert_eq!(task["items"].as_array().unwrap().len(), 1);
+    assert_eq!(task["items"][0]["status"], "running");
+    assert!(task["error"].as_str().unwrap().contains("persist"));
+}
+
+#[test]
+fn startup_recovers_a_durable_running_quarantine_and_marks_it_interrupted() {
+    let (dir, mut config) = fixture();
+    let media_root = dir.path().join("media");
+    std::fs::create_dir(&media_root).unwrap();
+    config.media_roots.push(media_root.clone());
+    let source = media_root.join("captured.mp4");
+    std::fs::write(&source, b"approved").unwrap();
+    let store = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
+    let task = store
+        .create(
+            rust_jav::management_tasks::NewTask::mutation(
+                "operations",
+                media_root.display().to_string(),
+            ),
+            100,
+        )
+        .unwrap();
+    store.mark_running(&task.id, 101).unwrap();
+    let journal = store
+        .start_item(
+            &task.id,
+            "delete-file",
+            Some(source.to_str().unwrap()),
+            Some(source.to_str().unwrap()),
+        )
+        .unwrap();
+    let quarantine = media_root.join(&journal.quarantine_token);
+    std::fs::rename(&source, &quarantine).unwrap();
+    drop(store);
+
+    let _state = AppState::new(config.clone(), TestClock(200)).unwrap();
+    let reopened = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
+    let recovered = reopened.get(&task.id).unwrap().unwrap();
+    assert_eq!(
+        recovered.status,
+        rust_jav::management_tasks::TaskStatus::Interrupted
+    );
+    assert_eq!(recovered.items[0].status, "interrupted");
+    assert!(recovered.items[0]
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("restored"));
+    assert_eq!(std::fs::read(&source).unwrap(), b"approved");
+    assert!(!quarantine.exists());
 }
 
 async fn wait_for_task(
@@ -1619,6 +2039,8 @@ async fn deletion_api_rejects_expired_plan_and_reports_replaced_file_as_partial(
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let task: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(task["status"], "failed");
+    assert!(task["error"].as_str().unwrap().contains("partial"));
     let statuses = task["items"]
         .as_array()
         .unwrap()

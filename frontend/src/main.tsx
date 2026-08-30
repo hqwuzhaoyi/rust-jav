@@ -138,6 +138,8 @@ type OperationPlan = {
   actions: Array<{
     kind: string;
     path: string | null;
+    source?: string | null;
+    target?: string | null;
     destructive: boolean;
     warning: string | null;
   }>;
@@ -167,6 +169,9 @@ type Task = {
   plan_expires_at: number | null;
   operation_plan: OperationPlan | null;
   report: Record<string, unknown> | null;
+  source_plan_id?: string | null;
+  plan_consumed_at?: number | null;
+  planned_item_count?: number | null;
   items: Array<{
     id: number;
     kind: string;
@@ -175,6 +180,34 @@ type Task = {
     message: string | null;
   }>;
 };
+type TaskDisplayStatus = Task["status"] | "blocked-for-confirmation";
+const taskStatusLabels: Record<TaskDisplayStatus, string> = {
+  queued: "Queued",
+  running: "Running",
+  "blocked-for-confirmation": "Blocked for confirmation",
+  completed: "Completed",
+  failed: "Failed",
+  interrupted: "Interrupted",
+};
+function taskDisplayStatus(task: Task): TaskDisplayStatus {
+  if (
+    task.kind === "preview" &&
+    task.status === "completed" &&
+    task.operation_plan?.requires_confirmation &&
+    task.plan_expires_at !== null &&
+    !task.plan_consumed_at &&
+    Date.now() / 1000 <= task.plan_expires_at
+  ) return "blocked-for-confirmation";
+  return task.status;
+}
+function taskProgressPercent(task: Task) {
+  const total = task.planned_item_count ?? task.items.length;
+  if (total <= 0) return undefined;
+  const finished = task.items.filter((item) =>
+    ["completed", "applied", "deleted", "changed", "failed", "planned", "skipped"].includes(item.status),
+  ).length;
+  return Math.min(100, Math.round(finished / total * 100));
+}
 const operations = [
   ["delete_ad_files", "Delete ad files"],
   ["organize_by_code", "Organize by code"],
@@ -291,10 +324,14 @@ export function App() {
       | "settings"
     >(actorNameFromPath() || isActorListPath() ? "actors" : "assets");
   const [tasks, setTasks] = useState<Task[]>([]),
+    [taskTotal, setTaskTotal] = useState(0),
+    [hasMoreTasks, setHasMoreTasks] = useState(false),
+    [historyPageLoading, setHistoryPageLoading] = useState(false),
     [mediaRoot, setMediaRoot] = useState("/media"),
     [selectedOps, setSelectedOps] = useState<string[]>(
       operations.map(([key]) => key),
     );
+  const [planToConfirm, setPlanToConfirm] = useState<Task | null>(null);
   const [inspectedAsset, setInspectedAsset] = useState<Asset | null>(null);
   const [assetDetail, setAssetDetail] = useState<AssetDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -335,12 +372,23 @@ export function App() {
   const actorRequest = useRef(0);
   const inspectedActorRef = useRef<ActorFolder | null>(null);
   const actorRemovalTasksRef = useRef(new Map<string, string>());
+  const taskSourcesRef = useRef(new Map<string, EventSource>());
+  const loadedHistoryCountRef = useRef(0);
+  const historyPageLoadingRef = useRef(false);
+  const historyRequestSequenceRef = useRef(0);
+  const taskSnapshotGenerationRef = useRef(new Map<string, number>());
+  const taskRecoverySequenceRef = useRef(new Map<string, number>());
+  const notifiedTaskStatesRef = useRef(new Set<string>());
   useEffect(() => {
     inspectedAssetRef.current = inspectedAsset;
   }, [inspectedAsset]);
   useEffect(() => {
     inspectedActorRef.current = inspectedActor;
   }, [inspectedActor]);
+  useEffect(() => () => {
+    taskSourcesRef.current.forEach((source) => source.close());
+    taskSourcesRef.current.clear();
+  }, []);
   useEffect(() => {
     if (!token)
       fetch("/api/v1/status").then((r) => {
@@ -887,28 +935,99 @@ export function App() {
     await fetch("/api/v1/auth/logout", { method: "POST" });
     setView("login");
   }
-  async function loadTasks() {
-    const response = await fetch("/api/v1/tasks");
-    if (response.ok) {
-      const recovered = (await response.json().catch(() => null)) as
+  async function loadTasks(append = false) {
+    if (append && historyPageLoadingRef.current) return;
+    if (append) {
+      historyPageLoadingRef.current = true;
+      setHistoryPageLoading(true);
+    } else {
+      historyPageLoadingRef.current = false;
+      setHistoryPageLoading(false);
+    }
+    const requestSequence = ++historyRequestSequenceRef.current;
+    const offset = append ? loadedHistoryCountRef.current : 0;
+    try {
+      const [response, activeResponse] = await Promise.all([
+        fetch(`/api/v1/tasks?limit=20&offset=${offset}`),
+        append ? Promise.resolve(null) : fetch("/api/v1/tasks?active=true"),
+      ]);
+      if (historyRequestSequenceRef.current !== requestSequence) return;
+      if (response.ok) {
+      const page = (await response.json().catch(() => null)) as
         Task[] | null;
-      if (!recovered) return;
-      setTasks(recovered);
+      if (!page) return;
+      const active = activeResponse?.ok
+        ? (await activeResponse.json().catch(() => [])) as Task[]
+        : [];
+      const recovered = append
+        ? page
+        : [...page, ...active.filter((task) => !page.some((item) => item.id === task.id))];
+      const total = Number(response.headers.get("X-Total-Count") ?? page.length);
+      loadedHistoryCountRef.current = append
+        ? loadedHistoryCountRef.current + page.length
+        : page.length;
+      setTaskTotal(total);
+      setHasMoreTasks(offset + page.length < total);
+      setTasks((current) => append
+        ? [...current, ...recovered.filter((task) => !current.some((item) => item.id === task.id))]
+        : recovered);
+      if (append) {
+        recovered
+          .filter((task) => ["queued", "running"].includes(task.status))
+          .forEach((task) => watchTask(task.id));
+        return;
+      }
+      const recoveredById = new Map(recovered.map((task) => [task.id, task]));
+      taskSourcesRef.current.forEach((source, id) => {
+        const task = recoveredById.get(id);
+        if (!task || ["completed", "failed", "interrupted"].includes(task.status)) {
+          source.close();
+          taskSourcesRef.current.delete(id);
+        }
+      });
       recovered
         .filter((task) => ["queued", "running"].includes(task.status))
         .forEach((task) => watchTask(task.id));
+      }
+    } finally {
+      if (append && historyRequestSequenceRef.current === requestSequence) {
+        historyPageLoadingRef.current = false;
+        setHistoryPageLoading(false);
+      }
+    }
+  }
+  function notifyTerminalTask(task: Task) {
+    const key = `${task.id}:${task.status}`;
+    if (notifiedTaskStatesRef.current.has(key)) return;
+    notifiedTaskStatesRef.current.add(key);
+    if (task.status === "completed") {
+      setMessage(taskDisplayStatus(task) === "blocked-for-confirmation"
+        ? "Operation Plan is ready for confirmation."
+        : "Management Task completed.");
+    } else if (task.status === "failed") {
+      setMessage(task.error ?? "Management Task failed. Review its outcomes.");
+    } else if (task.status === "interrupted") {
+      setMessage(task.error ?? "Management Task was interrupted.");
     }
   }
   function watchTask(id: string) {
+    if (taskSourcesRef.current.has(id)) return;
     const source = new EventSource(`/api/v1/tasks/${id}/events`);
+    taskSourcesRef.current.set(id, source);
     source.addEventListener("task", (event) => {
       const task = JSON.parse((event as MessageEvent).data) as Task;
+      taskSnapshotGenerationRef.current.set(
+        task.id,
+        (taskSnapshotGenerationRef.current.get(task.id) ?? 0) + 1,
+      );
       setTasks((current) => [
         task,
         ...current.filter((item) => item.id !== task.id),
       ]);
       if (["completed", "failed", "interrupted"].includes(task.status)) {
+        notifyTerminalTask(task);
         source.close();
+        taskSourcesRef.current.delete(task.id);
         const actorName = actorRemovalTasksRef.current.get(task.id);
         if (actorName) {
           actorRemovalTasksRef.current.delete(task.id);
@@ -931,6 +1050,28 @@ export function App() {
         }
       }
     });
+    source.addEventListener("error", () => {
+      const generation = taskSnapshotGenerationRef.current.get(id) ?? 0;
+      const recoverySequence = (taskRecoverySequenceRef.current.get(id) ?? 0) + 1;
+      taskRecoverySequenceRef.current.set(id, recoverySequence);
+      void fetch(`/api/v1/tasks/${id}`)
+        .then(async (response) => response.ok ? (await response.json()) as Task : null)
+        .then((task) => {
+          if (!task) return;
+          if ((taskSnapshotGenerationRef.current.get(id) ?? 0) !== generation) return;
+          if (taskRecoverySequenceRef.current.get(id) !== recoverySequence) return;
+          setTasks((current) => [
+            task,
+            ...current.filter((item) => item.id !== task.id),
+          ]);
+          if (["completed", "failed", "interrupted"].includes(task.status)) {
+            notifyTerminalTask(task);
+            source.close();
+            taskSourcesRef.current.delete(task.id);
+          }
+        })
+        .catch(() => undefined);
+    });
   }
   async function createTask(event: FormEvent) {
     event.preventDefault();
@@ -942,7 +1083,9 @@ export function App() {
         task_type: "operations",
         media_root: mediaRoot,
         mode: "preview",
-        operations: selectedOps,
+        operations: operations
+          .map(([key]) => key)
+          .filter((key) => selectedOps.includes(key)),
       }),
     });
     if (!response.ok) {
@@ -950,7 +1093,8 @@ export function App() {
       return;
     }
     const task = (await response.json()) as Task;
-    setTasks((current) => [task, ...current]);
+    setTaskTotal((total) => total + 1);
+    setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
     watchTask(task.id);
   }
   async function confirmPlan(planId: string) {
@@ -970,7 +1114,16 @@ export function App() {
       return;
     }
     const task = (await response.json()) as Task;
-    setTasks((current) => [task, ...current]);
+    setTaskTotal((total) => total + 1);
+    setTasks((current) => [
+      task,
+      ...current
+        .filter((item) => item.id !== task.id)
+        .map((item) => item.id === planId
+          ? { ...item, plan_consumed_at: Math.floor(Date.now() / 1000) }
+          : item),
+    ]);
+    setPlanToConfirm(null);
     watchTask(task.id);
   }
   const grouped = useMemo(
@@ -1159,7 +1312,7 @@ export function App() {
                 : nav === "deletion"
                   ? `${candidates.length} 个路径命中当前规则`
                   : nav === "tasks"
-                    ? `${tasks.length} 个持久化任务`
+                    ? `${taskTotal} 个持久化任务`
                     : `${libraryTotal || assets.total} 个项目 · 文件系统为准`}
             </small>
           </div>
@@ -1315,13 +1468,17 @@ export function App() {
         {nav === "tasks" && (
           <TaskPanel
             tasks={tasks}
+            taskTotal={taskTotal}
+            hasMoreTasks={hasMoreTasks}
+            historyPageLoading={historyPageLoading}
             mediaRoot={mediaRoot}
             setMediaRoot={setMediaRoot}
             selectedOps={selectedOps}
             setSelectedOps={setSelectedOps}
             createTask={createTask}
-            confirmPlan={confirmPlan}
+            requestPlanConfirmation={setPlanToConfirm}
             refresh={loadTasks}
+            loadMore={() => loadTasks(true)}
           />
         )}
         {nav === "actors" && (
@@ -1564,6 +1721,62 @@ export function App() {
             cancel={() => setConfirmActor(null)}
             remove={() => void removeActor()}
           />
+        )}
+      </MorphingModal>
+      <MorphingModal
+        viewId={planToConfirm ? `confirm-plan-${planToConfirm.id}` : null}
+        placement="center"
+        className="operation-plan-modal"
+        onClose={() => setPlanToConfirm(null)}
+      >
+        {planToConfirm?.operation_plan && (
+          <section
+            className="confirm-dialog operation-plan-confirmation"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Confirm Operation Plan"
+          >
+            <p className="eyebrow">OPERATION PLAN</p>
+            <h2>Confirm Operation Plan</h2>
+            <p>Plan <code>{planToConfirm.id}</code> will execute the reviewed snapshot.</p>
+            {planToConfirm.operation_plan.warnings.map((warning) => (
+              <p className="task-error" key={warning}>{warning}</p>
+            ))}
+            <ol className="confirmation-operations">
+              {planToConfirm.operation_plan.operations.map((operation) => (
+                <li key={operation}>{operations.find(([key]) => key === operation)?.[1] ?? operation}</li>
+              ))}
+            </ol>
+            <div
+              className="confirmation-action-review"
+              tabIndex={0}
+              aria-label={`${planToConfirm.operation_plan.actions.length} stored actions to review`}
+            >
+              <p>{planToConfirm.operation_plan.actions.length} stored actions</p>
+              <ol>
+                {planToConfirm.operation_plan.actions.map((action, index) => (
+                  <li className={action.destructive ? "destructive" : ""} key={`${action.kind}-${action.path}-${index}`}>
+                    <b>{action.kind}</b>
+                    {action.source !== undefined || action.target !== undefined ? (
+                      <>
+                        <code>Source {action.source ?? "—"}</code>
+                        <code>Target {action.target ?? "—"}</code>
+                      </>
+                    ) : (
+                      <code>{action.path ?? "—"}</code>
+                    )}
+                    {action.warning && <small>{action.warning}</small>}
+                  </li>
+                ))}
+              </ol>
+            </div>
+            <div className="confirm-actions">
+              <button onClick={() => setPlanToConfirm(null)}>Cancel</button>
+              <button className="danger" onClick={() => void confirmPlan(planToConfirm.id)}>
+                Apply confirmed plan
+              </button>
+            </div>
+          </section>
         )}
       </MorphingModal>
       {actorRemovalNotice && (
@@ -2415,22 +2628,30 @@ function AssetArtwork({ asset }: { asset: Asset }) {
 }
 function TaskPanel({
   tasks,
+  taskTotal,
+  hasMoreTasks,
+  historyPageLoading,
   mediaRoot,
   setMediaRoot,
   selectedOps,
   setSelectedOps,
   createTask,
-  confirmPlan,
+  requestPlanConfirmation,
   refresh,
+  loadMore,
 }: {
   tasks: Task[];
+  taskTotal: number;
+  hasMoreTasks: boolean;
+  historyPageLoading: boolean;
   mediaRoot: string;
   setMediaRoot: (v: string) => void;
   selectedOps: string[];
   setSelectedOps: (v: string[]) => void;
   createTask: (e: FormEvent) => void;
-  confirmPlan: (id: string) => Promise<void>;
+  requestPlanConfirmation: (task: Task) => void;
   refresh: () => Promise<void>;
+  loadMore: () => Promise<void>;
 }) {
   const toggle = (key: string) =>
     setSelectedOps(
@@ -2482,6 +2703,7 @@ function TaskPanel({
           <div>
             <h2>Lifecycle</h2>
             <p>Durable history, live progress, reports and verification</p>
+            <p className="task-count">{taskTotal} tasks</p>
           </div>
           <button className="refresh" onClick={() => void refresh()}>
             Refresh
@@ -2494,8 +2716,8 @@ function TaskPanel({
             {tasks.map((task) => (
               <li key={task.id}>
                 <div className="task-summary">
-                  <span className={`status status-${task.status}`}>
-                    {task.status}
+                  <span className={`status status-${taskDisplayStatus(task)}`}>
+                    {taskStatusLabels[taskDisplayStatus(task)]}
                   </span>
                   <strong>{task.kind}</strong>
                   <span className="task-root">{task.media_root}</span>
@@ -2504,7 +2726,25 @@ function TaskPanel({
                   {task.items.length} item outcome
                   {task.items.length === 1 ? "" : "s"} · {task.id}
                 </small>
-                {task.error && <p className="task-error">{task.error}</p>}
+                {(task.status === "queued" || task.status === "running") && (
+                  <div
+                    className="task-progress"
+                    role="progressbar"
+                    aria-label="Task progress"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={taskProgressPercent(task)}
+                  >
+                    <span style={{ width: taskProgressPercent(task) === undefined
+                      ? undefined
+                      : `${taskProgressPercent(task)}%` }} />
+                  </div>
+                )}
+                {task.error && (
+                  <p className="task-error" role={task.status === "failed" ? "alert" : undefined}>
+                    {task.error}
+                  </p>
+                )}
                 {task.operation_plan && (
                   <div className="plan">
                     <b>Review final paths</b>
@@ -2538,8 +2778,9 @@ function TaskPanel({
                       )}
                     </ul>
                     {task.status === "completed" &&
+                      !task.plan_consumed_at &&
                       Date.now() / 1000 <= task.plan_expires_at! && (
-                        <button onClick={() => void confirmPlan(task.id)}>
+                        <button onClick={() => requestPlanConfirmation(task)}>
                           Confirm and execute
                         </button>
                       )}
@@ -2551,7 +2792,19 @@ function TaskPanel({
                       <li key={item.id}>
                         <span>{item.status}</span>
                         <b>{item.kind}</b>
-                        <code>{item.path ?? "—"}</code>
+                        <span className="task-item-path">
+                          <code>{item.path ?? "—"}</code>
+                          {item.path && (
+                            <button
+                              type="button"
+                              className="copy-path"
+                              aria-label={`Copy full path ${item.path}`}
+                              onClick={() => void navigator.clipboard?.writeText(item.path!)}
+                            >
+                              Copy
+                            </button>
+                          )}
+                        </span>
                         {item.message && <small>{item.message}</small>}
                       </li>
                     ))}
@@ -2571,6 +2824,16 @@ function TaskPanel({
               </li>
             ))}
           </ol>
+        )}
+        {hasMoreTasks && (
+          <button
+            type="button"
+            className="show-more-tasks"
+            disabled={historyPageLoading}
+            onClick={() => void loadMore()}
+          >
+            {historyPageLoading ? "Loading tasks…" : "Load 20 more tasks"}
+          </button>
         )}
       </section>
     </div>

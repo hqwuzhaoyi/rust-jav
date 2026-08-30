@@ -50,7 +50,8 @@ use crate::{
         RefreshOutcome, RetryPolicy,
     },
     management_tasks::{NewTask, TaskCoordinator, TaskKind, TaskStore},
-    tui::state::OperationType,
+    operations::{ConfirmedAction, SourceIdentity},
+    tui::{executor::PlannedAction, state::OperationType},
 };
 
 const PASSWORD_ENV: &str = "RUST_JAV_ADMIN_PASSWORD";
@@ -620,6 +621,17 @@ impl AppState {
           CREATE TABLE IF NOT EXISTS jellyfin_refresh (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1), status TEXT NOT NULL, attempts INTEGER NOT NULL, error TEXT
           );").map_err(crate::asset_index::Error::from)?;
+        for item in tasks.running_mutation_items()? {
+            let message = match (item.source_path.as_deref(), item.quarantine_token.as_deref()) {
+                (Some(source), Some(token)) => crate::operations::recover_durable_quarantine(
+                    Path::new(&item.media_root),
+                    Path::new(source),
+                    token,
+                ),
+                _ => "interrupted mutation: running item has no durable quarantine locator; inspect its source and planned target manually".to_string(),
+            };
+            tasks.interrupt_item(item.id, &message)?;
+        }
         // A missing or incorrectly-permissioned TrueNAS mount degrades the
         // rebuildable index; it must not prevent the diagnostic API starting.
         let _ = assets.reconcile(&config.media_roots, ScanMode::Startup, now);
@@ -1433,7 +1445,19 @@ async fn execute_deletion_plan(
     let _ = state
         .tasks
         .record_deletion_audit(&task.id, state.now(), &audit);
-    let _ = state.tasks.mark_completed(&task.id, state.now());
+    if result
+        .outcomes
+        .iter()
+        .any(|outcome| outcome.status != DeletionOutcomeStatus::Deleted)
+    {
+        let _ = state.tasks.mark_failed(
+            &task.id,
+            state.now(),
+            "permanent deletion completed with partial failures",
+        );
+    } else {
+        let _ = state.tasks.mark_completed(&task.id, state.now());
+    }
     match state.tasks.get(&task.id) {
         Ok(Some(task)) => (StatusCode::ACCEPTED, Json(task)).into_response(),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -2073,6 +2097,33 @@ struct CreateTaskRequest {
     confirmed: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct StoredOperationPlan {
+    canonical_media_root: PathBuf,
+    operations: Vec<String>,
+    actions: Vec<StoredOperationAction>,
+    #[serde(default)]
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredOperationAction {
+    kind: String,
+    source: Option<PathBuf>,
+    target: Option<PathBuf>,
+    warning: Option<String>,
+    source_identity: Option<StoredSourceIdentity>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredSourceIdentity {
+    device: u64,
+    inode: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    size: u64,
+}
+
 async fn create_task(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2117,7 +2168,7 @@ async fn create_task(
     };
     let task_id = task.id.clone();
     tokio::spawn(run_operations_task(
-        state, task_id, media_root, operations, kind,
+        state, task_id, media_root, operations, kind, None,
     ));
     (StatusCode::ACCEPTED, Json(task)).into_response()
 }
@@ -2156,32 +2207,72 @@ async fn confirm_operation_plan(
     {
         return (StatusCode::BAD_REQUEST, "Operation Plan has expired").into_response();
     }
-    let Some(plan) = plan_task.operation_plan else {
+    if plan_task.plan_consumed_at.is_some() {
+        return (
+            StatusCode::CONFLICT,
+            "Operation Plan has already been consumed",
+        )
+            .into_response();
+    }
+    let Some(plan) = plan_task.operation_plan.clone() else {
         return (StatusCode::BAD_REQUEST, "Operation Plan is unavailable").into_response();
     };
-    let operation_names = plan["operations"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|value| value.as_str().map(str::to_owned))
-        .collect::<Vec<_>>();
-    let Some(operations) = canonical_operations(&operation_names) else {
+    let stored_plan = match serde_json::from_value::<StoredOperationPlan>(plan) {
+        Ok(plan) => plan,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Operation Plan is invalid").into_response(),
+    };
+    let Some(operations) = canonical_operations(&stored_plan.operations) else {
         return (StatusCode::BAD_REQUEST, "Operation Plan is invalid").into_response();
     };
-    let media_root = PathBuf::from(&plan_task.media_root);
-    let task = match state.tasks.create(
-        NewTask::mutation("operations", &plan_task.media_root),
-        state.now(),
-    ) {
-        Ok(task) => task,
+    let (consumed_plan, task) = match state
+        .tasks
+        .consume_plan_and_create_mutation(&plan_id, state.now())
+    {
+        Ok(Some(tasks)) => tasks,
+        Ok(None) => {
+            return (
+                StatusCode::CONFLICT,
+                "Operation Plan has expired or already been consumed",
+            )
+                .into_response()
+        }
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    let stored_plan = consumed_plan
+        .operation_plan
+        .and_then(|plan| serde_json::from_value::<StoredOperationPlan>(plan).ok())
+        .expect("validated consumed Operation Plan must remain readable");
+    let confirmed_actions = stored_plan
+        .actions
+        .into_iter()
+        .map(|action| ConfirmedAction {
+            action: PlannedAction {
+                kind: action.kind,
+                source: action.source,
+                target: action.target,
+                reason: action.warning,
+            },
+            source_identity: action.source_identity.map(|identity| SourceIdentity {
+                device: identity.device,
+                inode: identity.inode,
+                modified_seconds: identity.modified_seconds,
+                modified_nanoseconds: identity.modified_nanoseconds,
+                size: identity.size,
+            }),
+        })
+        .collect::<Vec<_>>();
+    let media_root = PathBuf::from(&consumed_plan.media_root);
     tokio::spawn(run_operations_task(
         state,
         task.id.clone(),
         media_root,
         operations,
         TaskKind::Mutation,
+        Some((
+            stored_plan.canonical_media_root,
+            confirmed_actions,
+            stored_plan.warnings,
+        )),
     ));
     (StatusCode::ACCEPTED, Json(task)).into_response()
 }
@@ -2192,6 +2283,7 @@ async fn run_operations_task(
     media_root: PathBuf,
     operations: Vec<OperationType>,
     kind: TaskKind,
+    confirmed_plan: Option<(PathBuf, Vec<ConfirmedAction>, Vec<String>)>,
 ) {
     let _lease = if kind == TaskKind::Mutation {
         Some(
@@ -2210,13 +2302,68 @@ async fn run_operations_task(
     if state.tasks.mark_running(&task_id, state.now()).is_err() {
         return;
     }
-    let request = if kind == TaskKind::Mutation {
-        OperationsRequest::apply(media_root, operations.clone())
+    let persisted_during_execution = confirmed_plan.is_some();
+    let report = if let Some((canonical_media_root, actions, warnings)) = confirmed_plan {
+        let tasks = state.tasks.clone();
+        let finishing_tasks = state.tasks.clone();
+        let persisted_task_id = task_id.clone();
+        let finishing_task_id = task_id.clone();
+        crate::operations::run_confirmed_operation_plan(
+            media_root.clone(),
+            canonical_media_root,
+            operations.clone(),
+            actions,
+            warnings,
+            move |confirmed| {
+                let action = &confirmed.action;
+                let destructive = matches!(action.kind.as_str(), "delete-file" | "delete-dir");
+                let path = if destructive {
+                    action.source.as_ref()
+                } else {
+                    action.target.as_ref().or(action.source.as_ref())
+                }
+                .map(|path| path.display().to_string());
+                tasks
+                    .start_item(
+                        &persisted_task_id,
+                        &action.kind,
+                        path.as_deref(),
+                        action.source.as_ref().and_then(|path| path.to_str()),
+                    )
+                    .map(|journal| (journal.id, journal.quarantine_token))
+                    .map_err(|error| error.to_string())
+            },
+            move |item_id, action| {
+                finishing_tasks
+                    .complete_item(
+                        &finishing_task_id,
+                        item_id,
+                        action.status.as_str(),
+                        action.reason.as_deref(),
+                    )
+                    .map_err(|error| error.to_string())
+            },
+        )
+    } else if kind == TaskKind::Preview {
+        crate::operations::plan_canonical_operation_snapshot(
+            media_root.clone(),
+            operations.clone(),
+            ActiveRuleSet::embedded(),
+        )
+        .await
     } else {
-        OperationsRequest::preview(media_root, operations.clone())
+        let request = if kind == TaskKind::Mutation {
+            OperationsRequest::apply(media_root.clone(), operations.clone())
+        } else {
+            OperationsRequest::preview(media_root.clone(), operations.clone())
+        };
+        ApplicationServices::new().operations().run(request).await
     };
-    let report = ApplicationServices::new().operations().run(request).await;
-    for action in &report.actions {
+    for action in report
+        .actions
+        .iter()
+        .filter(|_| !persisted_during_execution)
+    {
         let destructive = matches!(action.kind.as_str(), "delete-file" | "delete-dir");
         let path = if destructive {
             action.source.as_ref()
@@ -2240,27 +2387,78 @@ async fn run_operations_task(
     }
     if kind == TaskKind::Preview {
         let operations = operations.iter().map(operation_key).collect::<Vec<_>>();
-        let actions = report
-            .actions
-            .iter()
-            .map(|action| {
-                let destructive = matches!(action.kind.as_str(), "delete-file" | "delete-dir");
-                let path = if destructive {
-                    action.source.as_ref()
-                } else {
-                    action.target.as_ref().or(action.source.as_ref())
-                };
-                serde_json::json!({
+        let canonical_media_root = match fs::canonicalize(&media_root) {
+            Ok(root) => root,
+            Err(error) => {
+                let _ = state.tasks.mark_failed(
+                    &task_id,
+                    state.now(),
+                    &format!("cannot canonicalize media root for Operation Plan: {error}"),
+                );
+                return;
+            }
+        };
+        let mut origins = HashMap::<PathBuf, PathBuf>::new();
+        let mut actions = Vec::with_capacity(report.actions.len());
+        for action in &report.actions {
+            let destructive = matches!(action.kind.as_str(), "delete-file" | "delete-dir");
+            let path = if destructive {
+                action.source.as_ref()
+            } else {
+                action.target.as_ref().or(action.source.as_ref())
+            };
+            let original_source = action.source.as_ref().map(|source| {
+                origins
+                    .get(source)
+                    .cloned()
+                    .unwrap_or_else(|| source.clone())
+            });
+            let source_identity = match original_source.as_ref() {
+                Some(source) => match fs::symlink_metadata(source) {
+                    Ok(metadata) => Some(serde_json::json!({
+                        "device": metadata.dev(), "inode": metadata.ino(),
+                        "modified_seconds": metadata.mtime(),
+                        "modified_nanoseconds": metadata.mtime_nsec(), "size": metadata.size(),
+                    })),
+                    Err(error) => {
+                        let _ = state.tasks.mark_failed(
+                            &task_id,
+                            state.now(),
+                            &format!("cannot record stored source identity: {error}"),
+                        );
+                        return;
+                    }
+                },
+                None => None,
+            };
+            if let (Some(source), Some(target), Some(origin)) = (
+                action.source.as_ref(),
+                action.target.as_ref(),
+                original_source.clone(),
+            ) {
+                origins.insert(
+                    target.clone(),
+                    origins.get(source).cloned().unwrap_or(origin),
+                );
+            }
+            let canonical_path = |candidate: &PathBuf| {
+                candidate
+                    .strip_prefix(&media_root)
+                    .map(|relative| canonical_media_root.join(relative))
+                    .unwrap_or_else(|_| candidate.clone())
+            };
+            actions.push(serde_json::json!({
                     "kind": action.kind,
-                    "path": path.map(|path| path.display().to_string()),
-                    "source": action.source.as_ref().map(|path| path.display().to_string()),
-                    "target": action.target.as_ref().map(|path| path.display().to_string()),
+                    "path": path.map(|path| canonical_path(path).display().to_string()),
+                    "source": action.source.as_ref().map(|path| canonical_path(path).display().to_string()),
+                    "target": action.target.as_ref().map(|path| canonical_path(path).display().to_string()),
                     "destructive": destructive,
                     "warning": action.reason,
-                })
-            })
-            .collect::<Vec<_>>();
+                    "source_identity": source_identity,
+                }));
+        }
         let plan = serde_json::json!({
+            "canonical_media_root": canonical_media_root,
             "operations": operations,
             "actions": actions,
             "warnings": report.warnings,
@@ -2319,13 +2517,43 @@ async fn run_operations_task(
     }
 }
 
-async fn list_tasks(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+#[derive(Debug, Deserialize)]
+struct TaskListQuery {
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default)]
+    active: bool,
+}
+
+async fn list_tasks(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<TaskListQuery>,
+) -> impl IntoResponse {
     if let Err(status) = authorized(&state, &headers) {
         return status.into_response();
     }
-    match state.tasks.list() {
-        Ok(tasks) => Json(tasks).into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    let limit = query.limit.map(|limit| limit.clamp(1, 200));
+    let listed = if query.active {
+        state.tasks.list_active()
+    } else {
+        state.tasks.list_page(limit, query.offset)
+    };
+    let total = if query.active {
+        listed.as_ref().map(Vec::len).map_err(|_| ())
+    } else {
+        state.tasks.count().map_err(|_| ())
+    };
+    match (listed, total) {
+        (Ok(tasks), Ok(total)) => {
+            let mut response = Json(tasks).into_response();
+            if let Ok(value) = HeaderValue::from_str(&total.to_string()) {
+                response.headers_mut().insert("x-total-count", value);
+            }
+            response
+        }
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
@@ -2429,7 +2657,7 @@ async fn openapi(State(state): State<AppState>, headers: HeaderMap) -> impl Into
 }
 
 fn openapi_document() -> serde_json::Value {
-    serde_json::json!({
+    let mut document = serde_json::json!({
         "openapi": "3.1.0",
         "info": {"title": "rust-jav Management API", "version": env!("CARGO_PKG_VERSION")},
         "paths": {
@@ -2478,7 +2706,22 @@ fn openapi_document() -> serde_json::Value {
                 "id":{"type":"string"},"task_type":{"type":"string"},"media_root":{"type":"string"},"kind":{"type":"string","enum":["preview","mutation"]},"status":{"type":"string","enum":["queued","running","completed","failed","interrupted"]},"created_at":{"type":"integer"},"started_at":{"type":["integer","null"]},"finished_at":{"type":["integer","null"]},"error":{"type":["string","null"]},"plan_expires_at":{"type":["integer","null"]},"operation_plan":{"type":["object","null"]},"report":{"type":["object","null"]},"items":{"type":"array","items":{"$ref":"#/components/schemas/TaskItem"}}
             }}
         }}
-    })
+    });
+    let properties = &mut document["components"]["schemas"]["ManagementTask"]["properties"];
+    properties["source_plan_id"] = serde_json::json!({"type":["string","null"]});
+    properties["plan_consumed_at"] = serde_json::json!({"type":["integer","null"]});
+    properties["planned_item_count"] = serde_json::json!({"type":["integer","null"]});
+    let item_properties = &mut document["components"]["schemas"]["TaskItem"]["properties"];
+    item_properties["source_path"] = serde_json::json!({"type":["string","null"]});
+    item_properties["quarantine_token"] = serde_json::json!({"type":["string","null"]});
+    document["paths"]["/api/v1/tasks"]["get"]["parameters"] = serde_json::json!([
+        {"name":"limit","in":"query","schema":{"type":"integer","minimum":1,"maximum":200}},
+        {"name":"offset","in":"query","schema":{"type":"integer","minimum":0}}
+        ,{"name":"active","in":"query","schema":{"type":"boolean"}}
+    ]);
+    document["paths"]["/api/v1/tasks"]["get"]["responses"]["200"]["headers"] =
+        serde_json::json!({"X-Total-Count":{"schema":{"type":"integer"}}});
+    document
 }
 
 fn session_cookie(headers: &HeaderMap) -> Option<String> {
