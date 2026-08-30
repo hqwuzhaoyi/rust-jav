@@ -1,10 +1,13 @@
 use std::{
     collections::{HashMap, HashSet},
+    ffi::CString,
     fs,
+    io::Read,
     mem::MaybeUninit,
-    os::fd::AsRawFd,
+    os::fd::{AsRawFd, FromRawFd},
+    os::unix::ffi::OsStrExt,
     os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -91,6 +94,8 @@ pub struct AssetDetail {
     pub path: String,
     pub jav_code: Option<String>,
     pub title: Option<String>,
+    pub artwork_url: Option<String>,
+    pub captured_date: String,
     pub actors: Vec<AssetActor>,
     pub studio: Option<String>,
     pub release_date: Option<String>,
@@ -431,7 +436,7 @@ impl AssetIndex {
             ],
             &["jpg", "jpeg", "png", "webp"],
         );
-        let parsed = nfo.as_deref().map(parse_nfo);
+        let parsed = nfo.as_deref().map(|path| parse_nfo(root, path));
         let title = parsed
             .as_ref()
             .and_then(|result| result.as_ref().ok())
@@ -576,23 +581,27 @@ impl AssetIndex {
             [id], asset_from_row,
         ).optional()?;
         let Some(asset) = asset else { return Ok(None) };
-        let parsed = asset.nfo_path.as_deref().map(Path::new).map(parse_nfo);
-        let (metadata, parse_status) = match parsed {
-            Some(Ok(metadata)) => (metadata, "valid"),
-            Some(Err(_)) => (ParsedNfo::default(), "invalid"),
-            None => (ParsedNfo::default(), "missing"),
+        let parsed = asset
+            .nfo_path
+            .as_deref()
+            .map(Path::new)
+            .map(|path| parse_nfo(Path::new(&asset.media_root), path));
+        let (metadata, parse_status, live_exception) = match parsed {
+            Some(Ok(metadata)) => (metadata, "valid", None),
+            Some(Err(reason)) => (
+                ParsedNfo::default(),
+                "invalid",
+                Some(format!("NFO metadata is no longer safe or valid: {reason}")),
+            ),
+            None => (ParsedNfo::default(), "missing", None),
         };
-        let actor_poster = asset.artwork_url.clone();
         let actors = metadata
             .actors
             .into_iter()
             .map(|name| AssetActor {
-                actor_folder_url: Some(format!(
-                    "/actors/{}",
-                    URL_SAFE_NO_PAD.encode(name.as_bytes())
-                )),
                 name,
-                poster_url: actor_poster.clone(),
+                poster_url: None,
+                actor_folder_url: None,
             })
             .collect();
         Ok(Some(AssetDetail {
@@ -600,6 +609,8 @@ impl AssetIndex {
             path: asset.path,
             jav_code: asset.jav_code,
             title: metadata.title.or(asset.title),
+            artwork_url: asset.artwork_url,
+            captured_date: asset.captured_date,
             actors,
             studio: metadata.studio,
             release_date: metadata.release_date,
@@ -610,7 +621,7 @@ impl AssetIndex {
             parse_status: parse_status.to_owned(),
             source_path: asset.nfo_path,
             state: asset.state,
-            exception: asset.exception,
+            exception: live_exception.or(asset.exception),
         }))
     }
 
@@ -713,13 +724,20 @@ fn sibling(path: &Path, exts: &[&str]) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 fn metadata_companion(path: &Path, conventional_names: &[&str], exts: &[&str]) -> Option<PathBuf> {
-    sibling(path, exts).or_else(|| {
-        let parent = path.parent()?;
-        conventional_names
-            .iter()
-            .map(|name| parent.join(name))
-            .find(|candidate| candidate.is_file())
-    })
+    sibling(path, exts)
+        .filter(|candidate| {
+            fs::symlink_metadata(candidate).is_ok_and(|metadata| metadata.file_type().is_file())
+        })
+        .or_else(|| {
+            let parent = path.parent()?;
+            conventional_names
+                .iter()
+                .map(|name| parent.join(name))
+                .find(|candidate| {
+                    fs::symlink_metadata(candidate)
+                        .is_ok_and(|metadata| metadata.file_type().is_file())
+                })
+        })
 }
 fn asset_id() -> String {
     let mut bytes = [0u8; 18];
@@ -753,8 +771,59 @@ fn asset_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MediaAsset> {
     })
 }
 
-fn parse_nfo(path: &Path) -> Result<ParsedNfo, String> {
-    let xml = fs::read_to_string(path)
+fn open_beneath(root: &Path, path: &Path) -> std::io::Result<fs::File> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "path is outside Media Root",
+        )
+    })?;
+    let parts = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(value) => Ok(value.to_owned()),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "path contains a non-normal component",
+            )),
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+    if parts.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path does not name a file",
+        ));
+    }
+    let mut current = fs::File::open(root)?;
+    for (index, part) in parts.iter().enumerate() {
+        let name = CString::new(part.as_bytes()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains NUL")
+        })?;
+        let directory_flag = if index + 1 == parts.len() {
+            0
+        } else {
+            libc::O_DIRECTORY
+        };
+        let fd = unsafe {
+            libc::openat(
+                current.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | directory_flag,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        current = unsafe { fs::File::from_raw_fd(fd) };
+    }
+    Ok(current)
+}
+
+fn parse_nfo(root: &Path, path: &Path) -> Result<ParsedNfo, String> {
+    let mut file = open_beneath(root, path)
+        .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
+    let mut xml = String::new();
+    file.read_to_string(&mut xml)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     let document = roxmltree::Document::parse(&xml)
         .map_err(|error| format!("{} ({error})", path.display()))?;

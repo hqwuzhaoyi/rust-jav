@@ -1559,7 +1559,13 @@ fn actor_response(
 }
 
 fn actor_poster_url(actor_name: &str) -> String {
-    format!("/api/v1/actors/{actor_name}/poster")
+    let mut url = Url::parse("http://localhost/api/v1/actors/").expect("static URL is valid");
+    let mut segments = url
+        .path_segments_mut()
+        .expect("HTTP URL supports path segments");
+    segments.pop_if_empty().push(actor_name).push("poster");
+    drop(segments);
+    url.path().to_owned()
 }
 
 async fn list_actor_folders(
@@ -2386,7 +2392,8 @@ fn openapi_document() -> serde_json::Value {
             "RootHealth":{"type":"object","required":["path","readable","writable","uid","gid","owner_uid","owner_gid","action","capacity"],"properties":{"path":{"type":"string"},"readable":{"type":"boolean"},"writable":{"type":"boolean"},"uid":{"type":"integer"},"gid":{"type":"integer"},"owner_uid":{"type":["integer","null"]},"owner_gid":{"type":["integer","null"]},"action":{"type":["string","null"]},"capacity":{"$ref":"#/components/schemas/RootCapacity"}}},
             "AggregateCapacity":{"type":"object","required":["status","filesystem_count","total_bytes","used_bytes","available_bytes"],"properties":{"status":{"type":"string","enum":["healthy","degraded"]},"filesystem_count":{"type":"integer","minimum":0},"total_bytes":{"type":["integer","null"],"minimum":0},"used_bytes":{"type":["integer","null"],"minimum":0},"available_bytes":{"type":["integer","null"],"minimum":0}}},
             "MediaRootStorage":{"type":"object","required":["roots","aggregate"],"properties":{"roots":{"type":"array","items":{"$ref":"#/components/schemas/RootHealth"}},"aggregate":{"$ref":"#/components/schemas/AggregateCapacity"}}},
-            "AssetDetail":{"type":"object","required":["id","path","actors","tags","parse_status","state"],"properties":{"id":{"type":"string"},"path":{"type":"string"},"title":{"type":["string","null"]},"actors":{"type":"array","items":{"$ref":"#/components/schemas/AssetActor"}},"studio":{"type":["string","null"]},"release_date":{"type":["string","null"],"format":"date"},"runtime_minutes":{"type":["integer","null"]},"director":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"plot":{"type":["string","null"]},"parse_status":{"type":"string","enum":["valid","missing","invalid"]},"source_path":{"type":["string","null"]},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]},"jellyfin":{"type":"object","description":"Read-only association, playback state, and Jellyfin web URL; uncertain metadata matches never authorize deletion."}}},
+            "JellyfinAssociation":{"type":"object","required":["status"],"properties":{"status":{"type":"string","enum":["played","in_progress","unplayed","not_found","offline","not_configured"]},"confidence":{"type":["string","null"],"enum":["certain_path","uncertain_metadata",null]},"reason":{"type":["string","null"]},"play_count":{"type":["integer","null"],"minimum":0},"playback_position_ticks":{"type":["integer","null"],"minimum":0},"open_url":{"type":["string","null"],"format":"uri"},"may_authorize_deletion":{"type":["boolean","null"]}},"description":"Read-only Jellyfin Association. Metadata-only uncertainty never authorizes deletion."},
+            "AssetDetail":{"type":"object","required":["id","path","captured_date","actors","tags","parse_status","state","jellyfin"],"properties":{"id":{"type":"string"},"path":{"type":"string"},"jav_code":{"type":["string","null"]},"title":{"type":["string","null"]},"artwork_url":{"type":["string","null"]},"captured_date":{"type":"string","format":"date"},"actors":{"type":"array","items":{"$ref":"#/components/schemas/AssetActor"}},"studio":{"type":["string","null"]},"release_date":{"type":["string","null"],"format":"date"},"runtime_minutes":{"type":["integer","null"]},"director":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"plot":{"type":["string","null"]},"parse_status":{"type":"string","enum":["valid","missing","invalid"]},"source_path":{"type":["string","null"]},"state":{"type":"string","enum":["normal","synchronizing","exception"]},"exception":{"type":["string","null"]},"jellyfin":{"$ref":"#/components/schemas/JellyfinAssociation"}}},
             "AssetPage":{"type":"object","required":["items","groups","page","per_page","total","total_pages"],"properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/MediaAsset"}},"groups":{"type":"array","items":{"type":"object","properties":{"date":{"type":"string","format":"date"},"count":{"type":"integer"}}}},"page":{"type":"integer"},"per_page":{"type":"integer"},"total":{"type":"integer"},"total_pages":{"type":"integer"}}},
             "ManagementTask": {"type":"object","required":["id","task_type","media_root","kind","status","created_at","items"],"properties":{
                 "id":{"type":"string"},"task_type":{"type":"string"},"media_root":{"type":"string"},"kind":{"type":"string","enum":["preview","mutation"]},"status":{"type":"string","enum":["queued","running","completed","failed","interrupted"]},"created_at":{"type":"integer"},"started_at":{"type":["integer","null"]},"finished_at":{"type":["integer","null"]},"error":{"type":["string","null"]},"plan_expires_at":{"type":["integer","null"]},"operation_plan":{"type":["object","null"]},"report":{"type":["object","null"]},"items":{"type":"array","items":{"$ref":"#/components/schemas/TaskItem"}}
@@ -2463,4 +2470,17 @@ pub async fn serve(config: ManagementConfig) -> Result<(), Error> {
     axum::serve(listener, app(AppState::new(config, SystemClock)?))
         .await
         .map_err(Error::Server)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::actor_poster_url;
+
+    #[test]
+    fn actor_poster_urls_encode_one_path_segment() {
+        assert_eq!(
+            actor_poster_url("Alice #100%"),
+            "/api/v1/actors/Alice%20%23100%25/poster"
+        );
+    }
 }

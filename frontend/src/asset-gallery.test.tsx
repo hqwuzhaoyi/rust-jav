@@ -246,6 +246,13 @@ describe("Issue #38 真实 Asset Index 卡片", () => {
     );
     history.back();
     await popped;
+    expect(location.pathname).toBe("/");
+    expect(screen.queryByRole("button", { name: "Close asset details" })).not.toBeInTheDocument();
+    const previous = new Promise<void>((resolve) =>
+      addEventListener("popstate", () => resolve(), { once: true }),
+    );
+    history.back();
+    await previous;
     expect(location.pathname).toBe("/before-gallery");
     expect(screen.queryByRole("button", { name: "Close asset details" })).not.toBeInTheDocument();
   });

@@ -19,7 +19,7 @@ export default defineConfig(({ command, mode, isPreview }) => {
     plugins: [react(), tailwindcss()],
     resolve: { alias: { "@": new URL("./src", import.meta.url).pathname } },
     server: { proxy },
-    test: { environment: "jsdom" },
+    test: { environment: "jsdom", setupFiles: ["./src/test-setup.ts"] },
     build: {
       rollupOptions: {
         output: {

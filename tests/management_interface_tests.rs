@@ -281,11 +281,19 @@ async fn startup_scan_and_versioned_asset_search_expose_grouped_paginated_states
 async fn authenticated_asset_detail_api_exposes_nfo_and_rejects_anonymous_access() {
     let (dir, mut config) = fixture();
     let root = dir.path().join("media");
+    let actor_root = dir.path().join("actors");
     std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir_all(actor_root.join("miru/ABC-123")).unwrap();
     std::fs::write(root.join("ABC-123.mp4"), b"video").unwrap();
     std::fs::write(root.join("ABC-123.jpg"), b"poster").unwrap();
     std::fs::write(root.join("ABC-123.nfo"), r#"<movie><title>Blue Room</title><studio>Example</studio><actor><name>miru</name></actor><plot>Local plot</plot></movie>"#).unwrap();
+    std::fs::hard_link(
+        root.join("ABC-123.mp4"),
+        actor_root.join("miru/ABC-123/ABC-123.mp4"),
+    )
+    .unwrap();
     config.media_roots.push(root);
+    config.actor_view_root = Some(actor_root);
     password_secrets(
         &SecretsStore::new(config.secrets_file.clone()),
         "a strong password",
@@ -318,6 +326,8 @@ async fn authenticated_asset_detail_api_exposes_nfo_and_rejects_anonymous_access
     let body: serde_json::Value =
         serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
     let id = body["items"][0]["id"].as_str().unwrap();
+    let listed_artwork_url = body["items"][0]["artwork_url"].clone();
+    let listed_captured_date = body["items"][0]["captured_date"].clone();
 
     let anonymous = json_request(
         app(state.clone()),
@@ -342,9 +352,12 @@ async fn authenticated_asset_detail_api_exposes_nfo_and_rejects_anonymous_access
     assert_eq!(detail["title"], "Blue Room");
     assert_eq!(detail["studio"], "Example");
     assert_eq!(detail["parse_status"], "valid");
+    assert_eq!(detail["artwork_url"], listed_artwork_url);
+    assert_eq!(detail["captured_date"], listed_captured_date);
     assert_eq!(detail["actors"][0]["name"], "miru");
     assert!(detail["actors"][0]["poster_url"].is_null());
-    assert!(detail["actors"][0]["actor_folder_url"].is_null());
+    assert_eq!(detail["actors"][0]["actor_folder_url"], "/actors/bWlydQ");
+    assert_eq!(detail["jellyfin"]["status"], "not_configured");
 }
 
 #[tokio::test]
@@ -1376,6 +1389,24 @@ async fn generated_openapi_describes_task_rest_and_sse_contracts() {
         document["components"]["schemas"]["AssetDetail"]["properties"]["parse_status"]["enum"][0],
         "valid"
     );
+    assert_eq!(
+        document["components"]["schemas"]["AssetDetail"]["properties"]["jellyfin"]["$ref"],
+        "#/components/schemas/JellyfinAssociation"
+    );
+    assert!(document["components"]["schemas"]["AssetDetail"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "jellyfin"));
+    assert_eq!(
+        document["components"]["schemas"]["JellyfinAssociation"]["properties"]["status"]["enum"][5],
+        "not_configured"
+    );
+    assert_eq!(
+        document["components"]["schemas"]["JellyfinAssociation"]["properties"]
+            ["playback_position_ticks"]["type"][0],
+        "integer"
+    );
     assert!(document["paths"]["/api/v1/assets/scan"]["post"].is_object());
     assert!(document["paths"]["/api/v1/assets/{asset_id}/artwork"]["get"].is_object());
     assert_eq!(
@@ -1607,6 +1638,7 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
     let root = dir.path().join("media/jav");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("ABC-123.mp4"), b"video").unwrap();
+    std::fs::write(root.join("ABC-123.jpg"), b"asset artwork").unwrap();
     std::fs::write(
         root.join("ABC-123.nfo"),
         "<movie><title>ABC-123</title><actor><name>Alice</name></actor></movie>",
@@ -1692,6 +1724,8 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
     let listed: serde_json::Value =
         serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
     let id = listed["items"][0]["id"].as_str().unwrap();
+    let listed_artwork_url = listed["items"][0]["artwork_url"].clone();
+    let listed_captured_date = listed["items"][0]["captured_date"].clone();
     let detail = json_request(
         app(state.clone()),
         "GET",
@@ -1702,6 +1736,9 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
     .await;
     let detail: serde_json::Value =
         serde_json::from_slice(&to_bytes(detail.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(detail["artwork_url"], listed_artwork_url);
+    assert_eq!(detail["captured_date"], listed_captured_date);
+    assert_eq!(detail["parse_status"], "valid");
     assert_eq!(detail["jellyfin"]["status"], "played");
     assert_eq!(detail["jellyfin"]["confidence"], "uncertain_metadata");
     assert_eq!(detail["jellyfin"]["may_authorize_deletion"], false);
@@ -1713,6 +1750,7 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
         detail["actors"][0]["poster_url"],
         "/api/v1/actors/Alice/poster"
     );
+    assert_eq!(detail["actors"][0]["actor_folder_url"], "/actors/QWxpY2U");
 
     let actor_list = json_request(
         app(state.clone()),

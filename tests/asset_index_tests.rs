@@ -293,6 +293,34 @@ fn indexed_artwork_rejects_a_symlink_replaced_after_reconciliation() {
 }
 
 #[test]
+fn asset_detail_rejects_nfo_replaced_by_an_external_symlink() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    fs::create_dir(&root).unwrap();
+    media(&root.join("NFO-101.mp4"));
+    let nfo = root.join("NFO-101.nfo");
+    fs::write(&nfo, "<movie><title>Safe title</title></movie>").unwrap();
+    let outside = fixture.path().join("outside.nfo");
+    fs::write(&outside, "<movie><title>Outside secret</title></movie>").unwrap();
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+    let id = index.search(AssetQuery::default()).unwrap().items[0]
+        .id
+        .clone();
+
+    fs::remove_file(&nfo).unwrap();
+    symlink(&outside, &nfo).unwrap();
+    let detail = index.detail(&id).unwrap().unwrap();
+
+    assert_eq!(detail.parse_status, "invalid");
+    assert_ne!(detail.title.as_deref(), Some("Outside secret"));
+    assert!(detail
+        .exception
+        .as_deref()
+        .is_some_and(|message| !message.is_empty()));
+}
+
+#[test]
 fn artwork_resolution_accepts_only_indexed_artwork_and_never_video() {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().join("media");
@@ -358,14 +386,11 @@ fn asset_detail_parses_complete_nfo_metadata_and_actors() {
             .collect::<Vec<_>>(),
         vec!["miru", "Mao Hamasaki"]
     );
+    assert!(detail.actors.iter().all(|actor| actor.poster_url.is_none()));
     assert!(detail
         .actors
         .iter()
-        .all(|actor| actor.poster_url.as_deref() == asset.artwork_url.as_deref()));
-    assert!(detail
-        .actors
-        .iter()
-        .all(|actor| actor.actor_folder_url.is_some()));
+        .all(|actor| actor.actor_folder_url.is_none()));
 }
 
 #[test]

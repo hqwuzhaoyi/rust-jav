@@ -201,7 +201,35 @@ body { color: var(--ds-text); background: var(--ds-bg); }
   background: rgba(252, 252, 253, .9);
   box-shadow: var(--ds-shadow-sheet);
   backdrop-filter: blur(28px) saturate(150%);
+  overflow-wrap: anywhere;
 }
+.detail-section > h2 { margin: 19px 0 9px; font-size: 14px; }
+.detail-section .detail-list { margin-top: 0; }
+.detail-status-list { display: grid; gap: 10px; }
+.detail-status {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-muted);
+  font-size: 11px;
+}
+.detail-status > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.detail-status span { font-weight: 700; text-transform: lowercase; }
+.detail-status p { margin: 0; color: var(--ds-secondary); line-height: 1.45; }
+.detail-status a {
+  width: fit-content;
+  padding: 8px 11px;
+  border-radius: var(--ds-radius-sm);
+  color: #2453a6;
+  background: #e8efff;
+  font-weight: 700;
+  text-decoration: none;
+}
+.detail-status.normal span { color: var(--ds-success); }
+.detail-status.synchronizing span { color: var(--ds-warning); }
+.detail-status.exception span { color: var(--ds-danger); }
+.detail-list dd, .plot, .inspector-hero span { overflow-wrap: anywhere; }
 .confirm-dialog, .delete-confirm, .task-create, .task-history,
 .rules-settings, .deletion-intro {
   border: 1px solid var(--ds-line);
@@ -231,9 +259,16 @@ body { color: var(--ds-text); background: var(--ds-bg); }
 
 @media (max-width: 760px) {
   .content { margin-left: 0; }
+  body.asset-inspector-open {
+    position: fixed;
+    inset: calc(-1 * var(--asset-inspector-scroll-y, 0px)) 0 auto;
+    width: 100%;
+    overflow: hidden;
+  }
   .asset-inspector {
     border-radius: var(--ds-radius-sheet) var(--ds-radius-sheet) 0 0;
     box-shadow: 0 -18px 50px rgba(0, 0, 0, .16);
+    overscroll-behavior: contain;
   }
   .filters { overflow-x: auto; scrollbar-width: none; }
 }

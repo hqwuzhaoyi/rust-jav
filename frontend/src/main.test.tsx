@@ -342,7 +342,7 @@ describe("BeUI Photos presentation", () => {
     stubActorApi();
     render(<App />);
 
-    const tile = await screen.findByRole("button", { name: "Inspect ABC-123" });
+    const tile = await screen.findByRole("button", { name: "查看资产 ABC-123" });
     expect(tile.closest(".asset-card")).toHaveClass("photos-tile");
     expect(tile.querySelector(".asset-overlay")).toBeInTheDocument();
     expect(tile.querySelector("svg")).toBeInTheDocument();

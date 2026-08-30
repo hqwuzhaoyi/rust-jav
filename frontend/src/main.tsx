@@ -1,4 +1,4 @@
-import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
@@ -52,6 +52,7 @@ type JellyfinAssociation = {
   confidence?: "certain_path" | "uncertain_metadata";
   reason?: string;
   play_count?: number;
+  playback_position_ticks?: number;
   open_url?: string;
   may_authorize_deletion?: boolean;
 };
@@ -76,6 +77,15 @@ type AssetDetail = {
   state: AssetState;
   exception: string | null;
   jellyfin?: JellyfinAssociation;
+  artwork_url: string | null;
+  captured_date: string;
+};
+type AssetTab = "overview" | "nfo";
+type AssetHistoryState = {
+  asset?: string;
+  tab?: AssetTab;
+  assetInspectorEntry?: true;
+  assetInspectorDepth?: number;
 };
 type Page = {
   items: Asset[];
@@ -189,6 +199,13 @@ function assetIdFromPath(pathname = location.pathname) {
     return null;
   }
 }
+function assetTabFromSearch(search = location.search): AssetTab {
+  return new URLSearchParams(search).get("tab") === "nfo" ? "nfo" : "overview";
+}
+function assetRoute(id: string, tab: AssetTab) {
+  const path = `/assets/${encodeURIComponent(id)}`;
+  return tab === "nfo" ? `${path}?tab=nfo` : path;
+}
 function galleryStateFromUrl() {
   const params = new URLSearchParams(location.search);
   const rawState = params.get("state") as AssetState | null;
@@ -207,6 +224,15 @@ function galleryUrl(query: string, filter: AssetState | "", page: number, assetI
   if (filter) params.set("state", filter);
   const pathname = assetId ? `/assets/${encodeURIComponent(assetId)}` : "/";
   return `${pathname}?${params}`;
+}
+function useMobileBreakpoint() {
+  const [mobile, setMobile] = useState(() => window.innerWidth <= 760);
+  useEffect(() => {
+    const update = () => setMobile(window.innerWidth <= 760);
+    addEventListener("resize", update);
+    return () => removeEventListener("resize", update);
+  }, []);
+  return mobile;
 }
 function actorRoute(name: string) {
   const bytes = new TextEncoder().encode(name);
@@ -264,6 +290,10 @@ export function App() {
   const [inspectedAsset, setInspectedAsset] = useState<Asset | null>(null);
   const [assetDetail, setAssetDetail] = useState<AssetDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [assetTab, setAssetTab] = useState<AssetTab>(assetTabFromSearch);
+  const inspectedAssetRef = useRef<Asset | null>(null);
+  const assetOpenerRef = useRef<HTMLElement | null>(null);
+  const assetDismissRef = useRef(false);
   const [galleryLoading, setGalleryLoading] = useState(true);
   const [galleryError, setGalleryError] = useState(false);
   const [galleryRetry, setGalleryRetry] = useState(0);
@@ -288,6 +318,9 @@ export function App() {
   const [inspectedActor, setInspectedActor] = useState<ActorFolder | null>(null);
   const [actorDetailLoading, setActorDetailLoading] = useState(false);
   const [assetBackActor, setAssetBackActor] = useState<ActorFolder | null>(null);
+  useEffect(() => {
+    inspectedAssetRef.current = inspectedAsset;
+  }, [inspectedAsset]);
   useEffect(() => {
     if (!token)
       fetch("/api/v1/status").then((r) => {
@@ -320,22 +353,30 @@ export function App() {
     const actorName = actorNameFromPath();
     const selectedId = assetIdFromPath();
     if (actorName) void openActor(actorName, false);
-    else if (selectedId) void inspectById(selectedId);
+    else if (selectedId) {
+      setAssetTab(assetTabFromSearch());
+      void inspectById(selectedId);
+    }
     const onPopState = () => {
       const poppedActor = actorNameFromPath();
       const poppedAssetId = assetIdFromPath();
       setAssetBackActor(null);
-      if (poppedActor) void openActor(poppedActor, false);
+      if (poppedActor) {
+        void openActor(poppedActor, false);
+        if (assetDismissRef.current) {
+          assetDismissRef.current = false;
+          history.pushState({ actor: poppedActor }, "", actorRoute(poppedActor));
+        }
+      }
       else if (poppedAssetId) {
-        const restored = galleryStateFromUrl();
-        setQuery(restored.query);
-        setFilter(restored.filter);
-        setPage(restored.page);
+        setAssetTab(assetTabFromSearch());
         setInspectedActor(null);
         setNav("assets");
-        void inspectById(poppedAssetId);
+        if (inspectedAssetRef.current?.id !== poppedAssetId)
+          void inspectById(poppedAssetId);
       }
       else {
+        detailRequest.current += 1;
         const restored = galleryStateFromUrl();
         setQuery(restored.query);
         setFilter(restored.filter);
@@ -344,6 +385,10 @@ export function App() {
         setAssetDetail(null);
         setInspectedActor(null);
         setNav("assets");
+        if (assetDismissRef.current) {
+          assetDismissRef.current = false;
+          history.pushState({}, "", galleryUrl(restored.query, restored.filter, restored.page));
+        }
       }
     };
     addEventListener("popstate", onPopState);
@@ -419,6 +464,7 @@ export function App() {
   }
   async function openActor(actor: ActorFolder | string, push = true) {
     const name = typeof actor === "string" ? actor : actor.name;
+    detailRequest.current += 1;
     setNav("actors");
     setActorDetailLoading(true);
     setInspectedAsset(null);
@@ -436,8 +482,7 @@ export function App() {
   async function openLinkedAsset(asset: Asset) {
     if (inspectedActor) setAssetBackActor(inspectedActor);
     setInspectedActor(null);
-    history.pushState({ asset: asset.id }, "", `/assets/${encodeURIComponent(asset.id)}`);
-    await inspect(asset, false);
+    await inspect(asset);
   }
   async function requestActorRemoval(actor: ActorFolder) {
     setActorBusy(true);
@@ -627,31 +672,49 @@ export function App() {
     await loadAssets();
   }
   async function inspect(asset: Asset, navigate = true) {
-    if (navigate)
-      history.pushState(
-        { asset: asset.id, galleryEntry: true },
-        "",
-        galleryUrl(query, filter, page, asset.id),
-      );
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !active.closest(".asset-inspector"))
+      assetOpenerRef.current = active;
+    setAssetTab("overview");
+    if (navigate) {
+      const current = history.state as AssetHistoryState | null;
+      const next: AssetHistoryState = {
+        asset: asset.id,
+        tab: "overview",
+        assetInspectorEntry: true,
+        assetInspectorDepth: current?.assetInspectorEntry
+          ? current.assetInspectorDepth ?? 1
+          : 1,
+      };
+      if (current?.assetInspectorEntry)
+        history.replaceState(next, "", assetRoute(asset.id, "overview"));
+      else history.pushState(next, "", assetRoute(asset.id, "overview"));
+    }
     const request = ++detailRequest.current;
     setInspectedAsset(asset);
     setAssetDetail(null);
     setDetailLoading(true);
-    const response = await fetch(`/api/v1/assets/${asset.id}`);
-    if (request !== detailRequest.current) return;
-    if (response.ok) {
+    try {
+      const response = await fetch(`/api/v1/assets/${encodeURIComponent(asset.id)}`);
+      if (request !== detailRequest.current) return;
+      if (!response.ok) throw new Error("asset detail request failed");
       const detail = (await response.json()) as AssetDetail;
       if (request === detailRequest.current) setAssetDetail(detail);
-    } else setMessage("Asset details could not be loaded.");
-    if (request === detailRequest.current) setDetailLoading(false);
+    } catch {
+      if (request === detailRequest.current)
+        setMessage("Asset details could not be loaded.");
+    } finally {
+      if (request === detailRequest.current) setDetailLoading(false);
+    }
   }
   async function inspectById(id: string) {
     const request = ++detailRequest.current;
     setAssetDetail(null);
     setDetailLoading(true);
-    const response = await fetch(`/api/v1/assets/${encodeURIComponent(id)}`);
-    if (request !== detailRequest.current) return;
-    if (response.ok) {
+    try {
+      const response = await fetch(`/api/v1/assets/${encodeURIComponent(id)}`);
+      if (request !== detailRequest.current) return;
+      if (!response.ok) throw new Error("asset detail request failed");
       const detail = (await response.json()) as AssetDetail & Partial<Asset>;
       if (request !== detailRequest.current) return;
       setInspectedAsset({
@@ -659,33 +722,51 @@ export function App() {
         path: detail.path,
         jav_code: detail.jav_code,
         title: detail.title,
-        artwork_url: detail.artwork_url ?? null,
-        captured_date: detail.captured_date ?? "",
+        artwork_url: detail.artwork_url,
+        captured_date: detail.captured_date,
         state: detail.state,
         exception: detail.exception,
       });
       setAssetDetail(detail);
-    } else {
-      setInspectedAsset(null);
-      setMessage("Asset details could not be loaded.");
+    } catch {
+      if (request === detailRequest.current) {
+        setInspectedAsset(null);
+        setMessage("Asset details could not be loaded.");
+      }
+    } finally {
+      if (request === detailRequest.current) setDetailLoading(false);
     }
-    if (request === detailRequest.current) setDetailLoading(false);
+  }
+  function changeAssetTab(tab: AssetTab) {
+    if (tab === assetTab) return;
+    setAssetTab(tab);
+    const asset = inspectedAssetRef.current;
+    if (!asset) return;
+    const current = history.state as AssetHistoryState | null;
+    const next: AssetHistoryState = {
+      asset: asset.id,
+      tab,
+      assetInspectorEntry: current?.assetInspectorEntry,
+      assetInspectorDepth: current?.assetInspectorEntry
+        ? (current.assetInspectorDepth ?? 1) + 1
+        : undefined,
+    };
+    if (current?.assetInspectorEntry)
+      history.pushState(next, "", assetRoute(asset.id, tab));
+    else history.replaceState(next, "", assetRoute(asset.id, tab));
   }
   function closeInspector() {
     detailRequest.current += 1;
     setInspectedAsset(null);
     setAssetDetail(null);
-    if (assetBackActor) {
-      const actor = assetBackActor;
+    const current = history.state as AssetHistoryState | null;
+    if (current?.assetInspectorEntry) {
+      const depth = current.assetInspectorDepth ?? 1;
       setAssetBackActor(null);
-      setInspectedActor(actor);
-      history.pushState({ actor: actor.name }, "", actorRoute(actor.name));
+      assetDismissRef.current = true;
+      history.go(-depth);
     } else if (assetIdFromPath()) {
-      if ((history.state as { galleryEntry?: boolean } | null)?.galleryEntry) {
-        history.back();
-      } else {
-        history.replaceState({}, "", galleryUrl(query, filter, page));
-      }
+      history.replaceState({}, "", galleryUrl(query, filter, page));
     }
   }
   async function submit(e: FormEvent) {
@@ -1088,7 +1169,7 @@ export function App() {
                           <button
                             className="asset-select"
                             onClick={() => void inspect(a)}
-                            aria-label={`Inspect ${a.jav_code ?? a.title ?? "asset"}`}
+                            aria-label={`查看资产 ${a.jav_code ?? a.title ?? "未识别资产"}`}
                           >
                             <div className="poster" style={{ aspectRatio: "4 / 3" }}>
                               <AssetArtwork asset={a} />
@@ -1351,6 +1432,9 @@ export function App() {
           loading={detailLoading}
           close={closeInspector}
           backLabel={assetBackActor ? `Back to ${assetBackActor.name}` : undefined}
+          tab={assetTab}
+          onTabChange={changeAssetTab}
+          restoreFocusRef={assetOpenerRef}
         />
       )}
       <AnimatePresence>
@@ -1530,35 +1614,103 @@ function AssetInspector({
   loading,
   close,
   backLabel,
+  tab,
+  onTabChange,
+  restoreFocusRef,
 }: {
   asset: Asset;
   detail: AssetDetail | null;
   loading: boolean;
   close: () => void;
   backLabel?: string;
+  tab: AssetTab;
+  onTabChange: (tab: AssetTab) => void;
+  restoreFocusRef: { current: HTMLElement | null };
 }) {
-  const [tab, setTab] = useState<"overview" | "nfo">("overview");
-  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-  useEffect(() => setTab("overview"), [asset.id]);
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  const prefersReducedMotion = useReducedMotion();
+  const reduce = prefersReducedMotion
+    || (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
+  const mobile = useMobileBreakpoint();
   useEffect(() => {
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
+    const background = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".shell > .sidebar, .shell > main, .shell > .bottom-nav",
+      ),
+    ).map((element) => ({
+      element,
+      inert: element.inert,
+      attribute: element.hasAttribute("inert"),
+    }));
+    const scrollY = window.scrollY;
+    const returnFocus = restoreFocusRef.current;
+    background.forEach(({ element }) => {
+      element.inert = true;
+      element.setAttribute("inert", "");
+    });
+    if (mobile) {
+      document.body.classList.add("asset-inspector-open");
+      document.body.style.setProperty("--asset-inspector-scroll-y", `${scrollY}px`);
+    }
+    closeButtonRef.current?.focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = Array.from(
+        dialogRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    addEventListener("keydown", escape);
-    return () => removeEventListener("keydown", escape);
-  }, [close]);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      background.forEach(({ element, inert, attribute }) => {
+        element.inert = inert;
+        if (attribute) element.setAttribute("inert", "");
+        else element.removeAttribute("inert");
+      });
+      if (mobile) {
+        document.body.classList.remove("asset-inspector-open");
+        document.body.style.removeProperty("--asset-inspector-scroll-y");
+        window.scrollTo(0, scrollY);
+      }
+      if (returnFocus?.isConnected) returnFocus.focus();
+    };
+  }, [mobile, restoreFocusRef]);
   return (
     <motion.aside
-      initial={reduce ? false : { x: 28, opacity: 0 }}
-      animate={{ x: 0, opacity: 1 }}
-      exit={{ x: 28, opacity: 0 }}
+      ref={dialogRef}
+      initial={reduce ? false : mobile ? { y: 28, opacity: 0 } : { x: 28, opacity: 0 }}
+      animate={mobile ? { y: 0, opacity: 1 } : { x: 0, opacity: 1 }}
+      exit={reduce ? { opacity: 0 } : mobile ? { y: 28, opacity: 0 } : { x: 28, opacity: 0 }}
+      transition={reduce ? { duration: 0 } : undefined}
       className="asset-inspector"
       role="dialog"
-      aria-modal="false"
+      aria-modal="true"
       aria-labelledby="asset-detail-title"
     >
-      <div className="sheet-handle" />
+      <div className="sheet-handle" aria-hidden="true" />
       <button
+        ref={closeButtonRef}
         className="inspector-close"
         onClick={close}
         aria-label="Close asset details"
@@ -1588,7 +1740,7 @@ function AssetInspector({
           </span>
         </div>
       </div>
-      <BeUITabs defaultValue="overview" value={tab} onValueChange={(value) => setTab(value as "overview" | "nfo")} variant="underline" className="detail-tabs">
+      <BeUITabs defaultValue="overview" value={tab} onValueChange={(value) => onTabChange(value as AssetTab)} variant="underline" className="detail-tabs">
         <BeUITabsList label="Asset details">
           <BeUITab value="overview">Overview</BeUITab>
           <BeUITab value="nfo">NFO</BeUITab>
@@ -1599,70 +1751,100 @@ function AssetInspector({
         </p>
       ) : detail && tab === "overview" ? (
         <BeUITabPanel value="overview">
-          <StateBanner detail={detail} />
-          <h2>Actors</h2>
-          {detail.actors.length ? (
-            <div className="actor-grid">
-              {detail.actors.map((actor) =>
-                actor.actor_folder_url ? (
-                  <a
-                    className="actor-poster"
-                    href={actor.actor_folder_url}
-                    key={actor.name}
-                  >
-                    {actor.poster_url ? (
-                      <img
-                        src={actor.poster_url}
-                        alt={`${actor.name} poster`}
-                      />
-                    ) : (
-                      <span className="actor-silhouette"><UserRound aria-hidden="true" /></span>
-                    )}
-                    <span>
-                      <b>{actor.name}</b>
-                      <small>Actor Folder →</small>
-                    </span>
+          <DetailSection title="Status">
+            <div className="detail-status-list">
+              <Status
+                name="Local asset"
+                label={labels[detail.state]}
+                tone={detail.state}
+                description={detail.exception ?? (detail.state === "synchronizing"
+                  ? "Automatic filesystem reconciliation is in progress."
+                  : "The local indexed asset remains authoritative.")}
+              />
+              <Status
+                name="Jellyfin"
+                label={detail.jellyfin?.status?.replaceAll("_", " ") ?? "not configured"}
+                tone={detail.jellyfin?.status === "offline" || detail.jellyfin?.status === "not_found"
+                  ? "exception"
+                  : detail.jellyfin?.status === "not_configured"
+                    ? "synchronizing"
+                    : "normal"}
+                description={detail.jellyfin?.reason ?? (detail.jellyfin?.status === "not_configured"
+                  ? "Jellyfin is not configured."
+                  : detail.jellyfin?.status === "offline"
+                    ? "Jellyfin is currently unavailable."
+                    : detail.jellyfin?.status === "not_found"
+                      ? "No Jellyfin Association was found."
+                      : detail.jellyfin?.confidence === "uncertain_metadata"
+                        ? "Uncertain metadata association; this never authorizes deletion."
+                        : "Read-only playback association; local files remain authoritative.")}
+                action={detail.jellyfin?.open_url ? (
+                  <a href={detail.jellyfin.open_url} target="_blank" rel="noreferrer">
+                    Open in Jellyfin ↗
                   </a>
-                ) : (
-                  <div className="actor-poster" key={actor.name}>
-                    <span className="actor-silhouette"><UserRound aria-hidden="true" /></span>
-                    <span>
-                      <b>{actor.name}</b>
-                      <small>Actor Folder unavailable</small>
-                    </span>
-                  </div>
-                ),
+                ) : undefined}
+              />
+              {detail.jellyfin && (
+                <DataList items={[
+                  ["Play count", detail.jellyfin.play_count === undefined
+                    ? null : `${detail.jellyfin.play_count} plays`],
+                  ["Playback position", detail.jellyfin.playback_position_ticks === undefined
+                    ? null : `${detail.jellyfin.playback_position_ticks} ticks`],
+                  ["Deletion authority", detail.jellyfin.may_authorize_deletion
+                    ? "Certain path association" : "Association cannot authorize deletion"],
+                ]} />
               )}
             </div>
-          ) : (
-            <p className="muted">No actors in this NFO.</p>
-          )}
-          <dl className="detail-list">
-            <Info k="Studio" v={detail.studio} />
-            <Info k="Release" v={detail.release_date} />
-            <Info k="Source video" v={detail.path} />
-          </dl>
+          </DetailSection>
+          <DetailSection title="Actors">
+            {detail.actors.length ? (
+              <div className="actor-grid">
+                {detail.actors.map((actor) =>
+                  actor.actor_folder_url ? (
+                    <a className="actor-poster" href={actor.actor_folder_url} key={actor.name}>
+                      {actor.poster_url ? (
+                        <img src={actor.poster_url} alt={`${actor.name} poster`} />
+                      ) : (
+                        <span className="actor-silhouette"><UserRound aria-hidden="true" /></span>
+                      )}
+                      <span><b>{actor.name}</b><small>Open derived Actor Folder →</small></span>
+                    </a>
+                  ) : (
+                    <div className="actor-poster" key={actor.name}>
+                      <span className="actor-silhouette"><UserRound aria-hidden="true" /></span>
+                      <span><b>{actor.name}</b><small>Actor Folder unavailable</small></span>
+                    </div>
+                  ),
+                )}
+              </div>
+            ) : (
+              <p className="muted">No actors in this NFO.</p>
+            )}
+          </DetailSection>
+          <DetailSection title="Asset details">
+            <DataList items={[
+              ["Studio", detail.studio],
+              ["Release", detail.release_date],
+              ["Captured", detail.captured_date],
+              ["Source video", detail.path],
+            ]} />
+          </DetailSection>
         </BeUITabPanel>
       ) : (
         detail && (
           <BeUITabPanel value="nfo">
             <p className="plot">{detail.plot ?? "No plot in this NFO."}</p>
-            <dl className="detail-list">
-              <Info k="Title" v={detail.title} />
-              <Info k="Studio" v={detail.studio} />
-              <Info k="Release date" v={detail.release_date} />
-              <Info
-                k="Runtime"
-                v={
-                  detail.runtime_minutes
-                    ? `${detail.runtime_minutes} minutes`
-                    : null
-                }
-              />
-              <Info k="Director" v={detail.director} />
-              <Info k="Parse status" v={detail.parse_status} />
-              <Info k="NFO path" v={detail.source_path} />
-            </dl>
+            <DetailSection title="NFO metadata">
+              <DataList items={[
+                ["Title", detail.title],
+                ["Studio", detail.studio],
+                ["Release date", detail.release_date],
+                ["Runtime", detail.runtime_minutes === null ? null : `${detail.runtime_minutes} minutes`],
+                ["Director", detail.director],
+                ["Parse status", detail.parse_status],
+                ["NFO path", detail.source_path],
+              ]} />
+            </DetailSection>
             <div className="tags">
               {detail.tags.map((tag) => (
                 <span key={tag}>{tag}</span>
@@ -1675,42 +1857,49 @@ function AssetInspector({
     </motion.aside>
   );
 }
-function StateBanner({ detail }: { detail: AssetDetail }) {
+function DetailSection({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <>
-      <div className={`state-banner ${detail.state}`}>
-        <b>{labels[detail.state]} Asset</b>
-        <span>
-          {detail.exception ??
-            (detail.state === "synchronizing"
-              ? "Automatic reconciliation is in progress."
-              : "Local metadata is valid.")}
-        </span>
-      </div>
-      <div className="jellyfin-status">
-        <b>Jellyfin</b>
-        <span>
-          {detail.jellyfin?.status?.replace("_", " ") ?? "not configured"}
-          {detail.jellyfin?.confidence === "uncertain_metadata"
-            ? " · uncertain metadata match"
-            : ""}
-        </span>
-        {detail.jellyfin?.open_url && (
-          <a href={detail.jellyfin.open_url} target="_blank" rel="noreferrer">
-            Open in Jellyfin ↗
-          </a>
-        )}
-      </div>
-    </>
+    <section className="detail-section">
+      <h2>{title}</h2>
+      {children}
+    </section>
   );
 }
-function Info({ k, v }: { k: string; v: string | null }) {
+function DataList({ items }: { items: Array<readonly [string, ReactNode | null | undefined]> }) {
   return (
-    <div>
-      <dt>{k}</dt>
-      <dd>{v ?? "Not provided"}</dd>
+    <dl className="detail-list">
+      {items.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{value ?? "Not provided"}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+function Status({
+  name,
+  label,
+  description,
+  tone,
+  action,
+}: {
+  name: string;
+  label: string;
+  description: string;
+  tone: AssetState;
+  action?: ReactNode;
+}) {
+  return (
+    <div className={`detail-status ${tone}`}>
+      <div><b>{name}</b><span>{label}</span></div>
+      <p>{description}</p>
+      {action}
     </div>
   );
+}
+function Info({ k, v }: { k: string; v: ReactNode | null | undefined }) {
+  return <div><dt>{k}</dt><dd>{v ?? "Not provided"}</dd></div>;
 }
 function ActorFolders({
   actors,
