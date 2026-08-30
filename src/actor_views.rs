@@ -35,6 +35,7 @@ pub struct FileIdentity {
 pub struct ActorFolderDetail {
     pub folder: ActorFolder,
     pub file_identities: Vec<FileIdentity>,
+    pub files: Vec<(PathBuf, FileIdentity)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +79,7 @@ pub fn browse_actor_folders(actors_root: &Path) -> io::Result<Vec<ActorFolder>> 
         let reclaimable_space = unique_inodes
             .iter()
             .filter(|(inode, metadata)| metadata.nlink() == inode_occurrences[inode])
-            .map(|(_, metadata)| metadata.len())
+            .map(|(_, metadata)| metadata.blocks().saturating_mul(512))
             .sum();
         #[cfg(unix)]
         let unique_inode_count = unique_inodes.len();
@@ -123,29 +124,43 @@ pub fn actor_folder_detail(
     let Some(path) = resolve_actor_folder(actors_root, actor_name)? else {
         return Ok(None);
     };
-    let Some(folder) = browse_actor_folders(actors_root)?
+    let Some(mut folder) = browse_actor_folders(actors_root)?
         .into_iter()
         .find(|folder| folder.name == actor_name)
     else {
         return Ok(None);
     };
+    folder.path = path.clone();
     let mut files = Vec::new();
     collect_regular_files(&path, &mut files)?;
     #[cfg(unix)]
-    let file_identities = files
+    let file_entries = files
         .into_iter()
-        .map(|(_, metadata)| FileIdentity {
-            device: metadata.dev(),
-            inode: metadata.ino(),
+        .map(|(path, metadata)| {
+            (
+                path,
+                FileIdentity {
+                    device: metadata.dev(),
+                    inode: metadata.ino(),
+                },
+            )
         })
+        .collect::<Vec<_>>();
+    #[cfg(unix)]
+    let file_identities = file_entries
+        .iter()
+        .map(|(_, identity)| *identity)
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
     #[cfg(not(unix))]
     let file_identities = Vec::new();
+    #[cfg(not(unix))]
+    let file_entries = Vec::new();
     Ok(Some(ActorFolderDetail {
         folder,
         file_identities,
+        files: file_entries,
     }))
 }
 
@@ -157,25 +172,54 @@ pub fn remove_actor_folder(
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Actor Folder does not exist"))?;
     let mut files = Vec::new();
     collect_regular_files(&canonical, &mut files)?;
-    let mut outcomes = Vec::new();
-    for (path, metadata) in files {
-        fs::remove_file(&path)?;
-        outcomes.push(RemovalOutcome {
-            #[cfg(unix)]
-            kind: if metadata.nlink() > 1 {
-                "unlink-derived-hard-link"
-            } else {
-                "unlink-derived-path"
-            }
-            .into(),
-            #[cfg(not(unix))]
-            kind: "unlink-derived-path".into(),
-            path,
-            status: "applied".into(),
-            message: Some("derived Actor View path removed; source Media Asset untouched".into()),
-        });
+    #[cfg(unix)]
+    {
+        let occurrences = files
+            .iter()
+            .fold(HashMap::new(), |mut counts, (_, metadata)| {
+                *counts
+                    .entry((metadata.dev(), metadata.ino()))
+                    .or_insert(0_u64) += 1;
+                counts
+            });
+        if files
+            .iter()
+            .any(|(_, metadata)| metadata.nlink() <= occurrences[&(metadata.dev(), metadata.ino())])
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Actor Folder contains a file without a remaining link outside the Actor View",
+            ));
+        }
     }
-    remove_empty_tree(&canonical, &mut outcomes)?;
+    let mut outcomes = Vec::new();
+    for (path, _metadata) in files {
+        match fs::remove_file(&path) {
+            Ok(()) => outcomes.push(RemovalOutcome {
+                #[cfg(unix)]
+                kind: "unlink-derived-hard-link".into(),
+                #[cfg(not(unix))]
+                kind: "unlink-derived-path".into(),
+                path,
+                status: "applied".into(),
+                message: Some(
+                    "derived Actor View path removed; source Media Asset untouched".into(),
+                ),
+            }),
+            Err(error) => outcomes.push(RemovalOutcome {
+                #[cfg(unix)]
+                kind: "unlink-derived-hard-link".into(),
+                #[cfg(not(unix))]
+                kind: "unlink-derived-path".into(),
+                path,
+                status: "failed".into(),
+                message: Some(error.to_string()),
+            }),
+        }
+    }
+    if outcomes.iter().all(|outcome| outcome.status == "applied") {
+        remove_empty_tree(&canonical, &mut outcomes);
+    }
     Ok(outcomes)
 }
 
@@ -251,23 +295,41 @@ fn collect_regular_files(dir: &Path, files: &mut Vec<(PathBuf, fs::Metadata)>) -
     Ok(())
 }
 
-fn remove_empty_tree(dir: &Path, outcomes: &mut Vec<RemovalOutcome>) -> io::Result<()> {
-    let mut dirs = fs::read_dir(dir)?
+fn remove_empty_tree(dir: &Path, outcomes: &mut Vec<RemovalOutcome>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            outcomes.push(RemovalOutcome {
+                kind: "remove-derived-directory".into(),
+                path: dir.to_owned(),
+                status: "failed".into(),
+                message: Some(error.to_string()),
+            });
+            return;
+        }
+    };
+    let mut dirs = entries
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
         .map(|entry| entry.path())
         .collect::<Vec<_>>();
     for child in dirs.drain(..) {
-        remove_empty_tree(&child, outcomes)?;
+        remove_empty_tree(&child, outcomes);
     }
-    fs::remove_dir(dir)?;
-    outcomes.push(RemovalOutcome {
-        kind: "remove-derived-directory".into(),
-        path: dir.to_owned(),
-        status: "applied".into(),
-        message: None,
-    });
-    Ok(())
+    match fs::remove_dir(dir) {
+        Ok(()) => outcomes.push(RemovalOutcome {
+            kind: "remove-derived-directory".into(),
+            path: dir.to_owned(),
+            status: "applied".into(),
+            message: None,
+        }),
+        Err(error) => outcomes.push(RemovalOutcome {
+            kind: "remove-derived-directory".into(),
+            path: dir.to_owned(),
+            status: "failed".into(),
+            message: Some(error.to_string()),
+        }),
+    }
 }
 
 fn is_poster(path: &Path) -> bool {

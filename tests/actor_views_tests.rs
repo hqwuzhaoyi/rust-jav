@@ -1,6 +1,7 @@
 #![cfg(unix)]
 
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 
 use rust_jav::{
     actor_links::execute_actor_links_command,
@@ -66,9 +67,35 @@ fn actor_folder_counts_paths_but_deduplicates_inode_sizes() {
         "logical size counts each inode once"
     );
     assert_eq!(
-        folder.reclaimable_space, 6,
-        "reclaimable counts each inode once"
+        folder.reclaimable_space,
+        fs::metadata(movie.join("MIAB-492-C.mp4"))
+            .unwrap()
+            .blocks()
+            .saturating_mul(512),
+        "reclaimable counts allocated bytes for each inode once"
     );
+}
+
+#[test]
+fn removal_rejects_unique_or_actor_only_files_before_mutating_any_path() {
+    let fixture = tempdir().unwrap();
+    let actors = fixture.path().join("actors");
+    let movie = actors.join("Alice/ABC-123");
+    fs::create_dir_all(&movie).unwrap();
+    let unique = movie.join("unique.mp4");
+    let actor_only = movie.join("actor-only.mp4");
+    let actor_only_copy = movie.join("actor-only-copy.mp4");
+    fs::write(&unique, b"unique source").unwrap();
+    fs::write(&actor_only, b"actor-only source").unwrap();
+    fs::hard_link(&actor_only, &actor_only_copy).unwrap();
+
+    let error = remove_actor_folder(&actors, "Alice").unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(unique.exists());
+    assert!(actor_only.exists());
+    assert!(actor_only_copy.exists());
+    assert!(actors.join("Alice").exists());
 }
 
 #[test]

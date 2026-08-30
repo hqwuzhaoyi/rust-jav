@@ -1131,6 +1131,48 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .linked-asset-grid small { color: rgba(255,255,255,.72); font-size: 9px; }
 .actor-detail-remove { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; margin-top: 22px; border: 0; border-radius: 11px; color: #b52f29; background: #fee9e7; }
 .actor-detail-remove svg { width: 16px; height: 16px; }
+.actor-feedback {
+  display: grid;
+  min-height: 48vh;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: #6e6e73;
+  text-align: center;
+}
+.actor-feedback > svg { width: 28px; height: 28px; }
+.actor-feedback > h2, .actor-feedback > p { margin: 0; }
+.actor-feedback > h2 { color: #303034; font-size: 18px; }
+.actor-feedback > button {
+  margin-top: 6px;
+  padding: 8px 18px;
+  border: 0;
+  border-radius: 10px;
+  color: white;
+  background: var(--blue);
+  font-weight: 650;
+}
+.actor-feedback[role="status"] > svg { animation: gallery-spin .9s linear infinite; }
+.actor-detail-error { min-height: 60vh; padding: 48px 20px; }
+.shell-notice {
+  position: fixed;
+  right: 16px;
+  bottom: 24px;
+  z-index: 90;
+  display: flex;
+  width: min(384px, calc(100vw - 32px));
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255,255,255,.96);
+  box-shadow: 0 18px 46px rgba(0,0,0,.16);
+  backdrop-filter: blur(18px);
+}
+.shell-notice p { flex: 1; margin: 0; font-size: 13px; font-weight: 650; }
+.shell-notice button { display: grid; width: 28px; height: 28px; padding: 0; place-items: center; border: 0; border-radius: 50%; background: var(--soft); }
+.shell-notice svg { width: 14px; height: 14px; }
 
 @media (max-width: 760px) {
   .content > header { top: 0; min-height: 70px; }

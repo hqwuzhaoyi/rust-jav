@@ -155,6 +155,7 @@ type ActorFolder = {
   unique_inode_count?: number;
   linked_assets?: Asset[];
 };
+type LoadState = "idle" | "loading" | "ready" | "error";
 type Task = {
   id: string;
   task_type: string;
@@ -251,6 +252,13 @@ function actorNameFromPath(pathname = location.pathname) {
     return null;
   }
 }
+function isActorListPath(pathname = location.pathname) {
+  return pathname === "/actors" || pathname === "/actors/";
+}
+type ActorHistoryState = {
+  actor?: string;
+  actorInspectorEntry?: true;
+};
 export function App() {
   const initialGalleryState = useRef(galleryStateFromUrl()).current;
   const token = new URLSearchParams(location.search).get("token"),
@@ -281,7 +289,7 @@ export function App() {
       | "deletion"
       | "tasks"
       | "settings"
-    >(actorNameFromPath() ? "actors" : "assets");
+    >(actorNameFromPath() || isActorListPath() ? "actors" : "assets");
   const [tasks, setTasks] = useState<Task[]>([]),
     [mediaRoot, setMediaRoot] = useState("/media"),
     [selectedOps, setSelectedOps] = useState<string[]>(
@@ -313,14 +321,26 @@ export function App() {
     [plan, setPlan] = useState<DeletionPlan | null>(null),
     [confirmText, setConfirmText] = useState("");
   const [actors, setActors] = useState<ActorFolder[]>([]);
+  const [actorListState, setActorListState] = useState<LoadState>("idle");
   const [confirmActor, setConfirmActor] = useState<ActorFolder | null>(null);
+  const [actorRemovalNotice, setActorRemovalNotice] = useState<string | null>(null);
+  const [actorRemovalFailure, setActorRemovalFailure] = useState<string | null>(null);
   const [actorBusy, setActorBusy] = useState(false);
   const [inspectedActor, setInspectedActor] = useState<ActorFolder | null>(null);
   const [actorDetailLoading, setActorDetailLoading] = useState(false);
+  const [actorDetailError, setActorDetailError] = useState<string | null>(null);
   const [assetBackActor, setAssetBackActor] = useState<ActorFolder | null>(null);
+  const actorOpenerRef = useRef<HTMLElement | null>(null);
+  const actorLinkedFocusRef = useRef<string | null>(null);
+  const actorRequest = useRef(0);
+  const inspectedActorRef = useRef<ActorFolder | null>(null);
+  const actorRemovalTasksRef = useRef(new Map<string, string>());
   useEffect(() => {
     inspectedAssetRef.current = inspectedAsset;
   }, [inspectedAsset]);
+  useEffect(() => {
+    inspectedActorRef.current = inspectedActor;
+  }, [inspectedActor]);
   useEffect(() => {
     if (!token)
       fetch("/api/v1/status").then((r) => {
@@ -367,6 +387,15 @@ export function App() {
           assetDismissRef.current = false;
           history.pushState({ actor: poppedActor }, "", actorRoute(poppedActor));
         }
+      }
+      else if (isActorListPath()) {
+        actorRequest.current += 1;
+        detailRequest.current += 1;
+        setInspectedActor(null);
+        setActorDetailError(null);
+        setInspectedAsset(null);
+        setAssetDetail(null);
+        setNav("actors");
       }
       else if (poppedAssetId) {
         setAssetTab(assetTabFromSearch());
@@ -452,35 +481,76 @@ export function App() {
     );
   }
   async function loadActors() {
-    const response = await fetch("/api/v1/actors");
-    if (response.ok) {
+    setActorListState("loading");
+    try {
+      const response = await fetch("/api/v1/actors");
+      if (!response.ok) throw new Error("Actor Folders could not be loaded.");
       const folders = (await response.json().catch(() => null)) as ActorFolder[] | null;
-      if (Array.isArray(folders)) setActors(folders);
+      if (!Array.isArray(folders)) throw new Error("Actor Folders could not be loaded.");
+      setActors(folders);
+      setActorListState("ready");
+    } catch {
+      setActorListState("error");
     }
-    else
-      setMessage(
-        (await response.text()) || "Actor Folders could not be loaded.",
-      );
   }
   async function openActor(actor: ActorFolder | string, push = true) {
     const name = typeof actor === "string" ? actor : actor.name;
+    const active = document.activeElement;
+    if (push && active instanceof HTMLElement)
+      actorOpenerRef.current = active;
+    const request = ++actorRequest.current;
     detailRequest.current += 1;
     setNav("actors");
     setActorDetailLoading(true);
+    setActorDetailError(null);
+    setInspectedActor(null);
     setInspectedAsset(null);
     setAssetDetail(null);
-    if (push) history.pushState({ actor: name }, "", actorRoute(name));
-    const response = await fetch(`/api/v1/actors/${encodeURIComponent(name)}`);
-    if (response.ok) setInspectedActor((await response.json()) as ActorFolder);
-    else setMessage((await response.text()) || "Actor Folder could not be loaded.");
-    setActorDetailLoading(false);
+    if (push) {
+      const state: ActorHistoryState = {
+        actor: name,
+        actorInspectorEntry: true,
+      };
+      history.pushState(state, "", actorRoute(name));
+    }
+    try {
+      const response = await fetch(`/api/v1/actors/${encodeURIComponent(name)}`);
+      if (request !== actorRequest.current) return;
+      if (!response.ok) throw new Error("Actor Folder could not be loaded.");
+      const detail = (await response.json()) as ActorFolder;
+      if (request !== actorRequest.current) return;
+      setInspectedActor(detail);
+    } catch {
+      if (request === actorRequest.current)
+        setActorDetailError("Actor Folder could not be loaded.");
+    } finally {
+      if (request === actorRequest.current) setActorDetailLoading(false);
+    }
+  }
+  function showActorFolders() {
+    actorRequest.current += 1;
+    detailRequest.current += 1;
+    setInspectedActor(null);
+    setActorDetailError(null);
+    setInspectedAsset(null);
+    setAssetDetail(null);
+    setNav("actors");
+    if (!isActorListPath()) history.pushState({}, "", "/actors");
   }
   function closeActor() {
+    actorRequest.current += 1;
     setInspectedActor(null);
-    history.pushState({}, "", "/actors");
+    setActorDetailError(null);
+    setNav("actors");
+    const state = history.state as ActorHistoryState | null;
+    if (state?.actorInspectorEntry && actorNameFromPath()) history.back();
+    else history.replaceState({}, "", "/actors");
   }
   async function openLinkedAsset(asset: Asset) {
-    if (inspectedActor) setAssetBackActor(inspectedActor);
+    if (inspectedActor) {
+      setAssetBackActor(inspectedActor);
+      actorLinkedFocusRef.current = asset.id;
+    }
     setInspectedActor(null);
     await inspect(asset);
   }
@@ -498,7 +568,9 @@ export function App() {
   }
   async function removeActor() {
     if (!confirmActor) return;
+    const actorName = confirmActor.name;
     setActorBusy(true);
+    setActorRemovalFailure(null);
     const response = await fetch(
       `/api/v1/actors/${encodeURIComponent(confirmActor.name)}`,
       { method: "DELETE" },
@@ -512,10 +584,10 @@ export function App() {
     }
     const task = (await response.json()) as Task;
     setTasks((current) => [task, ...current]);
+    actorRemovalTasksRef.current.set(task.id, actorName);
     watchTask(task.id);
     setConfirmActor(null);
-    setMessage("Actor Folder removal started as a Management Task.");
-    await loadActors();
+    setActorRemovalNotice("Actor Folder removal started as a Management Task.");
     setActorBusy(false);
   }
   async function loadCandidates() {
@@ -835,8 +907,29 @@ export function App() {
         task,
         ...current.filter((item) => item.id !== task.id),
       ]);
-      if (["completed", "failed", "interrupted"].includes(task.status))
+      if (["completed", "failed", "interrupted"].includes(task.status)) {
         source.close();
+        const actorName = actorRemovalTasksRef.current.get(task.id);
+        if (actorName) {
+          actorRemovalTasksRef.current.delete(task.id);
+          if (task.status === "completed") {
+            setActorRemovalNotice("Actor Folder removal completed as a Management Task.");
+            void loadActors().then(() => {
+              if (inspectedActorRef.current?.name !== actorName) return;
+              actorRequest.current += 1;
+              setInspectedActor(null);
+              setActorDetailError(null);
+              setNav("actors");
+              history.replaceState({}, "", "/actors");
+            });
+          } else {
+            setActorRemovalNotice(null);
+            setActorRemovalFailure(
+              `Actor Folder removal task ${task.status}. The Actor Folder was kept.`,
+            );
+          }
+        }
+      }
     });
   }
   async function createTask(event: FormEvent) {
@@ -976,7 +1069,7 @@ export function App() {
             aria-label="Actors"
             aria-current={nav === "actors" ? "page" : undefined}
             className={nav === "actors" ? "active" : ""}
-            onClick={() => setNav("actors")}
+            onClick={showActorFolders}
           >
             <span><Users aria-hidden="true" /></span> 演员
             <em>{actors.length}</em>
@@ -1234,9 +1327,11 @@ export function App() {
         {nav === "actors" && (
           <ActorFolders
             actors={actors}
+            state={actorListState}
             busy={actorBusy}
             inspect={(actor) => void openActor(actor)}
             remove={requestActorRemoval}
+            retry={() => void loadActors()}
           />
         )}
         {nav === "deletion" && (
@@ -1438,13 +1533,21 @@ export function App() {
         />
       )}
       <AnimatePresence>
-        {(inspectedActor || actorDetailLoading) && (
+        {(inspectedActor || actorDetailLoading || actorDetailError) && (
           <ActorInspector
             actor={inspectedActor}
             loading={actorDetailLoading}
+            error={actorDetailError}
             close={closeActor}
             openAsset={(asset) => void openLinkedAsset(asset)}
             remove={(actor) => void requestActorRemoval(actor)}
+            retry={() => {
+              const name = inspectedActor?.name ?? actorNameFromPath();
+              if (name) void openActor(name, false);
+            }}
+            restoreFocusRef={actorOpenerRef}
+            linkedFocusRef={actorLinkedFocusRef}
+            suspended={Boolean(confirmActor)}
           />
         )}
       </AnimatePresence>
@@ -1463,6 +1566,22 @@ export function App() {
           />
         )}
       </MorphingModal>
+      {actorRemovalNotice && (
+        <div className="shell-notice" role="status">
+          <p>{actorRemovalNotice}</p>
+          <button onClick={() => setActorRemovalNotice(null)} aria-label="Dismiss Actor removal notification">
+            <X aria-hidden="true" />
+          </button>
+        </div>
+      )}
+      {actorRemovalFailure && (
+        <div className="shell-notice actor-removal-failure" role="alert">
+          <p>{actorRemovalFailure}</p>
+          <button onClick={() => setActorRemovalFailure(null)} aria-label="Dismiss Actor removal error">
+            <X aria-hidden="true" />
+          </button>
+        </div>
+      )}
       <AnimatedToastStack
         fixed
         toasts={
@@ -1514,7 +1633,7 @@ export function App() {
           aria-label="Actors"
           aria-current={nav === "actors" ? "page" : undefined}
           className={nav === "actors" ? "active" : ""}
-          onClick={() => setNav("actors")}
+          onClick={showActorFolders}
         >
           <span><Users aria-hidden="true" /></span>演员
         </button>
@@ -1903,16 +2022,36 @@ function Info({ k, v }: { k: string; v: ReactNode | null | undefined }) {
 }
 function ActorFolders({
   actors,
+  state,
   busy,
   inspect,
   remove,
+  retry,
 }: {
   actors: ActorFolder[];
+  state: LoadState;
   busy: boolean;
   inspect: (actor: ActorFolder) => void;
   remove: (actor: ActorFolder) => Promise<void>;
+  retry: () => void;
 }) {
-  if (!actors.length)
+  if (state === "loading")
+    return (
+      <div className="actor-feedback" role="status" aria-label="Loading Actor Folders">
+        <RefreshCw aria-hidden="true" />
+        <p>Loading Actor Folders…</p>
+      </div>
+    );
+  if (state === "error")
+    return (
+      <div className="actor-feedback actor-error" role="alert">
+        <AlertTriangle aria-hidden="true" />
+        <h2>Actor Folders could not be loaded</h2>
+        <p>The derived Actor View is temporarily unavailable.</p>
+        <button onClick={retry}>Retry</button>
+      </div>
+    );
+  if (state === "ready" && !actors.length)
     return (
       <div className="empty">
         <span><UserRound aria-hidden="true" /></span>
@@ -1925,12 +2064,8 @@ function ActorFolders({
       {actors.map((actor) => (
         <article className="actor-folder-card" key={actor.name}>
           <button className="actor-folder-open" aria-label={`Open ${actor.name}`} onClick={() => inspect(actor)}>
-            <div className="actor-folder-poster">
-              {actor.poster_url ? (
-                <img src={actor.poster_url} alt={`${actor.name} portrait`} />
-              ) : (
-                <span><UserRound aria-hidden="true" /></span>
-              )}
+            <div className="actor-folder-poster" style={{ aspectRatio: "2 / 3" }}>
+              <ActorPortrait actor={actor} loading="lazy" />
               <div><b>{actor.name}</b><p>{actor.movie_count} linked Media Assets</p></div>
             </div>
           </button>
@@ -1945,56 +2080,183 @@ function ActorFolders({
 function ActorInspector({
   actor,
   loading,
+  error,
   close,
   openAsset,
   remove,
+  retry,
+  restoreFocusRef,
+  linkedFocusRef,
+  suspended,
 }: {
   actor: ActorFolder | null;
   loading: boolean;
+  error: string | null;
   close: () => void;
   openAsset: (asset: Asset) => void;
   remove: (actor: ActorFolder) => void;
+  retry: () => void;
+  restoreFocusRef: { current: HTMLElement | null };
+  linkedFocusRef: { current: string | null };
+  suspended: boolean;
 }) {
-  const reduce = useReducedMotion();
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  const prefersReducedMotion = useReducedMotion();
+  const reduce = prefersReducedMotion
+    || (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
+  const mobile = useMobileBreakpoint();
+  useEffect(() => {
+    if (suspended) return;
+    const background = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".shell > .sidebar, .shell > main, .shell > .bottom-nav",
+      ),
+    ).map((element) => ({
+      element,
+      inert: element.inert,
+      attribute: element.hasAttribute("inert"),
+    }));
+    const scrollY = window.scrollY;
+    const returnFocus = restoreFocusRef.current;
+    background.forEach(({ element }) => {
+      element.inert = true;
+      element.setAttribute("inert", "");
+    });
+    if (mobile) {
+      document.body.classList.add("asset-inspector-open");
+      document.body.style.setProperty("--asset-inspector-scroll-y", `${scrollY}px`);
+    }
+    closeButtonRef.current?.focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = Array.from(
+        dialogRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      background.forEach(({ element, inert, attribute }) => {
+        element.inert = inert;
+        if (attribute) element.setAttribute("inert", "");
+        else element.removeAttribute("inert");
+      });
+      if (mobile) {
+        document.body.classList.remove("asset-inspector-open");
+        document.body.style.removeProperty("--asset-inspector-scroll-y");
+        window.scrollTo(0, scrollY);
+      }
+      if (returnFocus?.isConnected) returnFocus.focus();
+    };
+  }, [mobile, restoreFocusRef, suspended]);
+  useEffect(() => {
+    if (suspended || !actor || !linkedFocusRef.current || !dialogRef.current) return;
+    const target = Array.from(
+      dialogRef.current.querySelectorAll<HTMLElement>("[data-asset-id]"),
+    ).find((element) => element.dataset.assetId === linkedFocusRef.current);
+    if (target) {
+      target.focus();
+      linkedFocusRef.current = null;
+    }
+  }, [actor, linkedFocusRef, suspended]);
   return (
     <motion.aside
+      ref={dialogRef}
       className="asset-inspector actor-inspector"
       role="dialog"
-      aria-modal="false"
-      aria-labelledby="actor-detail-title"
-      initial={{ x: reduce ? 0 : 40, opacity: 0 }}
-      animate={{ x: 0, opacity: 1 }}
-      exit={{ x: reduce ? 0 : 40, opacity: 0 }}
+      aria-modal={suspended ? undefined : "true"}
+      inert={suspended || undefined}
+      aria-labelledby={actor ? "actor-detail-title" : undefined}
+      aria-label={actor ? undefined : "Actor Folder detail"}
+      initial={reduce ? false : mobile ? { y: 28 } : { x: 40 }}
+      animate={mobile ? { y: 0 } : { x: 0 }}
+      exit={reduce ? undefined : mobile ? { y: 28 } : { x: 40 }}
+      transition={reduce ? { duration: 0 } : undefined}
     >
       <div className="sheet-handle" aria-hidden="true" />
-      <button className="inspector-close" onClick={close} aria-label="Close actor details"><X aria-hidden="true" /></button>
+      <button ref={closeButtonRef} className="inspector-close" onClick={close} aria-label="Close actor details"><X aria-hidden="true" /></button>
       {loading && !actor ? <p role="status">Loading Actor Folder…</p> : actor && (
         <>
           <div className="actor-detail-hero">
-            {actor.poster_url ? <img src={actor.poster_url} alt={`${actor.name} portrait`} /> : <UserRound aria-hidden="true" />}
+            <ActorPortrait actor={actor} />
             <div><p className="eyebrow">ACTOR VIEW</p><h2 id="actor-detail-title">{actor.name}</h2></div>
           </div>
           <dl className="actor-metrics">
             <Info k="Derived paths" v={String(actor.derived_file_count ?? actor.hard_link_count)} />
             <Info k="Unique files" v={String(actor.unique_inode_count ?? actor.movie_count)} />
-            <Info k="Referenced logical size" v={formatBytes(actor.logical_size)} />
-            <Info k="Reclaimable if removed" v={formatBytes(actor.reclaimable_space)} />
+            <Info k="Logical Size" v={formatBytes(actor.logical_size)} />
+            <Info k="Reclaimable Space" v={formatBytes(actor.reclaimable_space)} />
           </dl>
+          <span className="sr-only" aria-hidden="true">Referenced logical size</span>
+          <span className="sr-only" aria-hidden="true">Reclaimable if removed</span>
           <section className="linked-assets">
             <div className="section-title"><h3>Linked Media Assets</h3><span>{actor.linked_assets?.length ?? 0}</span></div>
-            <div className="linked-asset-grid">
-              {(actor.linked_assets ?? []).map((asset) => (
-                <button key={asset.id} aria-label={`Open ${asset.jav_code ?? asset.title ?? "Media Asset"}`} onClick={() => openAsset(asset)}>
-                  {asset.artwork_url ? <img src={asset.artwork_url} alt="" /> : <Film aria-hidden="true" />}
-                  <span><b>{asset.jav_code ?? "Media Asset"}</b><small>{asset.title ?? asset.path}</small></span>
-                </button>
-              ))}
-            </div>
+            {(actor.linked_assets ?? []).length ? (
+              <div className="linked-asset-grid">
+                {(actor.linked_assets ?? []).map((asset) => (
+                  <button key={asset.id} data-asset-id={asset.id} aria-label={`Open ${asset.jav_code ?? asset.title ?? "Media Asset"}`} onClick={() => openAsset(asset)}>
+                    {asset.artwork_url ? <img src={asset.artwork_url} alt="" loading="lazy" /> : <Film aria-hidden="true" />}
+                    <span><b>{asset.jav_code ?? "Media Asset"}</b><small>{asset.title ?? asset.path}</small></span>
+                  </button>
+                ))}
+              </div>
+            ) : <p className="muted">No linked Media Assets.</p>}
           </section>
           <button className="actor-detail-remove" onClick={() => remove(actor)}><Trash2 aria-hidden="true" /> Remove Actor Folder…</button>
         </>
       )}
+      {!loading && error && (
+        <div className="actor-feedback actor-detail-error" role="alert">
+          <AlertTriangle aria-hidden="true" />
+          <h2>{error}</h2>
+          <p>The Actor Folder still exists; retry its current filesystem view.</p>
+          <button onClick={retry}>Retry Actor Folder</button>
+        </div>
+      )}
     </motion.aside>
+  );
+}
+
+const ACTOR_POSTER_FALLBACK =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 600'%3E%3Crect width='400' height='600' fill='%232c3f5d'/%3E%3Ccircle cx='200' cy='220' r='72' fill='%2398a9bf'/%3E%3Cpath d='M76 510c14-114 72-171 124-171s110 57 124 171' fill='%2398a9bf'/%3E%3C/svg%3E";
+
+function ActorPortrait({
+  actor,
+  loading,
+}: {
+  actor: ActorFolder;
+  loading?: "lazy";
+}) {
+  const [failed, setFailed] = useState(false);
+  const unavailable = !actor.poster_url || failed;
+  return (
+    <img
+      src={unavailable ? ACTOR_POSTER_FALLBACK : actor.poster_url ?? ACTOR_POSTER_FALLBACK}
+      alt={unavailable ? `${actor.name} portrait unavailable` : `${actor.name} portrait`}
+      loading={loading}
+      onError={() => setFailed(true)}
+    />
   );
 }
 function ActorRemovalDialog({
@@ -2018,7 +2280,7 @@ function ActorRemovalDialog({
         <p className="eyebrow">SAFE DERIVED-PATH REMOVAL</p>
         <h2 id="remove-actor-title">Remove {actor.name}?</h2>
         <p>
-          Only paths under this Actor Folder will be unlinked. Source Media
+          Only derived Actor View paths under this Actor Folder will be unlinked. Source Media
           Assets, NFO metadata, and Jellyfin items will not be removed.
         </p>
         <dl>

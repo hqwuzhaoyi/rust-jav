@@ -77,14 +77,20 @@ fn restart_marks_running_destructive_tasks_interrupted_without_requeueing_them()
     let destructive = store
         .create(NewTask::mutation("operations", "/media/a"), 100)
         .unwrap();
+    let queued = store
+        .create(NewTask::mutation("remove_actor_folder", "/media/b"), 100)
+        .unwrap();
     store.mark_running(&destructive.id, 101).unwrap();
     drop(store);
 
     let reopened = TaskStore::open(&path).unwrap();
-    assert_eq!(reopened.interrupt_running_destructive(200).unwrap(), 1);
+    assert_eq!(reopened.interrupt_running_destructive(200).unwrap(), 2);
     let task = reopened.get(&destructive.id).unwrap().unwrap();
     assert_eq!(task.status, TaskStatus::Interrupted);
     assert_eq!(task.finished_at, Some(200));
+    let queued = reopened.get(&queued.id).unwrap().unwrap();
+    assert_eq!(queued.status, TaskStatus::Interrupted);
+    assert_eq!(queued.finished_at, Some(200));
     assert!(reopened.runnable_tasks().unwrap().is_empty());
 }
 

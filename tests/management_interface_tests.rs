@@ -99,6 +99,11 @@ async fn actor_folder_api_lists_confirmation_and_removes_via_management_task() {
         actors.join("Alice/ABC-123/ABC-123-copy.mp4"),
     )
     .unwrap();
+    std::fs::hard_link(
+        media.join("ABC-123/ABC-123.nfo"),
+        actors.join("Alice/ABC-123/ABC-123.nfo"),
+    )
+    .unwrap();
     config.media_roots.push(media.clone());
     config.actor_view_root = Some(actors.clone());
     password_secrets(
@@ -136,10 +141,9 @@ async fn actor_folder_api_lists_confirmation_and_removes_via_management_task() {
         serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(folders[0]["name"], "Alice");
     assert_eq!(folders[0]["movie_count"], 1);
-    assert_eq!(folders[0]["derived_file_count"], 2);
-    assert_eq!(folders[0]["unique_inode_count"], 1);
-    assert_eq!(folders[0]["hard_link_count"], 2);
-    assert_eq!(folders[0]["logical_size"], 5);
+    assert_eq!(folders[0]["derived_file_count"], 3);
+    assert_eq!(folders[0]["unique_inode_count"], 2);
+    assert_eq!(folders[0]["hard_link_count"], 3);
     assert_eq!(folders[0]["reclaimable_space"], 0);
 
     let detail_response = json_request(
@@ -224,6 +228,56 @@ async fn actor_folder_api_lists_confirmation_and_removes_via_management_task() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("actor removal task did not complete");
+}
+
+#[tokio::test]
+async fn actor_folder_removal_rejects_links_without_an_indexed_media_asset() {
+    let (dir, mut config) = fixture();
+    let actors = dir.path().join("actors");
+    let unindexed = dir.path().join("unindexed");
+    std::fs::create_dir_all(actors.join("Alice/ABC-123")).unwrap();
+    std::fs::create_dir_all(&unindexed).unwrap();
+    std::fs::write(unindexed.join("ABC-123.mp4"), b"only unindexed source").unwrap();
+    std::fs::hard_link(
+        unindexed.join("ABC-123.mp4"),
+        actors.join("Alice/ABC-123/ABC-123.mp4"),
+    )
+    .unwrap();
+    config.actor_view_root = Some(actors.clone());
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let login = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/auth/login",
+        r#"{"password":"a strong password"}"#,
+        None,
+    )
+    .await;
+    let cookie = login.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let removal = json_request(
+        app(state),
+        "DELETE",
+        "/api/v1/actors/Alice",
+        "",
+        Some(&cookie),
+    )
+    .await;
+
+    assert_eq!(removal.status(), StatusCode::CONFLICT);
+    assert!(actors.join("Alice/ABC-123/ABC-123.mp4").exists());
+    assert!(unindexed.join("ABC-123.mp4").exists());
 }
 
 #[tokio::test]

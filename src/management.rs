@@ -1,6 +1,6 @@
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     future::Future,
     io::Read,
@@ -1722,11 +1722,17 @@ async fn remove_actor_folder_task(
     let Some(root) = state.config.actor_view_root.clone() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let exists = crate::actor_views::browse_actor_folders(&root)
-        .map(|folders| folders.iter().any(|folder| folder.name == actor_name))
-        .unwrap_or(false);
-    if !exists {
-        return StatusCode::NOT_FOUND.into_response();
+    let detail = match crate::actor_views::actor_folder_detail(&root, &actor_name) {
+        Ok(Some(detail)) => detail,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => return (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response(),
+    };
+    if !actor_removal_is_trusted(&state, &detail).unwrap_or(false) {
+        return (
+            StatusCode::CONFLICT,
+            "Actor Folder contains a file that is not backed by an indexed Media Asset",
+        )
+            .into_response();
     }
     let task = match state.tasks.create(
         NewTask::mutation("remove_actor_folder", root.display().to_string()),
@@ -1753,8 +1759,21 @@ async fn run_actor_removal_task(
     if state.tasks.mark_running(&task_id, state.now()).is_err() {
         return;
     }
+    let trusted = crate::actor_views::actor_folder_detail(&root, &actor_name)
+        .ok()
+        .flatten()
+        .is_some_and(|detail| actor_removal_is_trusted(&state, &detail).unwrap_or(false));
+    if !trusted {
+        let _ = state.tasks.mark_failed(
+            &task_id,
+            state.now(),
+            "Actor Folder changed or is no longer backed by an indexed Media Asset",
+        );
+        return;
+    }
     match crate::actor_views::remove_actor_folder(&root, &actor_name) {
         Ok(outcomes) => {
+            let failed = outcomes.iter().any(|outcome| outcome.status == "failed");
             for outcome in outcomes {
                 if state
                     .tasks
@@ -1770,7 +1789,15 @@ async fn run_actor_removal_task(
                     return;
                 }
             }
-            let _ = state.tasks.mark_completed(&task_id, state.now());
+            if failed {
+                let _ = state.tasks.mark_failed(
+                    &task_id,
+                    state.now(),
+                    "one or more Actor View paths could not be removed",
+                );
+            } else {
+                let _ = state.tasks.mark_completed(&task_id, state.now());
+            }
         }
         Err(error) => {
             let _ = state
@@ -1778,6 +1805,58 @@ async fn run_actor_removal_task(
                 .mark_failed(&task_id, state.now(), &error.to_string());
         }
     }
+}
+
+fn actor_removal_is_trusted(
+    state: &AppState,
+    detail: &crate::actor_views::ActorFolderDetail,
+) -> Result<bool, crate::asset_index::Error> {
+    let identities = detail
+        .file_identities
+        .iter()
+        .map(|identity| (identity.device, identity.inode))
+        .collect::<Vec<_>>();
+    let assets = state.assets.assets_by_identities(&identities)?;
+    let indexed = assets
+        .iter()
+        .map(|asset| (asset.device, asset.inode))
+        .collect::<HashSet<_>>();
+    let indexed_directories = assets
+        .iter()
+        .filter_map(|asset| Path::new(&asset.path).parent().map(Path::to_owned))
+        .collect::<HashSet<_>>();
+    for (actor_path, identity) in &detail.files {
+        if indexed.contains(&(identity.device, identity.inode)) {
+            continue;
+        }
+        let Ok(relative) = actor_path.strip_prefix(&detail.folder.path) else {
+            return Ok(false);
+        };
+        let mut matched = false;
+        for media_root in &state.config.media_roots {
+            let source = media_root.join(relative);
+            let Ok(metadata) = fs::symlink_metadata(&source) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink()
+                || !metadata.is_file()
+                || (metadata.dev(), metadata.ino()) != (identity.device, identity.inode)
+            {
+                continue;
+            }
+            if source
+                .parent()
+                .is_some_and(|directory| indexed_directories.contains(directory))
+            {
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 #[derive(Debug, Deserialize)]
 struct PutJellyfinConfig {

@@ -257,7 +257,7 @@ impl TaskStore {
 
     pub fn interrupt_running_destructive(&self, now: u64) -> Result<usize, Error> {
         Ok(self.connection()?.execute(
-            "UPDATE management_tasks SET status='interrupted', finished_at=?1, error='service restarted during destructive task' WHERE status='running' AND kind='mutation'",
+            "UPDATE management_tasks SET status='interrupted', finished_at=?1, error='service restarted during destructive task' WHERE status IN ('queued','running') AND kind='mutation'",
             [now],
         )?)
     }
