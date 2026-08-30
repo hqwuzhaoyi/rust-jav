@@ -1,4 +1,8 @@
-use std::{fs, os::unix::fs::MetadataExt, path::Path};
+use std::{
+    fs,
+    os::unix::fs::{symlink, MetadataExt},
+    path::Path,
+};
 
 use rust_jav::asset_index::{AssetIndex, AssetQuery, AssetState, ScanMode};
 
@@ -185,6 +189,107 @@ fn permission_report_contains_host_identity_and_actionable_failure() {
         present.owner_uid,
         Some(fs::metadata(fixture.path()).unwrap().uid())
     );
+}
+
+#[test]
+fn duplicate_jav_codes_remain_distinct_media_assets() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    fs::create_dir(&root).unwrap();
+    media(&root.join("DUP-100-A.mp4"));
+    media(&root.join("DUP-100-B.mp4"));
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+    let page = index.search(AssetQuery::default()).unwrap();
+
+    assert_eq!(page.total, 2);
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.items[0].jav_code.as_deref(), Some("DUP-100"));
+    assert_eq!(page.items[1].jav_code.as_deref(), Some("DUP-100"));
+    assert_ne!(page.items[0].id, page.items[1].id);
+}
+
+#[test]
+fn search_treats_sql_like_wildcards_as_literal_text() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    fs::create_dir(&root).unwrap();
+    let percent_dir = root.join("PCT-100");
+    let plain_dir = root.join("PLAIN-200");
+    fs::create_dir(&percent_dir).unwrap();
+    fs::create_dir(&plain_dir).unwrap();
+    media(&percent_dir.join("PCT-100.mp4"));
+    fs::write(
+        percent_dir.join("PCT-100.nfo"),
+        "<movie><title>100%_literal</title></movie>",
+    )
+    .unwrap();
+    media(&plain_dir.join("PLAIN-200.mp4"));
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+
+    let percent = index
+        .search(AssetQuery {
+            query: Some("%".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let wildcard_pair = index
+        .search(AssetQuery {
+            query: Some("%_literal".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert_eq!(percent.total, 1);
+    assert_eq!(wildcard_pair.total, 1);
+    assert_eq!(percent.items[0].id, wildcard_pair.items[0].id);
+}
+
+#[test]
+fn page_numbers_are_clamped_without_offset_overflow() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    fs::create_dir(&root).unwrap();
+    media(&root.join("ONE-001.mp4"));
+    media(&root.join("TWO-002.mp4"));
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+
+    let page = index
+        .search(AssetQuery {
+            page: usize::MAX,
+            per_page: 1,
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert_eq!(page.page, 2);
+    assert_eq!(page.total_pages, 2);
+    assert_eq!(page.items.len(), 1);
+}
+
+#[test]
+fn indexed_artwork_rejects_a_symlink_replaced_after_reconciliation() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    fs::create_dir(&root).unwrap();
+    media(&root.join("ART-101.mp4"));
+    let artwork = root.join("ART-101.jpg");
+    fs::write(&artwork, b"indexed artwork").unwrap();
+    let outside = fixture.path().join("outside.jpg");
+    fs::write(&outside, b"outside secret").unwrap();
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+    let id = index.search(AssetQuery::default()).unwrap().items[0]
+        .id
+        .clone();
+
+    fs::remove_file(&artwork).unwrap();
+    symlink(&outside, &artwork).unwrap();
+
+    assert_eq!(index.indexed_artwork(&id).unwrap(), None);
 }
 
 #[test]

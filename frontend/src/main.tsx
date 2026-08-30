@@ -22,6 +22,7 @@ import {
 import { BeUITab, BeUITabPanel, BeUITabs, BeUITabsList } from "./beui-tabs";
 import { AnimatedToastStack } from "./components/motion/animated-toast-stack";
 import { MorphingModal } from "./components/motion/morphing-modal";
+import { TiltCard } from "./components/motion/tilt-card";
 import { EASE_OUT } from "./lib/ease";
 import "./style.css";
 import "./design-system.css";
@@ -174,10 +175,39 @@ const operations = [
   ["remove_duplicates", "Remove duplicates"],
 ] as const;
 const labels: Record<AssetState, string> = {
-  normal: "Normal",
-  synchronizing: "Synchronizing",
-  exception: "Exception",
+  normal: "正常",
+  synchronizing: "同步中",
+  exception: "异常",
 };
+const assetStates = new Set<AssetState>(["normal", "synchronizing", "exception"]);
+function assetIdFromPath(pathname = location.pathname) {
+  const match = pathname.match(/^\/assets\/([^/]+)$/);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+function galleryStateFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const rawState = params.get("state") as AssetState | null;
+  const rawPage = Number(params.get("page") ?? "1");
+  return {
+    query: params.get("q") ?? "",
+    filter: rawState && assetStates.has(rawState) ? rawState : "" as const,
+    page: Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1,
+  };
+}
+function galleryUrl(query: string, filter: AssetState | "", page: number, assetId?: string | null) {
+  const params = new URLSearchParams();
+  params.set("page", String(page));
+  params.set("per_page", "48");
+  if (query) params.set("q", query);
+  if (filter) params.set("state", filter);
+  const pathname = assetId ? `/assets/${encodeURIComponent(assetId)}` : "/";
+  return `${pathname}?${params}`;
+}
 function actorRoute(name: string) {
   const bytes = new TextEncoder().encode(name);
   let binary = "";
@@ -196,6 +226,7 @@ function actorNameFromPath(pathname = location.pathname) {
   }
 }
 export function App() {
+  const initialGalleryState = useRef(galleryStateFromUrl()).current;
   const token = new URLSearchParams(location.search).get("token"),
     [view, setView] = useState<View>(token ? "initialize" : "loading"),
     [password, setPassword] = useState(""),
@@ -210,12 +241,12 @@ export function App() {
       total_pages: 0,
     }),
     [libraryTotal, setLibraryTotal] = useState(0),
-    [query, setQuery] = useState(""),
-    [filter, setFilter] = useState<AssetState | "">(""),
+    [query, setQuery] = useState(initialGalleryState.query),
+    [filter, setFilter] = useState<AssetState | "">(initialGalleryState.filter),
     [health, setHealth] = useState<Health | null>(null),
     [storage, setStorage] = useState<StorageHealth | null>(null),
     [storageOpen, setStorageOpen] = useState(false),
-    [page, setPage] = useState(1),
+    [page, setPage] = useState(initialGalleryState.page),
     [nav, setNav] = useState<
       | "assets"
       | "recent"
@@ -233,6 +264,11 @@ export function App() {
   const [inspectedAsset, setInspectedAsset] = useState<Asset | null>(null);
   const [assetDetail, setAssetDetail] = useState<AssetDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [galleryLoading, setGalleryLoading] = useState(true);
+  const [galleryError, setGalleryError] = useState(false);
+  const [galleryRetry, setGalleryRetry] = useState(0);
+  const assetRequest = useRef(0);
+  const detailRequest = useRef(0);
   const [yaml, setYaml] = useState("");
   const [sourceUrl, setSourceUrl] = useState(DEFAULT_RULE_SOURCE);
   const [editing, setEditing] = useState(false);
@@ -265,9 +301,11 @@ export function App() {
   }, [token]);
   useEffect(() => {
     if (view !== "ready") return;
-    const timer = setTimeout(() => void loadAssets(), 180);
-    return () => clearTimeout(timer);
-  }, [view, query, filter, page]);
+    void loadAssets();
+    return () => {
+      assetRequest.current += 1;
+    };
+  }, [view, query, filter, page, galleryRetry]);
   useEffect(() => {
     if (nav === "tasks") void loadTasks();
     if (nav === "settings") {
@@ -280,14 +318,30 @@ export function App() {
   useEffect(() => {
     if (view !== "ready") return;
     const actorName = actorNameFromPath();
+    const selectedId = assetIdFromPath();
     if (actorName) void openActor(actorName, false);
+    else if (selectedId) void inspectById(selectedId);
     const onPopState = () => {
       const poppedActor = actorNameFromPath();
+      const poppedAssetId = assetIdFromPath();
       setAssetBackActor(null);
-      setInspectedAsset(null);
-      setAssetDetail(null);
       if (poppedActor) void openActor(poppedActor, false);
+      else if (poppedAssetId) {
+        const restored = galleryStateFromUrl();
+        setQuery(restored.query);
+        setFilter(restored.filter);
+        setPage(restored.page);
+        setInspectedActor(null);
+        setNav("assets");
+        void inspectById(poppedAssetId);
+      }
       else {
+        const restored = galleryStateFromUrl();
+        setQuery(restored.query);
+        setFilter(restored.filter);
+        setPage(restored.page);
+        setInspectedAsset(null);
+        setAssetDetail(null);
         setInspectedActor(null);
         setNav("assets");
       }
@@ -383,7 +437,7 @@ export function App() {
     if (inspectedActor) setAssetBackActor(inspectedActor);
     setInspectedActor(null);
     history.pushState({ asset: asset.id }, "", `/assets/${encodeURIComponent(asset.id)}`);
-    await inspect(asset);
+    await inspect(asset, false);
   }
   async function requestActorRemoval(actor: ActorFolder) {
     setActorBusy(true);
@@ -522,28 +576,44 @@ export function App() {
     setRulesMessage("Active Rule Set saved atomically.");
   }
   async function loadAssets() {
+    const request = ++assetRequest.current;
+    setGalleryLoading(true);
+    setGalleryError(false);
     const p = new URLSearchParams({ page: String(page), per_page: "48" });
     if (query) p.set("q", query);
     if (filter) p.set("state", filter);
-    const [a, h, storageResponse] = await Promise.all([
-      fetch(`/api/v1/assets?${p}`),
-      fetch("/api/v1/assets/health"),
-      fetch("/api/v1/media-roots/storage"),
-    ]);
-    if (a.ok) {
+    try {
+      const [a, h, storageResponse] = await Promise.all([
+        fetch(`/api/v1/assets?${p}`),
+        fetch("/api/v1/assets/health"),
+        fetch("/api/v1/media-roots/storage"),
+      ]);
+      if (request !== assetRequest.current) return;
+      if (!a.ok) throw new Error("asset request failed");
       const body = (await a.json().catch(() => null)) as Page | null;
-      if (body) {
-        setAssets(body);
-        if (!query && !filter) setLibraryTotal(body.total);
+      if (!body) throw new Error("asset response was invalid");
+      setAssets(body);
+      if (body.page !== page) {
+        setPage(body.page);
+        history.replaceState(
+          {},
+          "",
+          galleryUrl(query, filter, body.page, assetIdFromPath()),
+        );
       }
-    }
-    if (h.ok) {
-      const body = (await h.json().catch(() => null)) as Health | null;
-      if (body) setHealth(body);
-    }
-    if (storageResponse.ok) {
-      const body = (await storageResponse.json().catch(() => null)) as StorageHealth | null;
-      if (body?.aggregate && Array.isArray(body.roots)) setStorage(body);
+      if (!query && !filter) setLibraryTotal(body.total);
+      if (h.ok) {
+        const healthBody = (await h.json().catch(() => null)) as Health | null;
+        if (healthBody) setHealth(healthBody);
+      }
+      if (storageResponse.ok) {
+        const storageBody = (await storageResponse.json().catch(() => null)) as StorageHealth | null;
+        if (storageBody?.aggregate && Array.isArray(storageBody.roots)) setStorage(storageBody);
+      }
+    } catch {
+      if (request === assetRequest.current) setGalleryError(true);
+    } finally {
+      if (request === assetRequest.current) setGalleryLoading(false);
     }
   }
   async function scan() {
@@ -556,16 +626,53 @@ export function App() {
     setMessage(r.ok ? "Asset Index reconciled." : await r.text());
     await loadAssets();
   }
-  async function inspect(asset: Asset) {
+  async function inspect(asset: Asset, navigate = true) {
+    if (navigate)
+      history.pushState(
+        { asset: asset.id, galleryEntry: true },
+        "",
+        galleryUrl(query, filter, page, asset.id),
+      );
+    const request = ++detailRequest.current;
     setInspectedAsset(asset);
     setAssetDetail(null);
     setDetailLoading(true);
     const response = await fetch(`/api/v1/assets/${asset.id}`);
-    if (response.ok) setAssetDetail((await response.json()) as AssetDetail);
-    else setMessage("Asset details could not be loaded.");
-    setDetailLoading(false);
+    if (request !== detailRequest.current) return;
+    if (response.ok) {
+      const detail = (await response.json()) as AssetDetail;
+      if (request === detailRequest.current) setAssetDetail(detail);
+    } else setMessage("Asset details could not be loaded.");
+    if (request === detailRequest.current) setDetailLoading(false);
+  }
+  async function inspectById(id: string) {
+    const request = ++detailRequest.current;
+    setAssetDetail(null);
+    setDetailLoading(true);
+    const response = await fetch(`/api/v1/assets/${encodeURIComponent(id)}`);
+    if (request !== detailRequest.current) return;
+    if (response.ok) {
+      const detail = (await response.json()) as AssetDetail & Partial<Asset>;
+      if (request !== detailRequest.current) return;
+      setInspectedAsset({
+        id: detail.id,
+        path: detail.path,
+        jav_code: detail.jav_code,
+        title: detail.title,
+        artwork_url: detail.artwork_url ?? null,
+        captured_date: detail.captured_date ?? "",
+        state: detail.state,
+        exception: detail.exception,
+      });
+      setAssetDetail(detail);
+    } else {
+      setInspectedAsset(null);
+      setMessage("Asset details could not be loaded.");
+    }
+    if (request === detailRequest.current) setDetailLoading(false);
   }
   function closeInspector() {
+    detailRequest.current += 1;
     setInspectedAsset(null);
     setAssetDetail(null);
     if (assetBackActor) {
@@ -573,6 +680,12 @@ export function App() {
       setAssetBackActor(null);
       setInspectedActor(actor);
       history.pushState({ actor: actor.name }, "", actorRoute(actor.name));
+    } else if (assetIdFromPath()) {
+      if ((history.state as { galleryEntry?: boolean } | null)?.galleryEntry) {
+        history.back();
+      } else {
+        history.replaceState({}, "", galleryUrl(query, filter, page));
+      }
     }
   }
   async function submit(e: FormEvent) {
@@ -737,7 +850,7 @@ export function App() {
     <motion.div
       className={`shell ui-foundation ${inspectedAsset ? "inspecting" : ""}`}
       data-design="beui-photos"
-      initial={{ opacity: 0 }}
+      initial={false}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.2, ease: EASE_OUT }}
     >
@@ -749,32 +862,38 @@ export function App() {
             <small>媒体资产管理</small>
           </div>
         </div>
-        <nav>
+        <nav aria-label="桌面主导航">
           <p>图库</p>
           <button
-            aria-label="All Assets"
+            aria-label="所有资产"
+            title="All Assets"
+            aria-current={nav === "assets" ? "page" : undefined}
             className={nav === "assets" ? "active" : ""}
             onClick={() => {
               setNav("assets");
               setFilter("");
               setPage(1);
+              history.pushState({}, "", galleryUrl(query, "", 1));
             }}
           >
             <span><Grid2X2 aria-hidden="true" /></span> 所有资产 <em>{libraryTotal || assets.total}</em>
           </button>
           <button
             aria-label="Recently Added"
+            aria-current={nav === "recent" ? "page" : undefined}
             className={nav === "recent" ? "active" : ""}
             onClick={() => {
               setNav("recent");
               setFilter("");
               setPage(1);
+              history.pushState({}, "", galleryUrl(query, "", 1));
             }}
           >
             <span><Clock3 aria-hidden="true" /></span> 最近入库
           </button>
           <button
             aria-label="Actors"
+            aria-current={nav === "actors" ? "page" : undefined}
             className={nav === "actors" ? "active" : ""}
             onClick={() => setNav("actors")}
           >
@@ -783,6 +902,7 @@ export function App() {
           </button>
           <button
             aria-label="Deletion Candidates"
+            aria-current={nav === "deletion" ? "page" : undefined}
             className={nav === "deletion" ? "active" : ""}
             onClick={() => setNav("deletion")}
           >
@@ -791,6 +911,7 @@ export function App() {
           <p>管理</p>
           <button
             aria-label="Management Tasks"
+            aria-current={nav === "tasks" ? "page" : undefined}
             className={nav === "tasks" ? "active" : ""}
             onClick={() => setNav("tasks")}
           >
@@ -798,17 +919,20 @@ export function App() {
           </button>
           <button
             aria-label="Exceptions"
+            aria-current={nav === "exceptions" ? "page" : undefined}
             className={nav === "exceptions" ? "active" : ""}
             onClick={() => {
               setNav("exceptions");
               setFilter("exception");
               setPage(1);
+              history.pushState({}, "", galleryUrl(query, "exception", 1));
             }}
           >
             <span><AlertTriangle aria-hidden="true" /></span> 异常资产
           </button>
           <button
             aria-label="Settings"
+            aria-current={nav === "settings" ? "page" : undefined}
             className={nav === "settings" ? "active" : ""}
             onClick={() => setNav("settings")}
           >
@@ -891,15 +1015,26 @@ export function App() {
                   placeholder="搜索番号、标题或路径"
                   value={query}
                   onChange={(e) => {
-                    setQuery(e.target.value);
+                    const nextQuery = e.target.value;
+                    setQuery(nextQuery);
                     setPage(1);
+                    history.replaceState(
+                      {},
+                      "",
+                      galleryUrl(nextQuery, filter, 1, assetIdFromPath()),
+                    );
                   }}
                 />
               </label>
               <div className="filters">
                 <button
                   className={!filter ? "selected" : ""}
-                  onClick={() => setFilter("")}
+                  aria-pressed={!filter}
+                  onClick={() => {
+                    setFilter("");
+                    setPage(1);
+                    history.pushState({}, "", galleryUrl(query, "", 1, assetIdFromPath()));
+                  }}
                 >
                   全部
                 </button>
@@ -908,9 +1043,12 @@ export function App() {
                     <button
                       key={s}
                       className={filter === s ? "selected" : ""}
+                      aria-pressed={filter === s}
+                      title={s === "synchronizing" ? "Synchronizing" : undefined}
                       onClick={() => {
                         setFilter(s);
                         setPage(1);
+                        history.pushState({}, "", galleryUrl(query, s, 1, assetIdFromPath()));
                       }}
                     >
                       {s === "normal" ? "正常" : s === "synchronizing" ? "刷新中" : "异常"}
@@ -919,8 +1057,20 @@ export function App() {
                 )}
               </div>
             </div>
-            <div className="library">
-              {grouped.length === 0 ? (
+            <div className="library" aria-busy={galleryLoading}>
+              {galleryLoading ? (
+                <div className="gallery-feedback gallery-loading" role="status" aria-label="正在加载媒体资产">
+                  <RefreshCw aria-hidden="true" />
+                  <span>正在加载媒体资产…</span>
+                </div>
+              ) : galleryError ? (
+                <div className="gallery-feedback gallery-error" role="alert">
+                  <AlertTriangle aria-hidden="true" />
+                  <h2>无法加载媒体资产</h2>
+                  <p>请检查连接后重试。</p>
+                  <button onClick={() => setGalleryRetry((value) => value + 1)}>重试</button>
+                </div>
+              ) : grouped.length === 0 ? (
                 <Empty />
               ) : (
                 grouped.map(({ group, items }) => (
@@ -931,7 +1081,7 @@ export function App() {
                     </div>
                     <div className="asset-grid">
                       {items.map((a) => (
-                        <article
+                        <TiltCard
                           className={`asset-card photos-tile ${inspectedAsset?.id === a.id ? "selected" : ""}`}
                           key={a.id}
                         >
@@ -940,19 +1090,8 @@ export function App() {
                             onClick={() => void inspect(a)}
                             aria-label={`Inspect ${a.jav_code ?? a.title ?? "asset"}`}
                           >
-                            <div className="poster">
-                              {a.artwork_url ? (
-                                <img
-                                  loading="lazy"
-                                  src={a.artwork_url}
-                                  alt=""
-                                />
-                              ) : (
-                                <div className="placeholder">
-                                  <span>◇</span>
-                                  <small>NO ARTWORK</small>
-                                </div>
-                              )}
+                            <div className="poster" style={{ aspectRatio: "4 / 3" }}>
+                              <AssetArtwork asset={a} />
                               <div className="asset-overlay">
                                 <Film aria-hidden="true" />
                                 <span>
@@ -963,7 +1102,7 @@ export function App() {
                               </div>
                             </div>
                           </button>
-                        </article>
+                        </TiltCard>
                       ))}
                     </div>
                   </section>
@@ -974,7 +1113,11 @@ export function App() {
               <div className="pagination">
                 <button
                   disabled={page === 1}
-                  onClick={() => setPage((p) => p - 1)}
+                  onClick={() => {
+                    const nextPage = page - 1;
+                    setPage(nextPage);
+                    history.pushState({}, "", galleryUrl(query, filter, nextPage, assetIdFromPath()));
+                  }}
                 >
                   Previous
                 </button>
@@ -983,7 +1126,11 @@ export function App() {
                 </span>
                 <button
                   disabled={page === assets.total_pages}
-                  onClick={() => setPage((p) => p + 1)}
+                  onClick={() => {
+                    const nextPage = page + 1;
+                    setPage(nextPage);
+                    history.pushState({}, "", galleryUrl(query, filter, nextPage, assetIdFromPath()));
+                  }}
                 >
                   Next
                 </button>
@@ -1265,20 +1412,23 @@ export function App() {
           </section>
         )}
       </MorphingModal>
-      <nav className="bottom-nav">
+      <nav className="bottom-nav" aria-label="移动端主导航">
         <button
-          aria-label="Library"
+          aria-label="图库"
+          aria-current={nav === "assets" || nav === "recent" || nav === "exceptions" ? "page" : undefined}
           className={nav === "assets" || nav === "recent" || nav === "exceptions" ? "active" : ""}
           onClick={() => {
             setNav("assets");
             setFilter("");
             setPage(1);
+            history.pushState({}, "", galleryUrl(query, "", 1));
           }}
         >
           <span><Grid2X2 aria-hidden="true" /></span>图库
         </button>
         <button
           aria-label="Actors"
+          aria-current={nav === "actors" ? "page" : undefined}
           className={nav === "actors" ? "active" : ""}
           onClick={() => setNav("actors")}
         >
@@ -1286,6 +1436,7 @@ export function App() {
         </button>
         <button
           aria-label="Delete"
+          aria-current={nav === "deletion" ? "page" : undefined}
           className={nav === "deletion" ? "active" : ""}
           onClick={() => setNav("deletion")}
         >
@@ -1293,6 +1444,7 @@ export function App() {
         </button>
         <button
           aria-label="Tasks"
+          aria-current={nav === "tasks" ? "page" : undefined}
           className={nav === "tasks" ? "active" : ""}
           onClick={() => setNav("tasks")}
         >
@@ -1300,6 +1452,7 @@ export function App() {
         </button>
         <button
           aria-label="Settings"
+          aria-current={nav === "settings" ? "page" : undefined}
           className={nav === "settings" ? "active" : ""}
           onClick={() => setNav("settings")}
         >
@@ -1385,6 +1538,7 @@ function AssetInspector({
   backLabel?: string;
 }) {
   const [tab, setTab] = useState<"overview" | "nfo">("overview");
+  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
   useEffect(() => setTab("overview"), [asset.id]);
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
@@ -1395,7 +1549,7 @@ function AssetInspector({
   }, [close]);
   return (
     <motion.aside
-      initial={{ x: 28, opacity: 0 }}
+      initial={reduce ? false : { x: 28, opacity: 0 }}
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: 28, opacity: 0 }}
       className="asset-inspector"
@@ -1781,8 +1935,30 @@ function Empty() {
   return (
     <div className="empty">
       <span>◇</span>
-      <h2>No Media Assets</h2>
-      <p>Configure a Media Root, then reconcile the filesystem.</p>
+      <h2>暂无媒体资产</h2>
+      <p>配置媒体根目录后，重新扫描文件系统。</p>
+    </div>
+  );
+}
+
+function AssetArtwork({ asset }: { asset: Asset }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [asset.artwork_url]);
+  const label = asset.jav_code ?? asset.title ?? "媒体资产";
+  if (asset.artwork_url && !failed) {
+    return (
+      <img
+        loading="lazy"
+        src={asset.artwork_url}
+        alt={`${label} 封面`}
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+  return (
+    <div className="placeholder" role="img" aria-label={`${label} 暂无封面`}>
+      <span>◇</span>
+      <small>暂无封面</small>
     </div>
   );
 }

@@ -1015,6 +1015,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   gap: 8px;
 }
 .photos-tile { min-width: 0; }
+.photos-tile[data-motion="tilt"] { will-change: transform; }
 .photos-tile .poster { aspect-ratio: 4 / 3; border-radius: 11px; box-shadow: none; }
 .photos-tile .asset-select { border-radius: 11px; }
 .photos-tile .asset-overlay {
@@ -1036,6 +1037,31 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .asset-overlay .state-label { flex: none; margin: 0 !important; color: white !important; background: rgba(0,0,0,.34); backdrop-filter: blur(10px); font-style: normal; }
 .asset-overlay .state-label.exception { background: rgba(198, 47, 38, .9); }
 .asset-overlay .state-label.synchronizing { background: rgba(151, 107, 0, .9); }
+
+.gallery-feedback {
+  display: grid;
+  min-height: 48vh;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: #6e6e73;
+  text-align: center;
+}
+.gallery-feedback svg { width: 28px; height: 28px; }
+.gallery-feedback h2, .gallery-feedback p { margin: 0; }
+.gallery-feedback h2 { color: #303034; font-size: 18px; }
+.gallery-feedback p { font-size: 12px; }
+.gallery-feedback button {
+  margin-top: 6px;
+  padding: 8px 18px;
+  border: 0;
+  border-radius: 10px;
+  color: white;
+  background: var(--blue);
+  font-weight: 650;
+}
+.gallery-loading svg { animation: gallery-spin .9s linear infinite; }
+@keyframes gallery-spin { to { transform: rotate(360deg); } }
 
 .detail-tabs { margin-top: 16px; border: 0; }
 .beui-tabs-list { display: flex; border-bottom: 1px solid var(--line); }
@@ -1110,7 +1136,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .content > header { top: 0; min-height: 70px; }
   .toolbar { top: 70px; }
   .asset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-  .bottom-nav { height: calc(68px + env(safe-area-inset-bottom)); }
+  .bottom-nav {
+    inset: auto 12px max(12px, env(safe-area-inset-bottom));
+    height: 64px;
+    padding: 6px 8px;
+    border: 1px solid rgba(0, 0, 0, .1);
+    border-radius: 18px;
+    background: rgba(250, 250, 252, .9);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .16);
+  }
   .bottom-nav button { min-height: 44px; }
   .bottom-nav button svg { width: 20px; height: 20px; }
   .actor-detail-hero { margin-left: -18px; margin-right: -18px; }
@@ -1388,7 +1422,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 @media (prefers-reduced-motion: reduce) {
   * {
+    animation: none !important;
     transition: none !important;
+    scroll-behavior: auto !important;
   }
 }
 .asset-select {

@@ -1,8 +1,9 @@
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::{
     collections::HashMap,
     fs,
     future::Future,
+    io::Read,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     pin::Pin,
@@ -1144,9 +1145,17 @@ async fn indexed_artwork(
     let Ok(Some(path)) = state.assets.indexed_artwork(&asset_id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Ok(bytes) = fs::read(&path) else {
+    let Ok(mut file) = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+    else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let content_type = match path
         .extension()
         .and_then(|v| v.to_str())

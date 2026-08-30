@@ -447,8 +447,8 @@ impl AssetIndex {
                 .to_string();
         let connection = self.connection()?;
         let id: Option<String> = connection.query_row(
-            "SELECT id FROM media_assets WHERE media_root=?1 AND ((device=?2 AND inode=?3) OR path=?4 OR (?5 IS NOT NULL AND jav_code=?5)) ORDER BY CASE WHEN device=?2 AND inode=?3 THEN 0 WHEN path=?4 THEN 1 ELSE 2 END LIMIT 1",
-            params![root.display().to_string(), metadata.dev() as i64, metadata.ino() as i64, path.display().to_string(), jav_code], |row| row.get(0)).optional()?;
+            "SELECT id FROM media_assets WHERE media_root=?1 AND ((device=?2 AND inode=?3) OR path=?4) ORDER BY CASE WHEN device=?2 AND inode=?3 THEN 0 ELSE 1 END LIMIT 1",
+            params![root.display().to_string(), metadata.dev() as i64, metadata.ino() as i64, path.display().to_string()], |row| row.get(0)).optional()?;
         let id = id.unwrap_or_else(asset_id);
         connection.execute(
             "DELETE FROM media_assets WHERE path=?1 AND id<>?2",
@@ -462,21 +462,35 @@ impl AssetIndex {
     }
 
     pub fn search(&self, query: AssetQuery) -> Result<AssetPage, Error> {
-        let page = query.page.max(1);
+        let requested_page = query.page.max(1);
         let per_page = if query.per_page == 0 {
             48
         } else {
             query.per_page.min(200)
         };
-        let needle = format!("%{}%", query.query.unwrap_or_default().to_lowercase());
+        let escaped_query = query
+            .query
+            .unwrap_or_default()
+            .to_lowercase()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let needle = format!("%{escaped_query}%");
         let state = query.state.map(|s| s.as_str().to_owned());
         let connection = self.connection()?;
-        let filter = "(?1='%%' OR lower(coalesce(jav_code,'')||' '||coalesce(title,'')||' '||path) LIKE ?1) AND (?2 IS NULL OR state=?2)";
+        let filter = "(?1='%%' OR lower(coalesce(jav_code,'')||' '||coalesce(title,'')||' '||path) LIKE ?1 ESCAPE '\\') AND (?2 IS NULL OR state=?2)";
         let total: i64 = connection.query_row(
             &format!("SELECT count(*) FROM media_assets WHERE {filter}"),
             params![needle, state],
             |r| r.get(0),
         )?;
+        let total = total as usize;
+        let total_pages = total.div_ceil(per_page);
+        let page = if total_pages == 0 {
+            1
+        } else {
+            requested_page.min(total_pages)
+        };
         let mut statement = connection.prepare(&format!("SELECT id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,observed_at,captured_date,state,exception FROM media_assets WHERE {filter} ORDER BY captured_date DESC, path LIMIT ?3 OFFSET ?4"))?;
         let items = statement
             .query_map(
@@ -503,24 +517,36 @@ impl AssetIndex {
             groups,
             page,
             per_page,
-            total: total as usize,
-            total_pages: (total as usize).div_ceil(per_page),
+            total,
+            total_pages,
         })
     }
 
     pub fn indexed_artwork(&self, id: &str) -> Result<Option<PathBuf>, Error> {
-        let value: Option<String> = self
+        let value: Option<(Option<String>, String)> = self
             .connection()?
             .query_row(
-                "SELECT artwork_path FROM media_assets WHERE id=?1",
+                "SELECT artwork_path,media_root FROM media_assets WHERE id=?1",
                 [id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .optional()?
-            .flatten();
-        Ok(value
-            .map(PathBuf::from)
-            .filter(|p| p.is_file() && is_artwork(p)))
+            .optional()?;
+        let Some((Some(path), root)) = value else {
+            return Ok(None);
+        };
+        let path = PathBuf::from(path);
+        let root = PathBuf::from(root);
+        if !fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_file()) {
+            return Ok(None);
+        }
+        let (Ok(path_canonical), Ok(root_canonical)) = (path.canonicalize(), root.canonicalize())
+        else {
+            return Ok(None);
+        };
+        Ok(
+            (path_canonical.starts_with(root_canonical) && is_artwork(&path_canonical))
+                .then_some(path),
+        )
     }
 
     pub fn assets_by_identities(
