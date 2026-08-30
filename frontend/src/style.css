@@ -1371,30 +1371,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   color: #ffffffdd;
   font-size: 12px;
 }
-.detail-tabs {
-  display: flex;
-  margin-top: 18px;
-  border-bottom: 2px solid #777;
-}
-.detail-tabs button {
-  flex: 1;
-  padding: 11px;
-  border: 0;
-  border-bottom: 4px solid transparent;
-  color: #222;
-  background: #ddd;
-  font-weight: 800;
-  cursor: pointer;
-}
-.detail-tabs button[aria-selected="true"] {
-  color: #fff;
-  border-color: #fff;
-  background: #075dab;
-}
-.detail-tabs button:focus-visible {
-  outline: 3px solid #111;
-  outline-offset: 2px;
-}
 .detail-panel {
   padding: 16px 0;
 }

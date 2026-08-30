@@ -15,6 +15,7 @@ type TabsContextValue = {
   setValue: (value: string) => void;
   baseId: string;
   layoutId: string;
+  variant: "pill" | "underline" | "segment";
 };
 
 const TabsContext = createContext<TabsContextValue | null>(null);
@@ -31,12 +32,14 @@ export function BeUITabs({
   onValueChange,
   children,
   className,
+  variant = "underline",
 }: {
   defaultValue: string;
   value?: string;
   onValueChange?: (value: string) => void;
   children: ReactNode;
   className?: string;
+  variant?: "pill" | "underline" | "segment";
 }) {
   const [internal, setInternal] = useState(defaultValue);
   const current = value ?? internal;
@@ -51,8 +54,9 @@ export function BeUITabs({
       },
       baseId,
       layoutId: `${baseId}-indicator`,
+      variant,
     }),
-    [baseId, current, onValueChange, value],
+    [baseId, current, onValueChange, value, variant],
   );
   return (
     <MotionConfig transition={reduce ? { duration: 0 } : { type: "spring", stiffness: 220, damping: 28 }}>
@@ -64,6 +68,7 @@ export function BeUITabs({
 }
 
 export function BeUITabsList({ children, label }: { children: ReactNode; label: string }) {
+  const { variant } = useTabs();
   const ref = useRef<HTMLDivElement>(null);
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -75,7 +80,7 @@ export function BeUITabsList({ children, label }: { children: ReactNode; label: 
     tabs[next]?.focus();
     tabs[next]?.click();
   };
-  return <div ref={ref} role="tablist" aria-label={label} className="beui-tabs-list" onKeyDown={onKeyDown}>{children}</div>;
+  return <div ref={ref} role="tablist" aria-label={label} data-variant={variant} className="beui-tabs-list" onKeyDown={onKeyDown}>{children}</div>;
 }
 
 export function BeUITab({ value, children }: { value: string; children: ReactNode }) {

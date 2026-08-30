@@ -289,8 +289,13 @@ describe("BeUI Photos presentation", () => {
     expect(tile.querySelector(".asset-overlay")).toBeInTheDocument();
     expect(tile.querySelector("svg")).toBeInTheDocument();
     await userEvent.click(tile);
-    expect(await screen.findByRole("tab", { name: "Overview" })).toHaveAttribute(
+    const overview = await screen.findByRole("tab", { name: "Overview" });
+    expect(overview).toHaveAttribute(
       "aria-controls",
+    );
+    expect(overview.closest('[role="tablist"]')).toHaveAttribute(
+      "data-variant",
+      "underline",
     );
   });
 });

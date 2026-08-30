@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { BeUITab, BeUITabPanel, BeUITabs, BeUITabsList } from "./beui-tabs";
 import "./style.css";
+import "./design-system.css";
 type View = "loading" | "initialize" | "login" | "ready";
 const DEFAULT_RULE_SOURCE =
   "https://raw.githubusercontent.com/hqwuzhaoyi/rust-jav/feature/web-jellyfin-truenas/rules.yaml";
@@ -1358,7 +1359,7 @@ function AssetInspector({
           </span>
         </div>
       </div>
-      <BeUITabs defaultValue="overview" value={tab} onValueChange={(value) => setTab(value as "overview" | "nfo")} className="detail-tabs">
+      <BeUITabs defaultValue="overview" value={tab} onValueChange={(value) => setTab(value as "overview" | "nfo")} variant="underline" className="detail-tabs">
         <BeUITabsList label="Asset details">
           <BeUITab value="overview">Overview</BeUITab>
           <BeUITab value="nfo">NFO</BeUITab>
