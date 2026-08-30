@@ -58,6 +58,64 @@ describe("Administrator initialization", () => {
   });
 });
 
+describe("Administrator 登录", () => {
+  it("当凭据有效且会话建立时，应进入真实 Management Interface shell", async () => {
+    const requests: Array<{ url: string; method: string }> = [];
+    let statusChecks = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        requests.push({ url, method });
+        if (url === "/api/v1/status") {
+          statusChecks += 1;
+          return statusChecks === 1
+            ? new Response(null, { status: 401 })
+            : Response.json({ state: "healthy" });
+        }
+        if (url === "/api/v1/auth/login")
+          return new Response(null, { status: 204 });
+        if (url.startsWith("/api/v1/assets?"))
+          return Response.json({
+            items: [],
+            groups: [],
+            page: 1,
+            total: 0,
+            total_pages: 1,
+          });
+        if (url === "/api/v1/assets/health")
+          return Response.json({ state: "healthy", mode: "manual" });
+        return new Response(null, { status: 204 });
+      }),
+    );
+
+    const firstVisit = render(<App />);
+    await userEvent.type(
+      await screen.findByLabelText("Password"),
+      "correct horse battery staple",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() =>
+      expect(requests).toContainEqual({
+        url: "/api/v1/auth/login",
+        method: "POST",
+      }),
+    );
+
+    firstVisit.unmount();
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "所有资产" }),
+    ).toBeInTheDocument();
+    expect(document.querySelector(".shell")).toHaveAttribute(
+      "data-design",
+      "beui-photos",
+    );
+  });
+});
+
 describe("Active Rule Set settings", () => {
   it("downloads into the editor, validates, and saves only after explicit activation", async () => {
     const requests: Array<{ url: string; method: string; body?: string }> = [];

@@ -4,16 +4,21 @@
   "version": "0.4.0",
   "type": "module",
   "scripts": {
+    "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "check": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "@tailwindcss/vite": "4.3.3",
     "@vitejs/plugin-react": "latest",
+    "clsx": "2.1.1",
     "lucide-react": "^1.37.0",
     "motion": "^13.1.1",
     "react": "latest",
     "react-dom": "latest",
+    "tailwind-merge": "3.6.0",
+    "tailwindcss": "4.3.3",
     "typescript": "latest",
     "vite": "latest"
   },

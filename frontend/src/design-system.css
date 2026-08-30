@@ -1,5 +1,22 @@
-/* Canonical BeUI / Apple Photos design layer. Keep component styling here. */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "./main.tsx";
+@source "./beui-tabs.tsx";
+@source "./components";
+
+/* Canonical BeUI foundation. Keep semantic tokens and component styling here. */
 :root {
+  color-scheme: light;
+  --background: #f4f4f1;
+  --foreground: #171816;
+  --surface: #fff;
+  --surface-muted: #f0f0ec;
+  --border: rgba(23, 24, 22, 0.09);
+  --ring: #315f52;
+  --primary: #315f52;
+  --primary-foreground: #fff;
+  --muted-foreground: #70746f;
+  --destructive: #b9443b;
   --ds-bg: #f5f5f7;
   --ds-surface: rgba(255, 255, 255, 0.78);
   --ds-surface-solid: #fff;
@@ -28,6 +45,43 @@
   --ds-control: 44px;
   --blue: var(--ds-accent);
   --line: var(--ds-line);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--surface);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-destructive: var(--destructive);
+}
+
+.ui-foundation {
+  font-family: "Avenir Next", "DIN Alternate", "Helvetica Neue", sans-serif;
+}
+.ui-panel,
+.auth form.ui-panel {
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 24px 70px rgba(24, 28, 24, 0.1);
+}
+.ui-primary-button,
+.auth button.ui-primary-button {
+  color: var(--primary-foreground);
+  background: var(--primary);
+  transition: background-color 160ms ease, transform 160ms ease;
+}
+.ui-primary-button:hover, .auth button.ui-primary-button:hover { background: #264c42; }
+.ui-primary-button:active, .auth button.ui-primary-button:active { transform: translateY(1px); }
+.ui-toast-stack button { min-height: 1.75rem; }
+.actor-removal-modal { max-width: 480px; }
+.actor-removal-modal .confirm-dialog {
+  width: 100%;
+  border: 0;
+  box-shadow: none;
 }
 
 body { color: var(--ds-text); background: var(--ds-bg); }

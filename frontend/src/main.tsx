@@ -19,6 +19,9 @@ import {
   X,
 } from "lucide-react";
 import { BeUITab, BeUITabPanel, BeUITabs, BeUITabsList } from "./beui-tabs";
+import { AnimatedToastStack } from "./components/motion/animated-toast-stack";
+import { MorphingModal } from "./components/motion/morphing-modal";
+import { EASE_OUT } from "./lib/ease";
 import "./style.css";
 import "./design-system.css";
 type View = "loading" | "initialize" | "login" | "ready";
@@ -664,16 +667,21 @@ export function App() {
         .filter((g) => g.items.length),
     [assets],
   );
-  if (view === "loading") return <div className="auth">Checking session…</div>;
+  if (view === "loading") return <div className="auth ui-foundation">Checking session…</div>;
   if (view === "initialize" || view === "login")
     return (
-      <main className="auth">
+      <motion.main
+        className="auth ui-foundation"
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.24, ease: EASE_OUT }}
+      >
         <div className="brand-mark"><ImageIcon aria-hidden="true" /></div>
         <p className="eyebrow">RUST—JAV</p>
         <h1>
           {view === "initialize" ? "Initialize Administrator" : "Welcome back"}
         </h1>
-        <form onSubmit={submit}>
+        <form className="ui-panel" onSubmit={submit}>
           <label htmlFor="password">Password</label>
           <input
             id="password"
@@ -685,7 +693,7 @@ export function App() {
             required
             autoFocus
           />
-          <button type="submit" disabled={submitting}>
+          <button className="ui-primary-button" type="submit" disabled={submitting}>
             {submitting
               ? "Please wait…"
               : view === "initialize"
@@ -694,12 +702,15 @@ export function App() {
           </button>
         </form>
         {message && <p role="status">{message}</p>}
-      </main>
+      </motion.main>
     );
   return (
-    <div
-      className={`shell ${inspectedAsset ? "inspecting" : ""}`}
+    <motion.div
+      className={`shell ui-foundation ${inspectedAsset ? "inspecting" : ""}`}
       data-design="beui-photos"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.2, ease: EASE_OUT }}
     >
       <aside className="sidebar">
         <div className="logo">
@@ -868,11 +879,6 @@ export function App() {
                 )}
               </div>
             </div>
-            {message && (
-              <p className="notice" role="status">
-                {message}
-              </p>
-            )}
             <div className="library">
               {grouped.length === 0 ? (
                 <Empty />
@@ -955,7 +961,6 @@ export function App() {
             createTask={createTask}
             confirmPlan={confirmPlan}
             refresh={loadTasks}
-            message={message}
           />
         )}
         {nav === "actors" && (
@@ -984,11 +989,6 @@ export function App() {
                 Review {selected.length || "selected"}
               </button>
             </div>
-            {message && (
-              <p className="notice" role="status">
-                {message}
-              </p>
-            )}
             <div className="candidate-list">
               {candidates.map((candidate) => (
                 <label className="candidate" key={candidate.path}>
@@ -1153,11 +1153,6 @@ export function App() {
                   Refresh Jellyfin
                 </button>
               </div>
-              {message && (
-                <p className="notice" role="status">
-                  {message}
-                </p>
-              )}
             </section>
           </div>
         )}
@@ -1182,14 +1177,30 @@ export function App() {
           />
         )}
       </AnimatePresence>
-      {confirmActor && (
-        <ActorRemovalDialog
-          actor={confirmActor}
-          busy={actorBusy}
-          cancel={() => setConfirmActor(null)}
-          remove={() => void removeActor()}
-        />
-      )}
+      <MorphingModal
+        viewId={confirmActor ? "actor-removal" : null}
+        placement="center"
+        className="actor-removal-modal"
+        onClose={() => setConfirmActor(null)}
+      >
+        {confirmActor && (
+          <ActorRemovalDialog
+            actor={confirmActor}
+            busy={actorBusy}
+            cancel={() => setConfirmActor(null)}
+            remove={() => void removeActor()}
+          />
+        )}
+      </MorphingModal>
+      <AnimatedToastStack
+        fixed
+        toasts={
+          message
+            ? [{ id: "shell-status", title: message, status: "info", duration: 0 }]
+            : []
+        }
+        onDismiss={() => setMessage("")}
+      />
       <nav className="bottom-nav">
         <button
           aria-label="Library"
@@ -1293,7 +1304,7 @@ export function App() {
           </section>
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }
 function AssetInspector({
@@ -1591,19 +1602,12 @@ function ActorRemovalDialog({
   remove: () => void;
 }) {
   return (
-    <div
-      className="dialog-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) cancel();
-      }}
+    <section
+      className="confirm-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="remove-actor-title"
     >
-      <section
-        className="confirm-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="remove-actor-title"
-      >
         <p className="eyebrow">SAFE DERIVED-PATH REMOVAL</p>
         <h2 id="remove-actor-title">Remove {actor.name}?</h2>
         <p>
@@ -1649,8 +1653,7 @@ function ActorRemovalDialog({
             Remove via Management Task
           </button>
         </div>
-      </section>
-    </div>
+    </section>
   );
 }
 function Empty() {
@@ -1671,7 +1674,6 @@ function TaskPanel({
   createTask,
   confirmPlan,
   refresh,
-  message,
 }: {
   tasks: Task[];
   mediaRoot: string;
@@ -1681,7 +1683,6 @@ function TaskPanel({
   createTask: (e: FormEvent) => void;
   confirmPlan: (id: string) => Promise<void>;
   refresh: () => Promise<void>;
-  message: string;
 }) {
   const toggle = (key: string) =>
     setSelectedOps(
@@ -1727,11 +1728,6 @@ function TaskPanel({
             Preview 15-minute plan
           </button>
         </form>
-        {message && (
-          <p className="notice" role="status">
-            {message}
-          </p>
-        )}
       </section>
       <section className="task-history">
         <div className="task-title">
