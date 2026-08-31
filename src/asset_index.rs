@@ -443,6 +443,7 @@ impl AssetIndex {
             .and_then(|nfo| nfo.title.clone());
         let (state, exception) = match &parsed {
             None => (AssetState::Exception, Some("NFO metadata is missing. Add a sibling .nfo file and reconcile the Asset Index.".to_owned())),
+            Some(Err(reason)) if is_empty_nfo_error(reason) => (AssetState::Exception, Some(format!("NFO metadata file is empty. Regenerate it and reconcile the Asset Index: {reason}"))),
             Some(Err(reason)) => (AssetState::Exception, Some(format!("Fix invalid NFO metadata and reconcile the Asset Index: {reason}"))),
             Some(Ok(_)) => (AssetState::Normal, None),
         };
@@ -588,6 +589,13 @@ impl AssetIndex {
             .map(|path| parse_nfo(Path::new(&asset.media_root), path));
         let (metadata, parse_status, live_exception) = match parsed {
             Some(Ok(metadata)) => (metadata, "valid", None),
+            Some(Err(reason)) if is_empty_nfo_error(&reason) => (
+                ParsedNfo::default(),
+                "empty",
+                Some(format!(
+                    "NFO metadata file is empty. Regenerate it: {reason}"
+                )),
+            ),
             Some(Err(reason)) => (
                 ParsedNfo::default(),
                 "invalid",
@@ -825,6 +833,9 @@ fn parse_nfo(root: &Path, path: &Path) -> Result<ParsedNfo, String> {
     let mut xml = String::new();
     file.read_to_string(&mut xml)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    if xml.trim().is_empty() {
+        return Err(format!("{} is empty", path.display()));
+    }
     let document = roxmltree::Document::parse(&xml)
         .map_err(|error| format!("{} ({error})", path.display()))?;
     let movie = document
@@ -875,4 +886,8 @@ fn parse_nfo(root: &Path, path: &Path) -> Result<ParsedNfo, String> {
         tags,
         plot: text("plot"),
     })
+}
+
+fn is_empty_nfo_error(reason: &str) -> bool {
+    reason.ends_with(" is empty")
 }

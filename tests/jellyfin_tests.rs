@@ -225,6 +225,34 @@ fn normalized_path_wins_and_metadata_fallback_is_explicitly_uncertain() {
     assert!(!by_metadata.may_authorize_deletion());
 }
 
+#[test]
+fn unique_media_relative_path_suffix_matches_different_mount_prefixes() {
+    let matching = JellyfinItem::fixture(
+        "midv-821",
+        "MIDV-821 full title",
+        Some("/media/jav/CHINESE/MIDV-821-C/MIDV-821-C.mp4"),
+        None,
+    );
+    let unrelated = JellyfinItem::fixture(
+        "other",
+        "Other",
+        Some("/media/jav/OTHER/OTHER-001.mp4"),
+        None,
+    );
+
+    let association = associate(
+        "/media/CHINESE/MIDV-821-C/MIDV-821-C.mp4",
+        Some("MIDV-821"),
+        None,
+        &[matching, unrelated],
+    )
+    .unwrap();
+
+    assert_eq!(association.item_id, "midv-821");
+    assert_eq!(association.confidence, AssociationConfidence::CertainPath);
+    assert!(association.reason.contains("relative path suffix"));
+}
+
 #[tokio::test]
 async fn batch_refresh_is_one_request_and_retries_at_most_five_attempts() {
     let (url, state) = mock_server(4).await;

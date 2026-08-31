@@ -2091,13 +2091,15 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
     };
     let refreshes = Arc::new(AtomicUsize::new(0));
     let image_requests = Arc::new(AtomicUsize::new(0));
+    let people_requests = Arc::new(AtomicUsize::new(0));
     let count = refreshes.clone();
     let image_count = image_requests.clone();
+    let people_count = people_requests.clone();
     let jellyfin = Router::new()
         .route("/System/Info", get(|| async { Json(serde_json::json!({"ServerName":"TrueNAS Jellyfin","Version":"10.11","Id":"server"})) }))
         .route("/Library/MediaFolders", get(|| async { Json(serde_json::json!({"Items":[{"Id":"jav","Name":"JAV","Path":"/media/jav"}]})) }))
         .route("/Items", get(|| async { Json(serde_json::json!({"Items":[{"Id":"jf-1","Name":"ABC-123","Path":"/media/jav/ABC-123.mp4","ProviderIds":{},"UserData":{"Played":true,"PlayCount":1,"PlaybackPositionTicks":0}}]})) }))
-        .route("/Persons", get(|| async { Json(serde_json::json!({"Items":[{"Id":"person-alice","Name":"Alice","ImageTags":{"Primary":"portrait-tag"}}]})) }))
+        .route("/Persons", get(move || { let people_count=people_count.clone(); async move { people_count.fetch_add(1, Ordering::SeqCst); Json(serde_json::json!({"Items":[{"Id":"person-alice","Name":"Alice","ImageTags":{"Primary":"portrait-tag"}}]})) }}))
         .route("/Items/:id/Images/Primary", get(move |headers: axum::http::HeaderMap, axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String,String>>| { let image_count=image_count.clone(); async move {
             assert_eq!(headers["X-Emby-Token"], "server-only-secret");
             assert_eq!(query.get("maxWidth").map(String::as_str), Some("320"));
@@ -2216,8 +2218,8 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
     assert_eq!(detail["captured_date"], listed_captured_date);
     assert_eq!(detail["parse_status"], "valid");
     assert_eq!(detail["jellyfin"]["status"], "played");
-    assert_eq!(detail["jellyfin"]["confidence"], "uncertain_metadata");
-    assert_eq!(detail["jellyfin"]["may_authorize_deletion"], false);
+    assert_eq!(detail["jellyfin"]["confidence"], "certain_path");
+    assert_eq!(detail["jellyfin"]["may_authorize_deletion"], true);
     assert!(detail["jellyfin"]["open_url"]
         .as_str()
         .unwrap()
@@ -2279,6 +2281,11 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
         image_requests.load(Ordering::SeqCst),
         1,
         "person ID + image tag cache hit"
+    );
+    assert_eq!(
+        people_requests.load(Ordering::SeqCst),
+        1,
+        "asset detail, Actor list and portrait requests share one People snapshot"
     );
 
     let refresh = json_request(

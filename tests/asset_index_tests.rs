@@ -461,3 +461,21 @@ fn missing_and_invalid_nfo_are_actionable_asset_exceptions() {
         "invalid"
     );
 }
+
+#[test]
+fn empty_nfo_is_reported_as_empty_with_a_regeneration_action() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    fs::create_dir(&root).unwrap();
+    media(&root.join("MIDV-821-C.mp4"));
+    fs::write(root.join("movie.nfo"), b"").unwrap();
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+
+    let asset = index.search(AssetQuery::default()).unwrap().items.remove(0);
+    let detail = index.detail(&asset.id).unwrap().unwrap();
+
+    assert_eq!(detail.parse_status, "empty");
+    assert!(detail.exception.unwrap().contains("empty"));
+    assert!(asset.exception.unwrap().contains("Regenerate"));
+}

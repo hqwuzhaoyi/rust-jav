@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex, RwLock},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use argon2::{
@@ -506,7 +506,14 @@ pub struct AppState {
     coordinator: TaskCoordinator,
     assets: AssetIndex,
     deletion_plans: Arc<Mutex<HashMap<String, StoredDeletionPlan>>>,
+    jellyfin_people_cache: Arc<tokio::sync::Mutex<Option<CachedJellyfinPeople>>>,
     database: PathBuf,
+}
+
+#[derive(Clone)]
+struct CachedJellyfinPeople {
+    fetched_at: Instant,
+    people: Vec<JellyfinPerson>,
 }
 
 #[derive(Clone)]
@@ -647,6 +654,7 @@ impl AppState {
             coordinator: TaskCoordinator::new(),
             assets,
             deletion_plans: Arc::new(Mutex::new(HashMap::new())),
+            jellyfin_people_cache: Arc::new(tokio::sync::Mutex::new(None)),
             database,
         })
     }
@@ -655,6 +663,25 @@ impl AppState {
     }
     fn now(&self) -> u64 {
         self.clock.read().unwrap().unix_seconds()
+    }
+
+    async fn jellyfin_people(
+        &self,
+        client: &JellyfinClient,
+    ) -> Result<Vec<JellyfinPerson>, crate::jellyfin::Error> {
+        const PEOPLE_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+        let mut cache = self.jellyfin_people_cache.lock().await;
+        if let Some(snapshot) = cache.as_ref() {
+            if snapshot.fetched_at.elapsed() < PEOPLE_CACHE_TTL {
+                return Ok(snapshot.people.clone());
+            }
+        }
+        let people = client.people().await?;
+        *cache = Some(CachedJellyfinPeople {
+            fetched_at: Instant::now(),
+            people: people.clone(),
+        });
+        Ok(people)
     }
 }
 
@@ -1494,7 +1521,7 @@ async fn asset_detail(
                 .map_or(serde_json::Value::Null, serde_json::Value::String);
             }
             if let Ok(Some(client)) = jellyfin_client(&state) {
-                if let Ok(people) = client.people().await {
+                if let Ok(people) = state.jellyfin_people(&client).await {
                     for (index, actor) in detail.actors.iter().enumerate() {
                         value["actors"][index]["poster_url"] = match_person(&actor.name, &people)
                             .map(|_| actor_poster_url(&actor.name))
@@ -1602,18 +1629,12 @@ async fn list_actor_folders(
     let Some(root) = state.config.actor_view_root.as_deref() else {
         return Json(Vec::<ActorFolderResponse>::new()).into_response();
     };
-    let people = match jellyfin_client(&state) {
-        Ok(Some(client)) => client.people().await.unwrap_or_default(),
-        _ => Vec::new(),
-    };
+    let jellyfin_configured = matches!(jellyfin_client(&state), Ok(Some(_)));
     match crate::actor_views::browse_actor_folders(root) {
         Ok(folders) => Json(
             folders
                 .into_iter()
-                .map(|folder| {
-                    let has_portrait = match_person(&folder.name, &people).is_some();
-                    actor_response(folder, Vec::new(), has_portrait)
-                })
+                .map(|folder| actor_response(folder, Vec::new(), jellyfin_configured))
                 .collect::<Vec<_>>(),
         )
         .into_response(),
@@ -1640,8 +1661,8 @@ async fn actor_folder_confirmation(
                 .map(|identity| (identity.device, identity.inode))
                 .collect::<Vec<_>>();
             let has_portrait = match jellyfin_client(&state) {
-                Ok(Some(client)) => client
-                    .people()
+                Ok(Some(client)) => state
+                    .jellyfin_people(&client)
                     .await
                     .ok()
                     .and_then(|people| match_person(&actor_name, &people).map(|_| ()))
@@ -1677,7 +1698,7 @@ async fn actor_poster(
     let Ok(Some(client)) = jellyfin_client(&state) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Ok(people) = client.people().await else {
+    let Ok(people) = state.jellyfin_people(&client).await else {
         return StatusCode::BAD_GATEWAY.into_response();
     };
     let Some(person) = match_person(&folder.folder.name, &people) else {
@@ -1981,6 +2002,7 @@ async fn put_jellyfin_config(
             return StatusCode::INTERNAL_SERVER_ERROR;
         }
     }
+    *state.jellyfin_people_cache.lock().await = None;
     StatusCode::NO_CONTENT
 }
 

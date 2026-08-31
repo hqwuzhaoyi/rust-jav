@@ -362,6 +362,30 @@ pub fn associate(
             "normalized path",
         ));
     }
+    let local_parts = normalized_path_parts(&local_path);
+    let suffix_matches = items
+        .iter()
+        .filter_map(|item| {
+            let path = normalize_path(item.path.as_deref()?);
+            let common = common_path_suffix(&local_parts, &normalized_path_parts(&path));
+            (common >= 3).then_some((item, common))
+        })
+        .collect::<Vec<_>>();
+    if let Some(maximum) = suffix_matches.iter().map(|(_, common)| *common).max() {
+        let mut best = suffix_matches
+            .iter()
+            .filter(|(_, common)| *common == maximum)
+            .map(|(item, _)| *item);
+        if let Some(item) = best.next() {
+            if best.next().is_none() {
+                return Some(association(
+                    item,
+                    AssociationConfidence::CertainPath,
+                    "unique normalized relative path suffix",
+                ));
+            }
+        }
+    }
     let code = jav_code.map(normalize_metadata);
     let title = title.map(normalize_metadata);
     items
@@ -383,6 +407,18 @@ pub fn associate(
                 "JAV code or title metadata; verify manually",
             )
         })
+}
+
+fn normalized_path_parts(value: &str) -> Vec<&str> {
+    value.split('/').filter(|part| !part.is_empty()).collect()
+}
+
+fn common_path_suffix(left: &[&str], right: &[&str]) -> usize {
+    left.iter()
+        .rev()
+        .zip(right.iter().rev())
+        .take_while(|(left, right)| left == right)
+        .count()
 }
 
 fn association(
