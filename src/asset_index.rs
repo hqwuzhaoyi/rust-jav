@@ -702,11 +702,47 @@ fn media_files(root: &Path) -> Result<Vec<PathBuf>, Error> {
             .path();
         if path.is_dir() {
             out.extend(media_files(&path)?)
-        } else if is_video(&path) {
+        } else if is_video(&path) && !is_secondary_multipart(&path) {
             out.push(path)
         }
     }
     Ok(out)
+}
+
+fn is_secondary_multipart(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if !parent.join("movie.nfo").is_file() {
+        return false;
+    }
+    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let Some((base, suffix)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    let primary_suffix = if suffix.len() == 1
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphabetic() && !byte.eq_ignore_ascii_case(&b'A'))
+    {
+        if suffix.as_bytes()[0].is_ascii_uppercase() {
+            "A"
+        } else {
+            "a"
+        }
+    } else if suffix.parse::<u32>().is_ok_and(|part| part > 1) {
+        "1"
+    } else {
+        return false;
+    };
+    let primary = parent.join(format!("{base}-{primary_suffix}.{extension}"));
+    let unsuffixed = parent.join(format!("{base}.{extension}"));
+    primary.is_file() || unsuffixed.is_file()
 }
 fn is_video(path: &Path) -> bool {
     matches!(
@@ -714,7 +750,7 @@ fn is_video(path: &Path) -> bool {
             .and_then(|v| v.to_str())
             .map(str::to_ascii_lowercase)
             .as_deref(),
-        Some("mp4" | "mkv" | "avi" | "mov" | "m4v" | "wmv" | "ts")
+        Some("mp4" | "mkv" | "avi" | "mov" | "m4v" | "wmv" | "ts" | "m2ts")
     )
 }
 fn is_artwork(path: &Path) -> bool {

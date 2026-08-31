@@ -479,3 +479,71 @@ fn empty_nfo_is_reported_as_empty_with_a_regeneration_action() {
     assert!(detail.exception.unwrap().contains("empty"));
     assert!(asset.exception.unwrap().contains("Regenerate"));
 }
+
+#[test]
+fn m2ts_files_are_indexed_as_media_assets() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    fs::create_dir(&root).unwrap();
+    media(&root.join("DISC-A.m2ts"));
+    fs::write(
+        root.join("DISC-A.nfo"),
+        "<movie><title>Disc A</title></movie>",
+    )
+    .unwrap();
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+
+    let page = index.search(AssetQuery::default()).unwrap();
+    assert_eq!(page.total, 1);
+    assert!(page.items[0].path.ends_with("DISC-A.m2ts"));
+}
+
+#[test]
+fn shared_movie_nfo_multipart_sets_are_one_media_asset() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    for (folder, files) in [
+        ("OFJE-550", vec!["OFJE-550-1.mp4", "OFJE-550-2.mp4"]),
+        ("OFJE-334", vec!["OFJE-334-A.mp4", "OFJE-334-B.mp4"]),
+        ("MIDV-821-C", vec!["MIDV-821-C.mp4"]),
+    ] {
+        let directory = root.join(folder);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("movie.nfo"),
+            format!("<movie><title>{folder}</title></movie>"),
+        )
+        .unwrap();
+        for file in files {
+            media(&directory.join(file));
+        }
+    }
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+
+    let page = index.search(AssetQuery::default()).unwrap();
+    assert_eq!(page.total, 3);
+    assert!(page
+        .items
+        .iter()
+        .any(|asset| asset.path.ends_with("OFJE-550-1.mp4")));
+    assert!(page
+        .items
+        .iter()
+        .any(|asset| asset.path.ends_with("OFJE-334-A.mp4")));
+    assert!(page
+        .items
+        .iter()
+        .any(|asset| asset.path.ends_with("MIDV-821-C.mp4")));
+    assert!(!page
+        .items
+        .iter()
+        .any(|asset| asset.path.ends_with("OFJE-550-2.mp4")));
+    assert!(!page
+        .items
+        .iter()
+        .any(|asset| asset.path.ends_with("OFJE-334-B.mp4")));
+}
