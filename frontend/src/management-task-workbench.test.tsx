@@ -11,6 +11,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 import { App } from "./main";
+import { productionValue } from "./test-css";
 
 type TaskStatus =
   | "queued"
@@ -238,6 +239,10 @@ describe("Issue #41 Management Task 创建与确认", () => {
   it("当管理员按任意顺序选择操作并创建预览时，应按 canonical ordering 提交", async () => {
     const { requests } = stubTaskApi();
     await openTasks();
+
+    const fullPipeline = screen.getByRole("button", { name: "Full pipeline" });
+    expect(fullPipeline).toHaveClass("ui-touch-target");
+    expect(productionValue(fullPipeline, "min-height")).toBe("44px");
 
     for (const checkbox of screen.getAllByRole("checkbox")) {
       await userEvent.click(checkbox);
@@ -600,9 +605,12 @@ describe("Issue #41 响应式极端数据", () => {
       expect(screen.getByText("75 tasks", { exact: true })).toBeVisible();
       expect(screen.getByText("Completed with partial failures")).toBeVisible();
       expect(screen.getByText("Destination is read-only")).toBeVisible();
-      expect(
-        screen.getByRole("button", { name: `Copy full path ${longPath}` }),
-      ).toBeVisible();
+      const copyPath = screen.getByRole("button", {
+        name: `Copy full path ${longPath}`,
+      });
+      expect(copyPath).toBeVisible();
+      expect(copyPath).toHaveClass("ui-touch-target");
+      expect(productionValue(copyPath, "min-height")).toBe("44px");
       await userEvent.click(screen.getByRole("button", { name: "Load 20 more tasks" }));
       expect(await screen.findByText(/history-021/)).toBeVisible();
       expect(api.requests.some((request) => request.url === "/api/v1/tasks?limit=20&offset=20")).toBe(true);

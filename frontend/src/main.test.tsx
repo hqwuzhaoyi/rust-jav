@@ -4,6 +4,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 import { App } from "./main";
+import { productionValue } from "./test-css";
 
 afterEach(() => {
   cleanup();
@@ -302,7 +303,9 @@ describe("Actor detail navigation", () => {
     expect(screen.getByText("Unique files")).toBeInTheDocument();
     expect(screen.getByText("Referenced logical size")).toBeInTheDocument();
     expect(screen.getByText("Reclaimable if removed")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remove Actor Folder…" })).toBeInTheDocument();
+    const remove = screen.getByRole("button", { name: "Remove Actor Folder…" });
+    expect(remove).toHaveClass("ui-touch-target");
+    expect(productionValue(remove, "min-height")).toBe("44px");
   });
 
   it("opens a linked Media Asset and returns to its actor through browser history", async () => {
@@ -312,8 +315,10 @@ describe("Actor detail navigation", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: /Open ABC-123/ }));
     expect(await screen.findByRole("heading", { name: "ABC-123" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Back to Alice Aoki" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Back to Alice Aoki" }));
+    const back = screen.getByRole("button", { name: "Back to Alice Aoki" });
+    expect(back).toHaveClass("ui-touch-target");
+    expect(productionValue(back, "min-height")).toBe("44px");
+    await userEvent.click(back);
     expect(await screen.findByText("Referenced logical size")).toBeInTheDocument();
     expect(location.pathname).toBe("/actors/QWxpY2UgQW9raQ");
   });

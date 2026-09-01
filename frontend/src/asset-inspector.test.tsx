@@ -2,7 +2,9 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import "@testing-library/jest-dom/vitest";
 import { App } from "./main";
+import { productionStyle, productionValue } from "./test-css";
 
 const asset = {
   id: "asset-direct-route",
@@ -186,6 +188,29 @@ describe("Issue #39 AssetInspector 模态可访问性", () => {
     const { dialog } = await openFromGallery();
 
     expect(dialog.getAttribute("aria-modal")).toBe("true");
+  });
+
+  it("应通过真实生产级联提供 44px 圆形 Close 控件", async () => {
+    stubInspectorApi();
+    render(<App />);
+    const { dialog } = await openFromGallery();
+
+    const close = within(dialog).getByRole("button", { name: "Close asset details" });
+    expect(close.classList.contains("inspector-close")).toBe(true);
+    const closeStyle = productionStyle(close);
+    expect([
+      productionValue(close, "width"),
+      productionValue(close, "height"),
+      productionValue(close, "min-width"),
+      productionValue(close, "min-height"),
+      closeStyle.borderRadius,
+    ]).toEqual(["44px", "44px", "44px", "44px", "50%"]);
+    const iconStyle = productionStyle(close.querySelector("svg")!);
+    expect([iconStyle.width, iconStyle.height, iconStyle.flexShrink]).toEqual([
+      "16px",
+      "16px",
+      "0",
+    ]);
   });
 
   it("当按 Escape 关闭 Inspector 时，应移除背景 inert 并把焦点恢复到触发卡", async () => {

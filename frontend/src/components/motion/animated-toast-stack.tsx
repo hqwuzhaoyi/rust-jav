@@ -402,11 +402,13 @@ const ToastItem = memo(function ToastItem({
                   type="button"
                   onClick={() => toast.action?.onClick(toast)}
                   className={cn(
-                    "mt-2 inline-flex h-7 items-center rounded-full bg-primary/[0.06] px-3 text-xs font-medium text-foreground transition-colors hover:bg-primary/[0.1]",
+                    "toast-action ui-compact-touch-target mt-2 text-xs font-medium text-foreground",
                     classNames?.action,
                   )}
                 >
-                  {toast.action.label}
+                  <span className="toast-action-visual ui-compact-surface bg-primary/[0.06] px-3 transition-colors hover:bg-primary/[0.1]">
+                    {toast.action.label}
+                  </span>
                 </button>
               ) : null}
             </div>
@@ -416,11 +418,13 @@ const ToastItem = memo(function ToastItem({
                 onClick={() => onDismiss?.(toast.id)}
                 aria-label="Dismiss toast"
                 className={cn(
-                  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-primary/[0.06] hover:text-foreground",
+                  "toast-close ui-compact-touch-target ui-compact-icon-button shrink-0 text-muted-foreground transition-colors hover:text-foreground",
                   classNames?.close,
                 )}
               >
-                <X className="h-3.5 w-3.5" />
+                <span className="ui-compact-surface transition-colors hover:bg-primary/[0.06]">
+                  <X className="h-3.5 w-3.5" />
+                </span>
               </button>
             ) : null}
           </div>

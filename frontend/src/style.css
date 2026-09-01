@@ -205,7 +205,10 @@ input {
   display: grid;
   place-items: center;
   width: 36px;
+  height: 36px;
+  min-width: 36px;
   min-height: 36px;
+  flex: 0 0 36px;
   padding: 0;
   border: 0;
   border-radius: 50%;
@@ -214,6 +217,7 @@ input {
 .storage-dialog-close svg {
   width: 16px;
   height: 16px;
+  flex-shrink: 0;
 }
 .media-storage-card.compact {
   margin-top: 0;
@@ -472,6 +476,7 @@ input {
   margin-top: 35px;
 }
 .pagination button {
+  min-height: 44px;
   padding: 7px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1218,7 +1223,7 @@ input {
 }
 
 /* BeUI / Photos surface */
-button { min-height: 44px; touch-action: manipulation; }
+button { touch-action: manipulation; }
 button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--blue) 55%, transparent);
   outline-offset: 2px;
@@ -1312,7 +1317,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 .beui-tabs-list > button[aria-selected="true"] { color: #111; }
 .beui-tab-indicator { position: absolute; inset: auto 8px -1px; height: 2px; border-radius: 2px; background: var(--blue); }
-.inspector-close svg { width: 16px; height: 16px; }
+.inspector-close svg { width: 16px; height: 16px; flex-shrink: 0; }
 .inspector-back { display: inline-flex; align-items: center; gap: 7px; max-width: calc(100% - 48px); padding: 0 8px; border: 0; color: var(--blue); background: transparent; }
 .inspector-back svg { width: 17px; height: 17px; flex: none; }
 .inspector-back span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1338,6 +1343,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   align-items: center;
   gap: 5px;
   min-height: 38px;
+  flex: 0 0 auto;
   padding: 7px 10px;
   border: 0;
   border-radius: 999px;
@@ -1408,8 +1414,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   backdrop-filter: blur(18px);
 }
 .shell-notice p { flex: 1; margin: 0; font-size: 13px; font-weight: 650; }
-.shell-notice button { display: grid; width: 28px; height: 28px; padding: 0; place-items: center; border: 0; border-radius: 50%; background: var(--soft); }
-.shell-notice svg { width: 14px; height: 14px; }
+.shell-notice button { display: grid; width: 44px; height: 44px; min-width: 44px; min-height: 44px; flex: 0 0 44px; padding: 0; place-items: center; border: 0; border-radius: 50%; background: var(--soft); }
+.shell-notice svg { width: 14px; height: 14px; flex-shrink: 0; }
 
 @media (max-width: 760px) {
   .content > header { top: 0; min-height: 70px; }
@@ -1819,8 +1825,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   top: 15px;
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  flex: 0 0 44px;
   border: 0;
   border-radius: 50%;
   color: #111;
