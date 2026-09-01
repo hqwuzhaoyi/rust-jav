@@ -2017,6 +2017,104 @@ fn startup_recovers_a_durable_running_quarantine_and_marks_it_interrupted() {
     assert!(!quarantine.exists());
 }
 
+#[test]
+fn startup_recovers_a_permanent_deletion_quarantine_from_its_source_root() {
+    let (dir, mut config) = fixture();
+    let media_root = dir.path().join("media");
+    let actor_root = dir.path().join("actors");
+    std::fs::create_dir(&media_root).unwrap();
+    std::fs::create_dir(&actor_root).unwrap();
+    config.media_roots.push(media_root.clone());
+    config.actor_view_root = Some(actor_root.clone());
+    let source = actor_root.join("captured-by-deletion.mp4");
+    std::fs::write(&source, b"approved").unwrap();
+    let store = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
+    let task = store
+        .create(
+            rust_jav::management_tasks::NewTask::mutation(
+                "permanent_deletion",
+                format!("{},{}", media_root.display(), actor_root.display()),
+            ),
+            100,
+        )
+        .unwrap();
+    store.mark_running(&task.id, 101).unwrap();
+    let journal = store
+        .start_item(
+            &task.id,
+            "permanent_deletion",
+            Some(source.to_str().unwrap()),
+            Some(source.to_str().unwrap()),
+        )
+        .unwrap();
+    let quarantine = actor_root.join(&journal.quarantine_token);
+    std::fs::rename(&source, &quarantine).unwrap();
+    drop(store);
+
+    let _state = AppState::new(config.clone(), TestClock(200)).unwrap();
+    let reopened = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
+    let recovered = reopened.get(&task.id).unwrap().unwrap();
+    assert_eq!(
+        recovered.status,
+        rust_jav::management_tasks::TaskStatus::Interrupted
+    );
+    assert_eq!(recovered.items[0].status, "interrupted");
+    assert!(recovered.items[0]
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("restored"));
+    assert_eq!(std::fs::read(&source).unwrap(), b"approved");
+    assert!(!quarantine.exists());
+}
+
+#[test]
+fn startup_retains_an_occupied_directory_and_its_deletion_quarantine_locator() {
+    let (dir, mut config) = fixture();
+    let media_root = dir.path().join("media");
+    std::fs::create_dir(&media_root).unwrap();
+    config.media_roots.push(media_root.clone());
+    let source = media_root.join("approved-directory");
+    std::fs::create_dir(&source).unwrap();
+    let store = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
+    let task = store
+        .create(
+            rust_jav::management_tasks::NewTask::mutation(
+                "permanent_deletion",
+                media_root.display().to_string(),
+            ),
+            100,
+        )
+        .unwrap();
+    store.mark_running(&task.id, 101).unwrap();
+    let journal = store
+        .start_item(
+            &task.id,
+            "permanent_deletion",
+            Some(source.to_str().unwrap()),
+            Some(source.to_str().unwrap()),
+        )
+        .unwrap();
+    let quarantine = media_root.join(&journal.quarantine_token);
+    std::fs::rename(&source, &quarantine).unwrap();
+    std::fs::write(quarantine.join("arrived-after-capture.txt"), b"new").unwrap();
+    std::fs::create_dir(&source).unwrap();
+    drop(store);
+
+    let _state = AppState::new(config.clone(), TestClock(200)).unwrap();
+    let reopened = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
+    let recovered = reopened.get(&task.id).unwrap().unwrap();
+    assert_eq!(
+        recovered.status,
+        rust_jav::management_tasks::TaskStatus::Interrupted
+    );
+    let message = recovered.items[0].message.as_deref().unwrap();
+    assert!(message.contains("source is occupied"));
+    assert!(message.contains(&journal.quarantine_token));
+    assert!(source.is_dir());
+    assert!(quarantine.join("arrived-after-capture.txt").exists());
+}
+
 async fn wait_for_task(
     state: &AppState,
     cookie: &str,
@@ -2234,6 +2332,97 @@ async fn authenticated_candidate_plan_executes_as_durable_task_and_keeps_audit()
 }
 
 #[tokio::test]
+async fn deletion_plan_searches_actor_view_without_making_it_a_client_approved_root() {
+    let (dir, mut config) = fixture();
+    let media = dir.path().join("media");
+    let actors = dir.path().join("actors");
+    let actor_folder = actors.join("Alice Aoki");
+    std::fs::create_dir(&media).unwrap();
+    std::fs::create_dir_all(&actor_folder).unwrap();
+    let selected = media.join("delete-me.mp4");
+    let actor_link = actor_folder.join("delete-me.mp4");
+    std::fs::write(&selected, b"video").unwrap();
+    std::fs::hard_link(&selected, &actor_link).unwrap();
+    std::fs::write(
+        &config.active_rule_set_file,
+        "version: 1\nrules:\n  - pattern: 'delete-*'\n",
+    )
+    .unwrap();
+    config.media_roots.push(media.clone());
+    config.actor_view_root = Some(actors.clone());
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+
+    let selected_request = serde_json::json!({
+        "paths": [selected],
+        "selection": "selected"
+    });
+    let selected_plan = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/deletion-plans",
+        &selected_request.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(selected_plan.status(), StatusCode::CREATED);
+    let selected_plan: serde_json::Value = serde_json::from_slice(
+        &to_bytes(selected_plan.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(selected_plan["paths"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        selected_plan["discovered_hard_links"][0]["path"],
+        serde_json::json!(actor_link)
+    );
+    assert_eq!(selected_plan["reclaimable_space"], 0);
+    assert!(selected_plan["hard_link_search_roots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|root| root == &serde_json::json!(actors)));
+
+    let direct_actor = serde_json::json!({
+        "paths": [actor_link],
+        "selection": "selected"
+    });
+    let rejected = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/deletion-plans",
+        &direct_actor.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let unified_request = serde_json::json!({
+        "paths": [selected],
+        "selection": "unified"
+    });
+    let unified = json_request(
+        app(state),
+        "POST",
+        "/api/v1/deletion-plans",
+        &unified_request.to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(unified.status(), StatusCode::CREATED);
+    let unified: serde_json::Value =
+        serde_json::from_slice(&to_bytes(unified.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(unified["paths"].as_array().unwrap().len(), 2);
+    assert!(unified["reclaimable_space"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
 async fn deletion_api_rejects_expired_plan_and_reports_replaced_file_as_partial() {
     let (dir, mut config) = fixture();
     let root = dir.path().join("media");
@@ -2324,6 +2513,303 @@ async fn deletion_api_rejects_expired_plan_and_reports_replaced_file_as_partial(
     .await;
     assert_eq!(expired.status(), StatusCode::CONFLICT);
     assert!(replaced.exists());
+}
+
+#[tokio::test]
+async fn deletion_audit_persistence_failure_returns_a_durable_failed_task_with_real_items() {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    let selected = root.join("delete-audit-failure.mp4");
+    std::fs::write(&selected, b"video").unwrap();
+    std::fs::write(
+        &config.active_rule_set_file,
+        "version: 1\nrules:\n  - pattern: 'delete-*'\n",
+    )
+    .unwrap();
+    config.media_roots.push(root);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+    let planned = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/deletion-plans",
+        &serde_json::json!({"paths":[selected],"selection":"selected"}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let plan: serde_json::Value =
+        serde_json::from_slice(&to_bytes(planned.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let connection = rusqlite::Connection::open(dir.path().join("management.sqlite3")).unwrap();
+    connection.execute_batch(
+        "CREATE TRIGGER injected_deletion_audit_failure BEFORE INSERT ON deletion_audit_records BEGIN SELECT RAISE(FAIL, 'injected deletion audit persistence failure'); END;",
+    ).unwrap();
+    drop(connection);
+
+    let executed = json_request(
+        app(state.clone()),
+        "POST",
+        &format!(
+            "/api/v1/deletion-plans/{}/execute",
+            plan["id"].as_str().unwrap()
+        ),
+        r#"{"irreversible":true,"confirmation":"PERMANENTLY DELETE"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(executed.status(), StatusCode::ACCEPTED);
+    let task: serde_json::Value =
+        serde_json::from_slice(&to_bytes(executed.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(task["status"], "failed");
+    assert!(task["error"].as_str().unwrap().contains("audit"));
+    assert_eq!(task["items"].as_array().unwrap().len(), 1);
+    assert_eq!(task["items"][0]["status"], "deleted");
+    assert!(!selected.exists());
+
+    let durable = json_request(
+        app(state),
+        "GET",
+        &format!("/api/v1/tasks/{}", task["id"].as_str().unwrap()),
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let durable: serde_json::Value =
+        serde_json::from_slice(&to_bytes(durable.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(durable["status"], "failed");
+    assert_eq!(durable["items"][0]["status"], "deleted");
+}
+
+#[tokio::test]
+async fn deletion_journal_creation_failure_returns_5xx_before_filesystem_mutation() {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    let selected = root.join("delete-outcome-failure.mp4");
+    std::fs::write(&selected, b"video").unwrap();
+    std::fs::write(
+        &config.active_rule_set_file,
+        "version: 1\nrules:\n  - pattern: 'delete-*'\n",
+    )
+    .unwrap();
+    config.media_roots.push(root);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+    let planned = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/deletion-plans",
+        &serde_json::json!({"paths":[selected],"selection":"selected"}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let plan: serde_json::Value =
+        serde_json::from_slice(&to_bytes(planned.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let connection = rusqlite::Connection::open(dir.path().join("management.sqlite3")).unwrap();
+    connection.execute_batch("CREATE TRIGGER injected_deletion_outcome_failure BEFORE INSERT ON management_task_items WHEN NEW.kind = 'permanent_deletion' BEGIN SELECT RAISE(FAIL, 'injected deletion outcome persistence failure'); END;").unwrap();
+    drop(connection);
+
+    let executed = json_request(
+        app(state.clone()),
+        "POST",
+        &format!(
+            "/api/v1/deletion-plans/{}/execute",
+            plan["id"].as_str().unwrap()
+        ),
+        r#"{"irreversible":true,"confirmation":"PERMANENTLY DELETE"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(executed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let error = to_bytes(executed.into_body(), usize::MAX).await.unwrap();
+    assert!(std::str::from_utf8(&error)
+        .unwrap()
+        .contains("durable deletion journal"));
+    assert!(selected.exists());
+    let store = rust_jav::management_tasks::TaskStore::open(&dir.path().join("management.sqlite3"))
+        .unwrap();
+    let task = store
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|task| task.task_type == "permanent_deletion")
+        .unwrap();
+    assert_eq!(task.status, rust_jav::management_tasks::TaskStatus::Running);
+    assert!(task.items.is_empty());
+    let audits = json_request(
+        app(state),
+        "GET",
+        "/api/v1/deletion-audits",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let audits: serde_json::Value =
+        serde_json::from_slice(&to_bytes(audits.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert!(audits.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn deletion_terminal_status_persistence_failure_falls_back_to_failed_with_real_items() {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    let selected = root.join("delete-terminal-failure.mp4");
+    std::fs::write(&selected, b"video").unwrap();
+    std::fs::write(
+        &config.active_rule_set_file,
+        "version: 1\nrules:\n  - pattern: 'delete-*'\n",
+    )
+    .unwrap();
+    config.media_roots.push(root);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+    let planned = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/deletion-plans",
+        &serde_json::json!({"paths":[selected],"selection":"selected"}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let plan: serde_json::Value =
+        serde_json::from_slice(&to_bytes(planned.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let connection = rusqlite::Connection::open(dir.path().join("management.sqlite3")).unwrap();
+    connection.execute_batch("CREATE TRIGGER injected_deletion_completed_failure BEFORE UPDATE OF status ON management_tasks WHEN NEW.status = 'completed' AND OLD.task_type = 'permanent_deletion' BEGIN SELECT RAISE(FAIL, 'injected deletion terminal persistence failure'); END;").unwrap();
+    drop(connection);
+
+    let executed = json_request(
+        app(state),
+        "POST",
+        &format!(
+            "/api/v1/deletion-plans/{}/execute",
+            plan["id"].as_str().unwrap()
+        ),
+        r#"{"irreversible":true,"confirmation":"PERMANENTLY DELETE"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(executed.status(), StatusCode::ACCEPTED);
+    let task: serde_json::Value =
+        serde_json::from_slice(&to_bytes(executed.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(task["status"], "failed");
+    assert!(task["error"].as_str().unwrap().contains("terminal status"));
+    assert_eq!(task["items"][0]["status"], "deleted");
+    assert!(!selected.exists());
+}
+
+#[tokio::test]
+async fn deletion_journal_failure_stops_later_paths_returns_5xx_and_recovers_on_restart() {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    let first = root.join("delete-first.mp4");
+    let second = root.join("delete-second.mp4");
+    std::fs::write(&first, b"first").unwrap();
+    std::fs::write(&second, b"second").unwrap();
+    std::fs::write(
+        &config.active_rule_set_file,
+        "version: 1\nrules:\n  - pattern: 'delete-*'\n",
+    )
+    .unwrap();
+    config.media_roots.push(root);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let restart_config = config.clone();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+    let planned = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/deletion-plans",
+        &serde_json::json!({"paths":[first, second],"selection":"selected"}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    let plan: serde_json::Value =
+        serde_json::from_slice(&to_bytes(planned.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let connection = rusqlite::Connection::open(dir.path().join("management.sqlite3")).unwrap();
+    connection.execute_batch(
+        "CREATE TRIGGER injected_deletion_item_update_failure BEFORE UPDATE OF status ON management_task_items WHEN OLD.status = 'running' AND OLD.kind = 'permanent_deletion' BEGIN SELECT RAISE(FAIL, 'injected deletion item update failure'); END;
+         CREATE TRIGGER injected_deletion_audit_failure_all BEFORE INSERT ON deletion_audit_records BEGIN SELECT RAISE(FAIL, 'injected deletion audit failure'); END;
+         CREATE TRIGGER injected_deletion_mark_failed_failure BEFORE UPDATE OF status ON management_tasks WHEN NEW.status = 'failed' AND OLD.task_type = 'permanent_deletion' BEGIN SELECT RAISE(FAIL, 'injected deletion mark failed failure'); END;",
+    ).unwrap();
+    drop(connection);
+
+    let executed = json_request(
+        app(state.clone()),
+        "POST",
+        &format!(
+            "/api/v1/deletion-plans/{}/execute",
+            plan["id"].as_str().unwrap()
+        ),
+        r#"{"irreversible":true,"confirmation":"PERMANENTLY DELETE"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(executed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let error = to_bytes(executed.into_body(), usize::MAX).await.unwrap();
+    assert!(std::str::from_utf8(&error)
+        .unwrap()
+        .contains("durable deletion journal"));
+    assert!(!first.exists());
+    assert!(second.exists());
+
+    let store = rust_jav::management_tasks::TaskStore::open(&restart_config.database_file).unwrap();
+    let task = store
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|task| task.task_type == "permanent_deletion")
+        .unwrap();
+    assert_eq!(task.status, rust_jav::management_tasks::TaskStatus::Running);
+    assert_eq!(task.items.len(), 1);
+    assert_eq!(task.items[0].status, "running");
+    assert!(task.items[0].quarantine_token.is_some());
+    drop(store);
+    drop(state);
+
+    let connection = rusqlite::Connection::open(&restart_config.database_file).unwrap();
+    connection
+        .execute_batch(
+            "DROP TRIGGER injected_deletion_item_update_failure;
+         DROP TRIGGER injected_deletion_audit_failure_all;
+         DROP TRIGGER injected_deletion_mark_failed_failure;",
+        )
+        .unwrap();
+    drop(connection);
+    let _restarted = AppState::new(restart_config.clone(), TestClock(200)).unwrap();
+    let reopened =
+        rust_jav::management_tasks::TaskStore::open(&restart_config.database_file).unwrap();
+    let recovered = reopened.get(&task.id).unwrap().unwrap();
+    assert_eq!(
+        recovered.status,
+        rust_jav::management_tasks::TaskStatus::Interrupted
+    );
+    assert_eq!(recovered.items[0].status, "interrupted");
+    assert!(recovered.items[0]
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("quarantine is absent"));
 }
 
 #[tokio::test]

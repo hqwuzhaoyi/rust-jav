@@ -181,4 +181,57 @@ describe("生产 morphing modal foundation", () => {
     await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
     expect(last).toHaveFocus();
   });
+
+  it("当 viewId 从 plan 切到 outcome 时，应重新聚焦新对话框并保留最初 opener", async () => {
+    const modulePath = "./components/motion/morphing-modal";
+    const { MorphingModal } = (await import(modulePath)) as {
+      MorphingModal: ComponentType<MorphingModalProps>;
+    };
+
+    function ModalHarness() {
+      const [view, setView] = useState<"closed" | "plan" | "outcome">("closed");
+      return (
+        <>
+          <button onClick={() => setView("plan")}>Review deletion</button>
+          <MorphingModal
+            viewId={view === "closed" ? null : view}
+            onClose={() => setView("closed")}
+          >
+            {view === "plan" ? (
+              <section role="dialog" aria-label="Deletion plan">
+                <button onClick={() => setView("outcome")}>Execute plan</button>
+                <button>Cancel plan</button>
+              </section>
+            ) : view === "outcome" ? (
+              <section role="dialog" aria-label="Deletion outcome">
+                <button>First outcome action</button>
+                <button>Last outcome action</button>
+              </section>
+            ) : null}
+          </MorphingModal>
+        </>
+      );
+    }
+
+    render(<ModalHarness />);
+    const opener = screen.getByRole("button", { name: "Review deletion" });
+    await userEvent.click(opener);
+    await userEvent.click(
+      within(screen.getByRole("dialog", { name: "Deletion plan" })).getByRole(
+        "button",
+        { name: "Execute plan" },
+      ),
+    );
+
+    const outcome = await screen.findByRole("dialog", { name: "Deletion outcome" });
+    const first = within(outcome).getByRole("button", { name: "First outcome action" });
+    const last = within(outcome).getByRole("button", { name: "Last outcome action" });
+    expect(first).toHaveFocus();
+    last.focus();
+    await userEvent.keyboard("{Tab}");
+    expect(first).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Deletion outcome" })).toBeNull();
+    expect(opener).toHaveFocus();
+  });
 });

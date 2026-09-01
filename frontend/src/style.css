@@ -866,16 +866,23 @@ input {
   background: #0008;
 }
 .delete-confirm {
-  width: min(620px, 100%);
+  width: 100%;
+  max-width: 100%;
   max-height: calc(100vh - 36px);
   overflow: auto;
   padding: 24px;
-  border-radius: 17px;
   background: #fff;
-  box-shadow: 0 24px 80px #0006;
+}
+.permanent-deletion-modal {
+  max-width: 620px;
 }
 .delete-confirm h2 {
   margin: 0 0 14px;
+}
+.deletion-authority {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.55;
 }
 .choice {
   display: grid;
@@ -904,6 +911,116 @@ input {
   overflow-wrap: anywhere;
   padding: 3px;
   font-size: 10px;
+}
+.deletion-plan-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0;
+}
+.deletion-plan-metrics div {
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+.deletion-plan-metrics dt {
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.deletion-plan-metrics dd {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+.deletion-scope {
+  min-width: 0;
+  margin-top: 14px;
+}
+.deletion-scope h3 {
+  margin: 0 0 7px;
+  font-size: 12px;
+}
+.deletion-root-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.deletion-root-list code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 5px 7px;
+  border-radius: 7px;
+  background: var(--surface-muted);
+  font-size: 10px;
+}
+.deletion-path {
+  min-width: 0;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--line);
+}
+.deletion-path:last-child {
+  border-bottom: 0;
+}
+.deletion-path code {
+  overflow-wrap: anywhere;
+}
+.deletion-path span,
+.deletion-path small {
+  display: block;
+  margin: 2px 3px 0;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.deletion-path small {
+  color: #b3362f;
+}
+.unified-scope-note,
+.no-rollback {
+  font-size: 12px;
+  font-weight: 650;
+}
+.deletion-inline-error {
+  overflow-wrap: anywhere;
+  color: #b3362f;
+  font-size: 12px;
+}
+.fresh-plan-button {
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 9px;
+  color: #fff;
+  background: var(--blue);
+  font-weight: 650;
+}
+.deletion-outcome-list {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+  padding: 0;
+  list-style: none;
+}
+.deletion-outcome-list li {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.deletion-outcome-list b,
+.deletion-outcome-list code,
+.deletion-outcome-list p {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.deletion-outcome-list code {
+  margin-top: 4px;
+  font-size: 10px;
+}
+.deletion-outcome-list p {
+  margin: 6px 0 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
 }
 .delete-confirm label {
   display: block;
@@ -1060,6 +1177,16 @@ input {
   }
   .delete-confirm {
     padding: 18px;
+  }
+  .deletion-plan-metrics {
+    grid-template-columns: 1fr;
+  }
+  .confirm-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+  .confirm-actions button {
+    width: 100%;
   }
   .bottom-nav {
     position: fixed;

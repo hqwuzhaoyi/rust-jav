@@ -156,9 +156,22 @@ type DeletionPlan = {
   selection: "selected" | "unified";
   logical_size: number;
   reclaimable_space: number;
+  created_at: number;
   expires_at: number;
+  hard_link_search_roots: string[];
   paths: Array<{ path: string; type: string; video_warning: string | null }>;
-  discovered_hard_links: Array<{ path: string }>;
+  discovered_hard_links: Array<{ path: string; type: string }>;
+};
+type DeletionExecutionTask = {
+  id: string;
+  task_type: string;
+  status: Task["status"];
+  error: string | null;
+  items: Array<{
+    path: string | null;
+    status: string;
+    message: string | null;
+  }>;
 };
 type OperationPlan = {
   operations: string[];
@@ -234,6 +247,22 @@ function taskProgressPercent(task: Task) {
     ["completed", "applied", "deleted", "changed", "failed", "planned", "skipped"].includes(item.status),
   ).length;
   return Math.min(100, Math.round(finished / total * 100));
+}
+function isCompleteTask(task: Partial<Task>): task is Task {
+  return (
+    typeof task.id === "string" &&
+    typeof task.task_type === "string" &&
+    typeof task.media_root === "string" &&
+    (task.kind === "preview" || task.kind === "mutation") &&
+    typeof task.status === "string" &&
+    typeof task.created_at === "number" &&
+    Array.isArray(task.items)
+  );
+}
+function isTaskStatus(status: unknown): status is Task["status"] {
+  return ["queued", "running", "completed", "failed", "interrupted"].includes(
+    String(status),
+  );
 }
 const operations = [
   ["delete_ad_files", "Delete ad files"],
@@ -408,6 +437,11 @@ export function App() {
     [selected, setSelected] = useState<string[]>([]),
     [plan, setPlan] = useState<DeletionPlan | null>(null),
     [confirmText, setConfirmText] = useState("");
+  const [deletionPending, setDeletionPending] = useState<"planning" | "executing" | null>(null);
+  const [deletionPlanInvalid, setDeletionPlanInvalid] = useState(false);
+  const [deletionError, setDeletionError] = useState("");
+  const [deletionOutcome, setDeletionOutcome] = useState<DeletionExecutionTask | null>(null);
+  const deletionPlanGeneration = useRef(0);
   const [actors, setActors] = useState<ActorFolder[]>([]);
   const [actorListState, setActorListState] = useState<LoadState>("idle");
   const [confirmActor, setConfirmActor] = useState<ActorFolder | null>(null);
@@ -767,31 +801,86 @@ export function App() {
     if (r.ok) setCandidates(((await r.json()) as { items: Candidate[] }).items);
   }
   async function previewDeletion(selection: "selected" | "unified") {
-    const r = await fetch("/api/v1/deletion-plans", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paths: selected, selection }),
-    });
-    if (r.ok) {
-      setPlan((await r.json()) as DeletionPlan);
-      setConfirmText("");
-    } else setMessage(await r.text());
+    const generation = ++deletionPlanGeneration.current;
+    setDeletionPending("planning");
+    setDeletionError("");
+    setConfirmText("");
+    try {
+      const r = await fetch("/api/v1/deletion-plans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths: selected, selection }),
+      });
+      if (generation !== deletionPlanGeneration.current) return;
+      if (r.ok) {
+        setPlan((await r.json()) as DeletionPlan);
+        setDeletionOutcome(null);
+        setDeletionPlanInvalid(false);
+      } else {
+        const error = await r.text();
+        setDeletionError(error);
+      }
+    } finally {
+      if (generation === deletionPlanGeneration.current) setDeletionPending(null);
+    }
   }
   async function executeDeletion() {
-    if (!plan) return;
-    const r = await fetch(`/api/v1/deletion-plans/${plan.id}/execute`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ irreversible: true, confirmation: confirmText }),
-    });
-    if (r.ok) {
-      setPlan(null);
-      setSelected([]);
-      setMessage(
-        "Permanent deletion finished. Per-path outcomes are in Management Tasks.",
-      );
-      await loadCandidates();
-    } else setMessage(await r.text());
+    if (!plan || deletionPending || deletionPlanInvalid) return;
+    setDeletionPending("executing");
+    setDeletionError("");
+    try {
+      const r = await fetch(`/api/v1/deletion-plans/${plan.id}/execute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ irreversible: true, confirmation: confirmText }),
+      });
+      if (r.ok) {
+        const response = (await r.json()) as Partial<DeletionExecutionTask> & Partial<Task>;
+        if (!isTaskStatus(response.status)) {
+          setConfirmText("");
+          setDeletionPlanInvalid(true);
+          setDeletionError("The server did not return a durable deletion task status. Create a fresh Operation Plan before retrying.");
+          return;
+        }
+        const task: DeletionExecutionTask = {
+          id: response.id ?? plan.id,
+          task_type: response.task_type ?? "permanent_deletion",
+          status: response.status,
+          error: response.error ?? null,
+          items: Array.isArray(response.items) ? response.items : [],
+        };
+        setDeletionOutcome(task);
+        setPlan(null);
+        setConfirmText("");
+        setSelected([]);
+        if (isCompleteTask(response)) {
+          setTasks((current) => [
+            response,
+            ...current.filter((item) => item.id !== response.id),
+          ]);
+        }
+        await loadCandidates();
+      } else {
+        const error = await r.text();
+        setConfirmText("");
+        setDeletionError(error);
+        // Execution consumes the server plan before mutation starts. Any
+        // non-success response therefore requires a fresh plan; retrying the
+        // same client snapshot must never be presented as authorized.
+        setDeletionPlanInvalid(true);
+      }
+    } finally {
+      setDeletionPending(null);
+    }
+  }
+  function closeDeletionReview() {
+    if (deletionPending) return;
+    deletionPlanGeneration.current += 1;
+    setPlan(null);
+    setDeletionOutcome(null);
+    setDeletionPlanInvalid(false);
+    setDeletionError("");
+    setConfirmText("");
   }
   async function loadRules() {
     const generation = ++rulesLoadGeneration.current;
@@ -1744,7 +1833,7 @@ export function App() {
                       Rule: {candidate.matching_rule} · {candidate.type}
                     </small>
                     {candidate.video_warning && (
-                      <strong>⚠ Video content</strong>
+                      <strong>{candidate.video_warning}</strong>
                     )}
                   </div>
                   <dl>
@@ -2219,68 +2308,182 @@ export function App() {
           <span><Settings aria-hidden="true" /></span>设置
         </button>
       </nav>
-      {plan && (
-        <div className="modal-backdrop" role="presentation">
+      <MorphingModal
+        viewId={
+          deletionOutcome
+            ? `deletion-outcome-${deletionOutcome.id}`
+            : plan
+              ? `deletion-plan-${plan.id}`
+              : null
+        }
+        placement="center"
+        className="permanent-deletion-modal"
+        initialAnimation={false}
+        onClose={closeDeletionReview}
+      >
+        {deletionOutcome ? (
+          <section
+            className="delete-confirm deletion-outcome"
+            style={{ maxWidth: "100%" }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="deletion-outcome-title"
+          >
+            <p className="eyebrow">FILESYSTEM OUTCOME</p>
+            <h2 id="deletion-outcome-title">
+              {deletionOutcome.status === "failed"
+                ? "Permanent deletion completed with partial failures"
+                : deletionOutcome.status === "completed"
+                  ? "Permanent deletion completed"
+                  : deletionOutcome.status === "interrupted"
+                    ? "Permanent deletion interrupted"
+                    : `Permanent deletion ${deletionOutcome.status}`}
+            </h2>
+            {deletionOutcome.error && <p className="deletion-inline-error">{deletionOutcome.error}</p>}
+            <ol className="deletion-outcome-list">
+              {deletionOutcome.items.map((item, index) => (
+                <li key={`${item.path}-${index}`}>
+                  <div>
+                    <b>
+                      {item.status === "deleted"
+                        ? "Deleted"
+                        : item.status === "changed"
+                          ? "Replaced after planning"
+                          : "Failed"}
+                    </b>
+                    <code style={{ overflowWrap: "anywhere" }}>{item.path ?? "Unknown path"}</code>
+                  </div>
+                  {item.message && <p>{item.message}</p>}
+                </li>
+              ))}
+            </ol>
+            {deletionOutcome.status !== "completed" && (
+              <p className="no-rollback">No rollback was attempted.</p>
+            )}
+            <div className="confirm-actions">
+              <button type="button" onClick={closeDeletionReview}>Close</button>
+            </div>
+          </section>
+        ) : plan ? (
           <section
             className="delete-confirm"
+            style={{ maxWidth: "100%" }}
             role="dialog"
             aria-modal="true"
             aria-labelledby="delete-title"
+            aria-describedby="delete-authority"
           >
             <p className="eyebrow">IRREVERSIBLE ACTION</p>
             <h2 id="delete-title">
               Permanently delete {plan.paths.length} paths?
             </h2>
-            <div className="choice">
+            <p id="delete-authority" className="deletion-authority">
+              The server will revalidate every planned filesystem identity immediately before unlinking. Only this fresh Operation Plan authorizes mutation.
+            </p>
+            <div className="choice" aria-label="Deletion scope">
               <button
+                type="button"
+                aria-pressed={plan.selection === "selected"}
                 className={plan.selection === "selected" ? "selected" : ""}
+                disabled={Boolean(deletionPending)}
                 onClick={() => void previewDeletion("selected")}
               >
                 Selected paths only
               </button>
               <button
+                type="button"
+                aria-pressed={plan.selection === "unified"}
                 className={plan.selection === "unified" ? "selected" : ""}
+                disabled={Boolean(deletionPending)}
                 onClick={() => void previewDeletion("unified")}
               >
                 All discovered hard links ({plan.discovered_hard_links.length})
               </button>
             </div>
-            <p>
-              <b>{formatBytes(plan.logical_size)}</b> logical ·{" "}
-              <b>{formatBytes(plan.reclaimable_space)}</b> reclaimable
-            </p>
+            <dl className="deletion-plan-metrics">
+              <div><dt>Logical Size</dt><dd>{formatBytes(plan.logical_size)}</dd></div>
+              <div><dt>Reclaimable Space</dt><dd>{formatBytes(plan.reclaimable_space)}</dd></div>
+            </dl>
+            <section className="deletion-scope" aria-labelledby="hard-link-roots-title">
+              <h3 id="hard-link-roots-title">Hard-Link Search Roots</h3>
+              <div className="deletion-root-list">
+                {(plan.hard_link_search_roots ?? []).map((root) => <code key={root}>{root}</code>)}
+              </div>
+            </section>
             {plan.paths.some((path) => path.video_warning) && (
               <p className="video-warning">
                 ⚠ This plan permanently removes video content.
               </p>
             )}
-            <div className="plan-paths">
-              {plan.paths.map((path) => (
-                <code key={path.path}>{path.path}</code>
-              ))}
-            </div>
+            <section className="deletion-scope" aria-labelledby="approved-paths-title">
+              <h3 id="approved-paths-title">Paths approved by this plan</h3>
+              <div className="plan-paths">
+                {plan.paths.map((path) => (
+                  <div className="deletion-path" key={path.path}>
+                    <code style={{ overflowWrap: "anywhere" }}>{path.path}</code>
+                    <span>{path.type}</span>
+                    {path.video_warning && <small>{path.video_warning}</small>}
+                  </div>
+                ))}
+              </div>
+            </section>
+            {plan.selection === "selected" && plan.discovered_hard_links.length > 0 && (
+              <section className="deletion-scope" aria-labelledby="discovered-links-title">
+                <h3 id="discovered-links-title">Discovered hard links not approved</h3>
+                <div className="plan-paths discovered-links">
+                  {plan.discovered_hard_links.map((link) => (
+                    <div className="deletion-path" key={link.path}>
+                      <code style={{ overflowWrap: "anywhere" }}>{link.path}</code>
+                      <span>Discovered · {link.type ?? "file"}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+            {plan.selection === "unified" && plan.discovered_hard_links.length > 0 && (
+              <p className="unified-scope-note">
+                All {plan.discovered_hard_links.length} discovered hard links are included in the approved paths above.
+              </p>
+            )}
+            {deletionError && <p className="deletion-inline-error" role="alert">{deletionError}</p>}
+            {deletionPlanInvalid && (
+              <button
+                type="button"
+                className="fresh-plan-button"
+                disabled={Boolean(deletionPending)}
+                onClick={() => void previewDeletion(plan.selection)}
+              >
+                {deletionPending === "planning" ? "Creating fresh Operation Plan…" : "Create fresh Operation Plan"}
+              </button>
+            )}
             <label htmlFor="confirm-delete">
               Type <b>PERMANENTLY DELETE</b> to confirm
             </label>
             <input
               id="confirm-delete"
               value={confirmText}
+              disabled={deletionPlanInvalid || Boolean(deletionPending)}
               onChange={(event) => setConfirmText(event.target.value)}
               autoComplete="off"
             />
             <div className="confirm-actions">
-              <button onClick={() => setPlan(null)}>Cancel</button>
+              <button type="button" disabled={Boolean(deletionPending)} onClick={closeDeletionReview}>Cancel</button>
               <button
+                type="button"
                 className="danger"
-                disabled={confirmText !== "PERMANENTLY DELETE"}
+                disabled={
+                  deletionPlanInvalid ||
+                  Boolean(deletionPending) ||
+                  confirmText !== "PERMANENTLY DELETE"
+                }
                 onClick={() => void executeDeletion()}
               >
-                Permanently delete
+                {deletionPending === "executing" ? "Revalidating and deleting…" : "Permanently delete"}
               </button>
             </div>
           </section>
-        </div>
-      )}
+        ) : null}
+      </MorphingModal>
     </motion.div>
   );
 }

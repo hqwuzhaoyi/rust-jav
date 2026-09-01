@@ -47,7 +47,7 @@ use crate::{
     asset_index::{AssetIndex, AssetQuery, AssetState, MediaRootHealth, ScanMode},
     deletion_plan::{
         DeletionOutcomeStatus, FileType as DeletionFileType, PermanentDeletionPlan,
-        PermanentDeletionPlanner, RelatedHardLink,
+        PermanentDeletionPlanner, PlanExecutionError, RelatedHardLink,
     },
     image_blocking::{self, ImageBlockingBudget},
     jellyfin::{
@@ -731,13 +731,30 @@ impl AppState {
           CREATE TABLE IF NOT EXISTS jellyfin_refresh (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1), status TEXT NOT NULL, attempts INTEGER NOT NULL, error TEXT
           );").map_err(crate::asset_index::Error::from)?;
+        let deletion_roots = deletion_search_roots(&config);
         for item in tasks.running_mutation_items()? {
             let message = match (item.source_path.as_deref(), item.quarantine_token.as_deref()) {
-                (Some(source), Some(token)) => crate::operations::recover_durable_quarantine(
-                    Path::new(&item.media_root),
-                    Path::new(source),
-                    token,
-                ),
+                (Some(source), Some(token)) => {
+                    let source = Path::new(source);
+                    let recovery_root = if item.task_type == "permanent_deletion" {
+                        deletion_roots
+                            .iter()
+                            .filter(|root| source.starts_with(root))
+                            .max_by_key(|root| root.components().count())
+                            .map(PathBuf::as_path)
+                    } else {
+                        Some(Path::new(&item.media_root))
+                    };
+                    match recovery_root {
+                        Some(root) => crate::operations::recover_durable_quarantine(
+                            root, source, token,
+                        ),
+                        None => format!(
+                            "interrupted permanent deletion: source {} is outside configured recovery roots; quarantine token {token} remains for manual inspection",
+                            source.display()
+                        ),
+                    }
+                }
                 _ => "interrupted mutation: running item has no durable quarantine locator; inspect its source and planned target manually".to_string(),
             };
             tasks.interrupt_item(item.id, &message)?;
@@ -1542,7 +1559,7 @@ async fn deletion_candidates(
         discover_candidates(root, &rules, &mut found);
     }
     found.sort_by(|left, right| left.0.cmp(&right.0));
-    let planner = PermanentDeletionPlanner::new(state.config.media_roots.clone());
+    let planner = deletion_planner(&state.config);
     let now = UNIX_EPOCH + Duration::from_secs(state.now());
     let candidates = found
         .into_iter()
@@ -1569,6 +1586,18 @@ async fn deletion_candidates(
 struct CreateDeletionPlanRequest {
     paths: Vec<PathBuf>,
     selection: String,
+}
+
+fn deletion_search_roots(config: &ManagementConfig) -> Vec<PathBuf> {
+    let mut roots = config.media_roots.clone();
+    if let Some(actor_root) = &config.actor_view_root {
+        roots.push(actor_root.clone());
+    }
+    roots
+}
+
+fn deletion_planner(config: &ManagementConfig) -> PermanentDeletionPlanner {
+    PermanentDeletionPlanner::with_roots(config.media_roots.clone(), deletion_search_roots(config))
 }
 
 async fn create_deletion_plan(
@@ -1599,7 +1628,7 @@ async fn create_deletion_plan(
         )
             .into_response();
     }
-    let planner = PermanentDeletionPlanner::new(state.config.media_roots.clone());
+    let planner = deletion_planner(&state.config);
     let now = UNIX_EPOCH + Duration::from_secs(state.now());
     let preview = match planner.create_plan(input.paths, Duration::from_secs(600), now) {
         Ok(plan) => plan,
@@ -1618,7 +1647,8 @@ async fn create_deletion_plan(
                 .iter()
                 .map(|item| item.path.clone()),
         );
-        match planner.create_plan(paths, Duration::from_secs(600), now) {
+        let unified_planner = PermanentDeletionPlanner::new(preview.hard_link_search_roots.clone());
+        match unified_planner.create_plan(paths, Duration::from_secs(600), now) {
             Ok(plan) => plan,
             Err(error) => {
                 return (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response()
@@ -1686,30 +1716,70 @@ async fn execute_deletion_plan(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     let planner = PermanentDeletionPlanner::new(stored.plan.hard_link_search_roots.clone());
-    let result = match planner.execute(&stored.plan, UNIX_EPOCH + Duration::from_secs(state.now()))
-    {
+    let starting_tasks = state.tasks.clone();
+    let finishing_tasks = state.tasks.clone();
+    let starting_task_id = task.id.clone();
+    let finishing_task_id = task.id.clone();
+    let result = match planner.execute_journaled(
+        &stored.plan,
+        UNIX_EPOCH + Duration::from_secs(state.now()),
+        move |path| {
+            let source = path.path.to_str().ok_or_else(|| {
+                "approved path is not UTF-8 and cannot be durably journaled".to_string()
+            })?;
+            starting_tasks
+                .start_item(
+                    &starting_task_id,
+                    "permanent_deletion",
+                    Some(source),
+                    Some(source),
+                )
+                .map(|journal| (journal.id, journal.quarantine_token))
+                .map_err(|error| error.to_string())
+        },
+        move |item_id, outcome| {
+            let status = match outcome.status {
+                DeletionOutcomeStatus::Deleted => "deleted",
+                DeletionOutcomeStatus::Changed => "changed",
+                DeletionOutcomeStatus::Failed => "failed",
+            };
+            finishing_tasks
+                .complete_item(
+                    &finishing_task_id,
+                    item_id,
+                    status,
+                    outcome.message.as_deref(),
+                )
+                .map_err(|error| error.to_string())
+        },
+    ) {
         Ok(result) => result,
-        Err(error) => {
-            let _ = state
+        Err(PlanExecutionError::Expired) => {
+            if state
                 .tasks
-                .mark_failed(&task.id, state.now(), &error.to_string());
-            return (StatusCode::CONFLICT, error.to_string()).into_response();
+                .mark_failed(&task.id, state.now(), "Operation Plan has expired")
+                .is_err()
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Operation Plan expired and its durable task status could not be updated",
+                )
+                    .into_response();
+            }
+            return (StatusCode::CONFLICT, "Operation Plan has expired").into_response();
+        }
+        Err(PlanExecutionError::Persistence(error)) => {
+            // Do not mark this task terminal: a running item may identify a
+            // captured quarantine that startup recovery must inspect.
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "durable deletion journal failed; remaining paths were not attempted: {error}"
+                ),
+            )
+                .into_response();
         }
     };
-    for outcome in &result.outcomes {
-        let status = match outcome.status {
-            DeletionOutcomeStatus::Deleted => "deleted",
-            DeletionOutcomeStatus::Changed => "changed",
-            DeletionOutcomeStatus::Failed => "failed",
-        };
-        let _ = state.tasks.finish_item(
-            &task.id,
-            "permanent_deletion",
-            Some(&outcome.path.display().to_string()),
-            status,
-            outcome.message.as_deref(),
-        );
-    }
     let audit = serde_json::json!({
         "administrator": "Administrator", "time": state.now(), "task_id": task.id,
         "active_rule_set": {"version": stored.rule_version, "rules": stored.rules},
@@ -1717,21 +1787,46 @@ async fn execute_deletion_plan(
         "outcomes": result.outcomes.iter().map(|outcome| serde_json::json!({"path":outcome.path,"status":format!("{:?}", outcome.status).to_ascii_lowercase(),"message":outcome.message})).collect::<Vec<_>>(),
         "partial": result.partial, "rolled_back": false
     });
-    let _ = state
+    let audit_error = state
         .tasks
-        .record_deletion_audit(&task.id, state.now(), &audit);
-    if result
+        .record_deletion_audit(&task.id, state.now(), &audit)
+        .err()
+        .map(|error| format!("deletion audit could not be persisted: {error}"));
+    let has_path_failures = result
         .outcomes
         .iter()
-        .any(|outcome| outcome.status != DeletionOutcomeStatus::Deleted)
-    {
-        let _ = state.tasks.mark_failed(
+        .any(|outcome| outcome.status != DeletionOutcomeStatus::Deleted);
+    let terminal_result = if let Some(error) = audit_error {
+        state.tasks.mark_failed(
+            &task.id,
+            state.now(),
+            &format!("permanent deletion persistence failed: {error}"),
+        )
+    } else if has_path_failures {
+        state.tasks.mark_failed(
             &task.id,
             state.now(),
             "permanent deletion completed with partial failures",
-        );
+        )
     } else {
-        let _ = state.tasks.mark_completed(&task.id, state.now());
+        state.tasks.mark_completed(&task.id, state.now())
+    };
+    if let Err(error) = terminal_result {
+        if state
+            .tasks
+            .mark_failed(
+                &task.id,
+                state.now(),
+                &format!("permanent deletion terminal status could not be persisted: {error}"),
+            )
+            .is_err()
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "permanent deletion changed the filesystem but durable terminal status persistence failed; task remains running for restart recovery",
+            )
+                .into_response();
+        }
     }
     match state.tasks.get(&task.id) {
         Ok(Some(task)) => (StatusCode::ACCEPTED, Json(task)).into_response(),

@@ -12,6 +12,11 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use rustix::fs::{
+    open, renameat_with, statat, unlinkat, AtFlags, FileType as RustixFileType, Mode, OFlags,
+    RenameFlags,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
     RegularFile,
@@ -141,15 +146,17 @@ impl fmt::Display for PlanCreationError {
 
 impl std::error::Error for PlanCreationError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanExecutionError {
     Expired,
+    Persistence(String),
 }
 
 impl fmt::Display for PlanExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Expired => write!(formatter, "Operation Plan has expired"),
+            Self::Persistence(message) => write!(formatter, "{message}"),
         }
     }
 }
@@ -180,12 +187,21 @@ pub struct DeletionExecutionResult {
 
 #[derive(Debug, Clone)]
 pub struct PermanentDeletionPlanner {
+    approved_roots: Vec<PathBuf>,
     hard_link_search_roots: Vec<PathBuf>,
 }
 
 impl PermanentDeletionPlanner {
     pub fn new(hard_link_search_roots: Vec<PathBuf>) -> Self {
         Self {
+            approved_roots: hard_link_search_roots.clone(),
+            hard_link_search_roots,
+        }
+    }
+
+    pub fn with_roots(approved_roots: Vec<PathBuf>, hard_link_search_roots: Vec<PathBuf>) -> Self {
+        Self {
+            approved_roots,
             hard_link_search_roots,
         }
     }
@@ -196,7 +212,7 @@ impl PermanentDeletionPlanner {
         lifetime: Duration,
         now: SystemTime,
     ) -> Result<PermanentDeletionPlan, PlanCreationError> {
-        if self.hard_link_search_roots.is_empty() {
+        if self.approved_roots.is_empty() || self.hard_link_search_roots.is_empty() {
             return Err(PlanCreationError::NoApprovedRoots);
         }
         if lifetime.is_zero() {
@@ -205,7 +221,8 @@ impl PermanentDeletionPlanner {
         let expires_at = now
             .checked_add(lifetime)
             .ok_or(PlanCreationError::ExpirationOverflow)?;
-        let roots = self.validated_roots()?;
+        let approved_roots = self.validated_roots(&self.approved_roots)?;
+        let search_roots = self.validated_roots(&self.hard_link_search_roots)?;
         let mut planned_paths = Vec::with_capacity(approved_paths.len());
         let mut seen_paths = HashSet::new();
 
@@ -215,7 +232,7 @@ impl PermanentDeletionPlanner {
                     path: path.clone(),
                     source,
                 })?;
-            validate_path_scope(&absolute, &roots)?;
+            validate_path_scope(&absolute, &approved_roots)?;
             let metadata = fs::symlink_metadata(&absolute).map_err(|source| {
                 PlanCreationError::InspectPath {
                     path: absolute.clone(),
@@ -240,7 +257,7 @@ impl PermanentDeletionPlanner {
             .map(|path| path.path.clone())
             .collect::<HashSet<_>>();
         let mut related_hard_links = Vec::new();
-        for root in &roots {
+        for root in &search_roots {
             search_related_links(
                 root,
                 &approved_by_identity,
@@ -272,7 +289,7 @@ impl PermanentDeletionPlanner {
         Ok(PermanentDeletionPlan {
             created_at: now,
             expires_at,
-            hard_link_search_roots: roots,
+            hard_link_search_roots: search_roots,
             approved_paths: planned_paths,
             related_hard_links,
             logical_size,
@@ -286,40 +303,103 @@ impl PermanentDeletionPlanner {
         plan: &PermanentDeletionPlan,
         now: SystemTime,
     ) -> Result<DeletionExecutionResult, PlanExecutionError> {
-        if now > plan.expires_at {
-            return Err(PlanExecutionError::Expired);
-        }
+        self.execute_with_pre_unlink_hook(plan, now, |_| {})
+    }
 
-        // Revalidate the complete plan before the first unlink. Otherwise the
-        // first approved hard link would legitimately change link counts for
-        // later approved paths and make a unified deletion invalidate itself.
-        let validations = plan
-            .approved_paths
-            .iter()
-            .map(revalidate_path)
-            .collect::<Vec<_>>();
+    #[doc(hidden)]
+    pub fn execute_with_pre_unlink_hook<F>(
+        &self,
+        plan: &PermanentDeletionPlan,
+        now: SystemTime,
+        mut before_unlink: F,
+    ) -> Result<DeletionExecutionResult, PlanExecutionError>
+    where
+        F: FnMut(&PlannedDeletionPath),
+    {
+        let validations = preflight_plan(plan, now)?;
         let outcomes = plan
             .approved_paths
             .iter()
             .zip(validations)
-            .map(|(path, invalid)| invalid.unwrap_or_else(|| remove_path(path)))
+            .enumerate()
+            .map(|(index, (path, invalid))| {
+                invalid.unwrap_or_else(|| {
+                    before_unlink(path);
+                    let mut after_capture = || {};
+                    remove_path_atomically(
+                        path,
+                        &format!(
+                            ".rust-jav-quarantine-item-{}{}",
+                            path.identity.inode,
+                            index + 1
+                        ),
+                        &mut after_capture,
+                    )
+                })
+            })
             .collect::<Vec<_>>();
-        let deleted = outcomes
-            .iter()
-            .filter(|outcome| outcome.status == DeletionOutcomeStatus::Deleted)
-            .count();
-        let partial = deleted > 0 && deleted < outcomes.len();
-
-        Ok(DeletionExecutionResult {
-            outcomes,
-            partial,
-            rolled_back: false,
-        })
+        Ok(deletion_result(outcomes))
     }
 
-    fn validated_roots(&self) -> Result<Vec<PathBuf>, PlanCreationError> {
-        let mut roots = Vec::with_capacity(self.hard_link_search_roots.len());
-        for root in &self.hard_link_search_roots {
+    pub fn execute_journaled<Start, Finish>(
+        &self,
+        plan: &PermanentDeletionPlan,
+        now: SystemTime,
+        start_item: Start,
+        finish_item: Finish,
+    ) -> Result<DeletionExecutionResult, PlanExecutionError>
+    where
+        Start: FnMut(&PlannedDeletionPath) -> Result<(i64, String), String>,
+        Finish: FnMut(i64, &DeletionOutcome) -> Result<(), String>,
+    {
+        self.execute_journaled_with_capture_hook(plan, now, start_item, finish_item, |_, _| {})
+    }
+
+    #[doc(hidden)]
+    pub fn execute_journaled_with_capture_hook<Start, Finish, Hook>(
+        &self,
+        plan: &PermanentDeletionPlan,
+        now: SystemTime,
+        mut start_item: Start,
+        mut finish_item: Finish,
+        mut after_capture: Hook,
+    ) -> Result<DeletionExecutionResult, PlanExecutionError>
+    where
+        Start: FnMut(&PlannedDeletionPath) -> Result<(i64, String), String>,
+        Finish: FnMut(i64, &DeletionOutcome) -> Result<(), String>,
+        Hook: FnMut(&PlannedDeletionPath, &str),
+    {
+        let validations = preflight_plan(plan, now)?;
+        let mut outcomes = Vec::with_capacity(plan.approved_paths.len());
+        for (path, invalid) in plan.approved_paths.iter().zip(validations) {
+            // The durable running item and deterministic quarantine token must
+            // exist before the first filesystem change for this path.
+            let (item_id, quarantine_token) = start_item(path).map_err(|error| {
+                PlanExecutionError::Persistence(format!(
+                    "cannot create durable deletion journal before mutation: {error}"
+                ))
+            })?;
+            let outcome = invalid.unwrap_or_else(|| {
+                let mut captured = || after_capture(path, &quarantine_token);
+                remove_path_atomically(path, &quarantine_token, &mut captured)
+            });
+            finish_item(item_id, &outcome).map_err(|error| {
+                PlanExecutionError::Persistence(format!(
+                    "cannot update durable deletion journal after filesystem outcome for {}: {error}",
+                    path.path.display()
+                ))
+            })?;
+            outcomes.push(outcome);
+        }
+        Ok(deletion_result(outcomes))
+    }
+
+    fn validated_roots(
+        &self,
+        configured_roots: &[PathBuf],
+    ) -> Result<Vec<PathBuf>, PlanCreationError> {
+        let mut roots = Vec::with_capacity(configured_roots.len());
+        for root in configured_roots {
             let metadata =
                 fs::symlink_metadata(root).map_err(|source| PlanCreationError::InvalidRoot {
                     path: root.clone(),
@@ -352,6 +432,36 @@ impl PermanentDeletionPlanner {
             }
         }
         Ok(roots)
+    }
+}
+
+fn preflight_plan(
+    plan: &PermanentDeletionPlan,
+    now: SystemTime,
+) -> Result<Vec<Option<DeletionOutcome>>, PlanExecutionError> {
+    if now > plan.expires_at {
+        return Err(PlanExecutionError::Expired);
+    }
+    // Revalidate the complete plan before the first unlink. Otherwise the
+    // first approved hard link would legitimately change link counts for
+    // later approved paths and make a unified deletion invalidate itself.
+    Ok(plan
+        .approved_paths
+        .iter()
+        .map(revalidate_path)
+        .collect::<Vec<_>>())
+}
+
+fn deletion_result(outcomes: Vec<DeletionOutcome>) -> DeletionExecutionResult {
+    let deleted = outcomes
+        .iter()
+        .filter(|outcome| outcome.status == DeletionOutcomeStatus::Deleted)
+        .count();
+    let partial = deleted > 0 && deleted < outcomes.len();
+    DeletionExecutionResult {
+        outcomes,
+        partial,
+        rolled_back: false,
     }
 }
 
@@ -554,23 +664,155 @@ fn revalidate_path(path: &PlannedDeletionPath) -> Option<DeletionOutcome> {
     None
 }
 
-fn remove_path(path: &PlannedDeletionPath) -> DeletionOutcome {
-    let removal = if path.file_type == FileType::Directory {
-        fs::remove_dir(&path.path)
-    } else {
-        // remove_file unlinks symlinks themselves and never follows their targets.
-        fs::remove_file(&path.path)
+fn remove_path_atomically(
+    path: &PlannedDeletionPath,
+    quarantine_token: &str,
+    after_capture: &mut impl FnMut(),
+) -> DeletionOutcome {
+    let Some(parent) = path.path.parent() else {
+        return failed_outcome(path, "approved path has no parent directory".to_string());
     };
-    match removal {
+    let Some(name) = path.path.file_name() else {
+        return failed_outcome(path, "approved path has no final component".to_string());
+    };
+    let parent_fd = match open(
+        parent,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    ) {
+        Ok(parent_fd) => parent_fd,
+        Err(error) => {
+            return failed_outcome(path, format!("cannot open parent directory: {error}"))
+        }
+    };
+    let quarantine_name = match durable_quarantine_name(quarantine_token) {
+        Ok(name) => name,
+        Err(error) => return failed_outcome(path, error),
+    };
+    if let Err(error) = renameat_with(
+        &parent_fd,
+        name,
+        &parent_fd,
+        quarantine_name,
+        RenameFlags::NOREPLACE,
+    ) {
+        let message =
+            format!("pathname could not be atomically quarantined before unlink: {error}");
+        return if error == rustix::io::Errno::NOENT {
+            changed_outcome(path, message)
+        } else {
+            failed_outcome(path, message)
+        };
+    }
+    after_capture();
+
+    let quarantined = match statat(&parent_fd, quarantine_name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return failed_outcome(
+                path,
+                format!("quarantined path cannot be inspected safely: {error}"),
+            )
+        }
+    };
+    if !quarantined_snapshot_matches(path, &quarantined) {
+        let quarantine_path = parent.join(quarantine_name);
+        let message = match renameat_with(
+            &parent_fd,
+            quarantine_name,
+            &parent_fd,
+            name,
+            RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => "filesystem identity changed after preflight; replacement was restored"
+                .to_string(),
+            Err(error) => format!(
+                "filesystem identity changed after preflight; replacement was preserved at {} because its pathname could not be restored without overwriting another entry: {error}",
+                quarantine_path.display()
+            ),
+        };
+        return changed_outcome(path, message);
+    }
+
+    let flags = if path.file_type == FileType::Directory {
+        AtFlags::REMOVEDIR
+    } else {
+        AtFlags::empty()
+    };
+    match unlinkat(&parent_fd, quarantine_name, flags) {
         Ok(()) => DeletionOutcome {
             path: path.path.clone(),
             status: DeletionOutcomeStatus::Deleted,
             message: None,
         },
-        Err(error) => DeletionOutcome {
-            path: path.path.clone(),
-            status: DeletionOutcomeStatus::Failed,
-            message: Some(error.to_string()),
-        },
+        Err(error) => {
+            let quarantine_path = parent.join(quarantine_name);
+            let message = match renameat_with(
+                &parent_fd,
+                quarantine_name,
+                &parent_fd,
+                name,
+                RenameFlags::NOREPLACE,
+            ) {
+                Ok(()) => format!(
+                    "approved inode could not be unlinked and was restored to its source path: {error}"
+                ),
+                Err(rollback) => format!(
+                    "approved inode could not be unlinked: {error}; rollback refused without replacement: {rollback}; durable quarantine remains at {}",
+                    quarantine_path.display()
+                ),
+            };
+            failed_outcome(path, message)
+        }
+    }
+}
+
+fn quarantined_snapshot_matches(path: &PlannedDeletionPath, metadata: &rustix::fs::Stat) -> bool {
+    if metadata.st_dev as u64 != path.snapshot.device || metadata.st_ino != path.snapshot.inode {
+        return false;
+    }
+    if path.file_type == FileType::Directory {
+        return RustixFileType::from_raw_mode(metadata.st_mode) == RustixFileType::Directory;
+    }
+    let file_type_matches = match path.file_type {
+        FileType::RegularFile => {
+            RustixFileType::from_raw_mode(metadata.st_mode) == RustixFileType::RegularFile
+        }
+        FileType::Symlink => {
+            RustixFileType::from_raw_mode(metadata.st_mode) == RustixFileType::Symlink
+        }
+        FileType::Other => true,
+        FileType::Directory => unreachable!(),
+    };
+    file_type_matches
+        && metadata.st_size as u64 == path.snapshot.size
+        && metadata.st_mtime == path.snapshot.modified_seconds
+        && metadata.st_mtime_nsec == path.snapshot.modified_nanoseconds
+        && (metadata.st_blocks as u64).saturating_mul(512) == path.snapshot.allocated_size
+}
+
+fn durable_quarantine_name(token: &str) -> Result<&str, String> {
+    let suffix = token
+        .strip_prefix(".rust-jav-quarantine-item-")
+        .ok_or_else(|| "invalid durable deletion quarantine token prefix".to_string())?;
+    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("invalid durable deletion quarantine token id".to_string());
+    }
+    Ok(token)
+}
+
+fn changed_outcome(path: &PlannedDeletionPath, message: String) -> DeletionOutcome {
+    DeletionOutcome {
+        path: path.path.clone(),
+        status: DeletionOutcomeStatus::Changed,
+        message: Some(message),
+    }
+}
+
+fn failed_outcome(path: &PlannedDeletionPath, message: String) -> DeletionOutcome {
+    DeletionOutcome {
+        path: path.path.clone(),
+        status: DeletionOutcomeStatus::Failed,
+        message: Some(message),
     }
 }
