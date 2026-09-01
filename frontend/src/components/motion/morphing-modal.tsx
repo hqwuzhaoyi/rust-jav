@@ -10,6 +10,7 @@ export interface MorphingModalProps {
   children: ReactNode;
   placement?: "bottom" | "center";
   className?: string;
+  initialAnimation?: boolean;
 }
 
 const FOCUSABLE = [
@@ -28,10 +29,12 @@ export function MorphingModal({
   children,
   placement = "bottom",
   className,
+  initialAnimation = true,
 }: MorphingModalProps) {
   const open = viewId !== null;
   const reduce = useReducedMotion();
   const panelRef = useRef<HTMLDivElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const enterY = reduce ? 0 : placement === "bottom" ? 40 : 20;
@@ -40,12 +43,27 @@ export function MorphingModal({
   useEffect(() => {
     if (!open) return;
     const previousOverflow = document.body.style.overflow;
-    const returnFocus = document.activeElement instanceof HTMLElement
+    returnFocusRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
     document.body.style.overflow = "hidden";
 
-    const dialog = panelRef.current?.querySelector<HTMLElement>('[role="dialog"]');
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      const returnFocus = returnFocusRef.current;
+      returnFocusRef.current = null;
+      if (returnFocus?.isConnected) returnFocus.focus();
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || viewId === null) return;
+    const views = Array.from(
+      panelRef.current?.querySelectorAll<HTMLElement>("[data-modal-view]") ?? [],
+    );
+    const currentView = views.find((view) => view.dataset.modalView === viewId);
+    const dialog = currentView?.querySelector<HTMLElement>('[role="dialog"]');
+
     const focusTarget = dialog?.querySelector<HTMLElement>(FOCUSABLE) ?? dialog;
     if (focusTarget === dialog && dialog && !dialog.hasAttribute("tabindex")) {
       dialog.setAttribute("tabindex", "-1");
@@ -81,11 +99,9 @@ export function MorphingModal({
     document.addEventListener("keydown", handleKeyDown);
 
     return () => {
-      document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", handleKeyDown);
-      returnFocus?.focus();
     };
-  }, [open]);
+  }, [open, viewId]);
 
   return (
     <AnimatePresence initial={false}>
@@ -121,7 +137,7 @@ export function MorphingModal({
                 ref={panelRef}
                 key="panel"
                 layout
-                initial={{ opacity: 0, y: enterY, scale: enterScale }}
+                initial={initialAnimation ? { opacity: 0, y: enterY, scale: enterScale } : false}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{
                   opacity: 0,
@@ -140,7 +156,12 @@ export function MorphingModal({
                   <AnimatePresence mode="popLayout" initial={false}>
                     <motion.div
                       key={viewId}
-                      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8, filter: "blur(4px)" }}
+                      data-modal-view={viewId ?? undefined}
+                      initial={initialAnimation
+                        ? reduce
+                          ? { opacity: 0 }
+                          : { opacity: 0, y: 8, filter: "blur(4px)" }
+                        : false}
                       animate={
                         reduce
                           ? { opacity: 1, transition: { duration: 0.18, ease: EASE_OUT } }

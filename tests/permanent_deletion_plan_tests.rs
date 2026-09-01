@@ -119,6 +119,32 @@ fn execution_rejects_expired_and_replaced_files_without_mutation() {
 }
 
 #[test]
+fn atomic_unlink_preserves_a_replacement_injected_after_batch_preflight() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("racing-replacement.mp4");
+    let moved_approved_inode = temp.path().join("approved-inode-moved-by-racer.mp4");
+    fs::write(&path, b"approved inode").unwrap();
+    let planner = PermanentDeletionPlanner::new(vec![temp.path().to_path_buf()]);
+    let now = SystemTime::now();
+    let plan = planner
+        .create_plan(vec![path.clone()], Duration::from_secs(60), now)
+        .unwrap();
+
+    let result = planner
+        .execute_with_pre_unlink_hook(&plan, now, |planned| {
+            if planned.path == path {
+                fs::rename(&path, &moved_approved_inode).unwrap();
+                fs::write(&path, b"replacement must survive").unwrap();
+            }
+        })
+        .unwrap();
+
+    assert_eq!(result.outcomes[0].status, DeletionOutcomeStatus::Changed);
+    assert_eq!(fs::read(&path).unwrap(), b"replacement must survive");
+    assert_eq!(fs::read(&moved_approved_inode).unwrap(), b"approved inode");
+}
+
+#[test]
 fn execution_attempts_every_path_and_reports_partial_outcomes() {
     let temp = tempfile::tempdir().unwrap();
     let deletable = temp.path().join("deletable.txt");
@@ -235,4 +261,44 @@ fn approving_a_directory_enumerates_children_and_deletes_child_first() {
         .iter()
         .all(|outcome| outcome.status == DeletionOutcomeStatus::Deleted));
     assert!(!asset.exists());
+}
+
+#[test]
+fn directory_rollback_failure_retains_a_durable_quarantine_locator() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("approved-directory");
+    fs::create_dir(&directory).unwrap();
+    let planner = PermanentDeletionPlanner::new(vec![temp.path().to_path_buf()]);
+    let now = SystemTime::now();
+    let plan = planner
+        .create_plan(vec![directory.clone()], Duration::from_secs(60), now)
+        .unwrap();
+    let token = ".rust-jav-quarantine-item-42";
+
+    let result = planner
+        .execute_journaled_with_capture_hook(
+            &plan,
+            now,
+            |_| Ok((42, token.to_string())),
+            |_, _| Ok(()),
+            |planned, quarantine_token| {
+                if planned.path == directory {
+                    let quarantine = temp.path().join(quarantine_token);
+                    fs::write(quarantine.join("arrived-after-plan.txt"), b"new").unwrap();
+                    fs::create_dir(&directory).unwrap();
+                }
+            },
+        )
+        .unwrap();
+
+    assert_eq!(result.outcomes[0].status, DeletionOutcomeStatus::Failed);
+    let message = result.outcomes[0].message.as_deref().unwrap();
+    assert!(message.contains(token));
+    assert!(message.contains("rollback refused"));
+    assert!(directory.exists());
+    assert!(temp
+        .path()
+        .join(token)
+        .join("arrived-after-plan.txt")
+        .exists());
 }

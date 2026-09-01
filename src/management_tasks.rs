@@ -116,6 +116,7 @@ pub struct StartedTaskItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunningMutationItem {
     pub id: i64,
+    pub task_type: String,
     pub media_root: String,
     pub source_path: Option<String>,
     pub quarantine_token: Option<String>,
@@ -268,7 +269,7 @@ impl TaskStore {
     pub fn running_mutation_items(&self) -> Result<Vec<RunningMutationItem>, Error> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT i.id, t.media_root, i.source_path, i.quarantine_token
+            "SELECT i.id, t.task_type, t.media_root, i.source_path, i.quarantine_token
              FROM management_task_items i JOIN management_tasks t ON t.id=i.task_id
              WHERE t.kind='mutation' AND t.status IN ('queued','running') AND i.status='running'
              ORDER BY i.id",
@@ -277,9 +278,10 @@ impl TaskStore {
             .query_map([], |row| {
                 Ok(RunningMutationItem {
                     id: row.get(0)?,
-                    media_root: row.get(1)?,
-                    source_path: row.get(2)?,
-                    quarantine_token: row.get(3)?,
+                    task_type: row.get(1)?,
+                    media_root: row.get(2)?,
+                    source_path: row.get(3)?,
+                    quarantine_token: row.get(4)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
