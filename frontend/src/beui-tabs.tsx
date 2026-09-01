@@ -94,6 +94,7 @@ export function BeUITab({ value, children }: { value: string; children: ReactNod
       tabIndex={selected ? 0 : -1}
       aria-selected={selected}
       aria-controls={`${tabs.baseId}-panel-${value}`}
+      className="ui-touch-target"
       onClick={() => tabs.setValue(value)}
     >
       {selected && <motion.span className="beui-tab-indicator" layoutId={tabs.layoutId} />}

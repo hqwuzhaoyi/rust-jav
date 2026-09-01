@@ -4,6 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 import { App } from "./main";
+import { productionStyle, productionValue } from "./test-css";
 
 const actorName = "Alice #100% / 雪";
 const longActorName =
@@ -225,14 +226,41 @@ describe("Issue #40 responsive ActorInspector", () => {
       setViewport(width);
       stubActorApi();
       render(<App />);
-      const { dialog } = await openActorFromCard();
+      const { trigger, dialog } = await openActorFromCard();
 
       expect(dialog).toHaveAttribute("aria-modal", "true");
       expect(document.activeElement).toBe(
         within(dialog).getByRole("button", { name: "Close actor details" }),
       );
+
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(dialog).not.toBeInTheDocument());
+      expect(trigger).toHaveFocus();
     },
   );
+
+  it("uses the real production cascade for a 44px circular Close control", async () => {
+    stubActorApi();
+    render(<App />);
+    const { dialog } = await openActorFromCard();
+
+    const close = within(dialog).getByRole("button", { name: "Close actor details" });
+    expect(close).toHaveClass("inspector-close", "ui-touch-target", "ui-icon-button");
+    const closeStyle = productionStyle(close);
+    expect([
+      productionValue(close, "width"),
+      productionValue(close, "height"),
+      productionValue(close, "min-width"),
+      productionValue(close, "min-height"),
+      closeStyle.borderRadius,
+    ]).toEqual(["44px", "44px", "44px", "44px", "50%"]);
+    const iconStyle = productionStyle(close.querySelector("svg")!);
+    expect([iconStyle.width, iconStyle.height, iconStyle.flexShrink]).toEqual([
+      "16px",
+      "16px",
+      "0",
+    ]);
+  });
 
   it("restores focus to the Actor Folder card when desktop detail closes", async () => {
     setViewport(1280);
@@ -464,6 +492,48 @@ describe("Issue #40 safe Actor Folder removal", () => {
     expect(
       await screen.findByText("Actor Folder removal started as a Management Task."),
     ).toBeVisible();
+  });
+
+  it("keeps the Shell Notice dismiss control a keyboard-operable 44px circle", async () => {
+    class MockEventSource {
+      addEventListener() {}
+      close() {}
+    }
+    vi.stubGlobal("EventSource", MockEventSource);
+    stubActorApi();
+    render(<App />);
+    const { dialog } = await openActorFromCard();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Remove Actor Folder…" }),
+    );
+    await userEvent.click(
+      within(await screen.findByRole("dialog", { name: `Remove ${actorName}?` }))
+        .getByRole("button", { name: "Remove via Management Task" }),
+    );
+
+    const notice = await screen.findByRole("status");
+    const close = within(notice).getByRole("button", {
+      name: "Dismiss Actor removal notification",
+    });
+    const closeStyle = productionStyle(close);
+    expect([
+      closeStyle.width,
+      closeStyle.height,
+      closeStyle.minWidth,
+      closeStyle.minHeight,
+      closeStyle.borderRadius,
+      closeStyle.flexShrink,
+    ]).toEqual(["44px", "44px", "44px", "44px", "50%", "0"]);
+    const iconStyle = productionStyle(close.querySelector("svg")!);
+    expect([iconStyle.width, iconStyle.height, iconStyle.flexShrink]).toEqual([
+      "14px",
+      "14px",
+      "0",
+    ]);
+
+    close.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(notice).not.toBeInTheDocument();
   });
 
   it("refreshes Actor Folders and closes the removed detail only when its task completes", async () => {

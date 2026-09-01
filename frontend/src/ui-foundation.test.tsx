@@ -1,5 +1,5 @@
 import React, { useState, type ComponentType, type ReactNode } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
@@ -9,6 +9,7 @@ import {
   BeUITabs,
   BeUITabsList,
 } from "./beui-tabs";
+import { productionStyle, productionValue } from "./test-css";
 
 afterEach(cleanup);
 
@@ -55,6 +56,11 @@ type Toast = {
   id: string;
   title: ReactNode;
   dismissible?: boolean;
+  duration?: number;
+  action?: {
+    label: ReactNode;
+    onClick: (toast: Toast) => void;
+  };
 };
 
 type ToastStackProps = {
@@ -91,6 +97,73 @@ describe("生产 toast foundation", () => {
     await userEvent.click(screen.getByRole("button", { name: "Dismiss toast" }));
 
     expect(screen.queryByText("Settings saved")).not.toBeInTheDocument();
+  });
+
+  it("应让 action 保持 28px 紧凑视觉，同时让 action 与 dismiss 都有 44px 可访问触控目标", async () => {
+    const modulePath = "./components/motion/animated-toast-stack";
+    const { AnimatedToastStack } = (await import(modulePath)) as {
+      AnimatedToastStack: ComponentType<ToastStackProps>;
+    };
+    const action = vi.fn();
+    const dismiss = vi.fn();
+
+    render(
+      <AnimatedToastStack
+        toasts={[
+          {
+            id: "undoable",
+            title: "Actor removed",
+            duration: 0,
+            action: { label: "Undo", onClick: action },
+          },
+        ]}
+        onDismiss={dismiss}
+      />,
+    );
+
+    const actionButton = screen.getByRole("button", { name: "Undo" });
+    const actionVisual = actionButton.querySelector(".ui-compact-surface");
+    const close = screen.getByRole("button", { name: "Dismiss toast" });
+    expect(actionButton.classList.contains("ui-compact-touch-target")).toBe(true);
+    expect(actionVisual).not.toBeNull();
+    expect([
+      productionValue(actionButton, "min-width"),
+      productionValue(actionButton, "min-height"),
+    ]).toEqual(["44px", "44px"]);
+    const actionVisualStyle = productionStyle(actionVisual!);
+    expect([actionVisualStyle.height, actionVisualStyle.borderRadius]).toEqual([
+      "28px",
+      "999px",
+    ]);
+    expect(close.classList.contains("ui-compact-icon-button")).toBe(true);
+    const closeStyle = productionStyle(close);
+    expect([
+      closeStyle.width,
+      closeStyle.height,
+      closeStyle.minWidth,
+      closeStyle.minHeight,
+      closeStyle.borderRadius,
+      closeStyle.flexShrink,
+    ]).toEqual([
+      "44px",
+      "44px",
+      "44px",
+      "44px",
+      "50%",
+      "0",
+    ]);
+    expect([
+      productionValue(close, "min-width"),
+      productionValue(close, "min-height"),
+    ]).toEqual(["44px", "44px"]);
+    expect(productionStyle(close.querySelector("svg")!).flexShrink).toBe("0");
+
+    actionButton.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(action).toHaveBeenCalledTimes(1);
+    close.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(dismiss).toHaveBeenCalledWith("undoable");
   });
 });
 

@@ -43,6 +43,8 @@
   --ds-shadow-sheet: -18px 0 50px rgba(0, 0, 0, .14);
   --ds-focus: 0 0 0 3px rgba(8, 127, 245, .24);
   --ds-control: 44px;
+  --ds-touch-target: 44px;
+  --ds-compact-control: 28px;
   --blue: var(--ds-accent);
   --line: var(--ds-line);
 }
@@ -76,7 +78,81 @@
 }
 .ui-primary-button:hover, .auth button.ui-primary-button:hover { background: #264c42; }
 .ui-primary-button:active, .auth button.ui-primary-button:active { transform: translateY(1px); }
-.ui-toast-stack button { min-height: 1.75rem; }
+.ui-touch-target {
+  min-width: var(--ds-touch-target);
+  min-height: var(--ds-touch-target);
+  touch-action: manipulation;
+}
+.ui-icon-button {
+  display: inline-grid;
+  width: var(--ds-touch-target);
+  height: var(--ds-touch-target);
+  min-width: var(--ds-touch-target);
+  min-height: var(--ds-touch-target);
+  flex: 0 0 var(--ds-touch-target);
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+}
+.ui-icon-button > svg {
+  flex-shrink: 0;
+}
+.ui-compact-touch-target {
+  position: relative;
+  display: inline-flex;
+  min-width: var(--ds-touch-target);
+  min-height: var(--ds-touch-target);
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  touch-action: manipulation;
+}
+.ui-compact-icon-button {
+  width: var(--ds-touch-target);
+  height: var(--ds-touch-target);
+  flex: 0 0 var(--ds-touch-target);
+  border-radius: 50%;
+}
+.ui-compact-surface {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  height: var(--ds-compact-control);
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+}
+.ui-compact-icon-button .ui-compact-surface {
+  width: var(--ds-compact-control);
+  flex: 0 0 var(--ds-compact-control);
+  border-radius: 50%;
+}
+.ui-compact-surface > svg { flex-shrink: 0; }
+.ui-toast-stack .ui-compact-touch-target { margin-block: -8px; }
+.toast-action {
+  min-width: 44px;
+  min-height: 44px;
+  margin-block: 0 -8px;
+}
+.toast-action-visual {
+  height: 28px;
+  border-radius: 999px;
+}
+.toast-close {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.toast-close svg { flex-shrink: 0; }
+.toast-action:hover .toast-action-visual,
+.toast-close:hover .ui-compact-surface {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
 .actor-removal-modal { max-width: 480px; }
 .actor-removal-modal .confirm-dialog {
   width: 100%;
