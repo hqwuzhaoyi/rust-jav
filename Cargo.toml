@@ -42,6 +42,8 @@ thiserror = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 url = "2"
 libc = "0.2"
+image = { version = "0.25.8", default-features = false, features = ["jpeg", "png", "webp"] }
+image-webp = "0.2.4"
 
 [[example]]
 name = "create"

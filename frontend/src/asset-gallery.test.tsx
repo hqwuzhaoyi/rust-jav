@@ -287,6 +287,42 @@ describe("Issue #38 真实 Asset Index 卡片", () => {
   });
 });
 
+describe("Issue #45 无效本地封面", () => {
+  it.each([
+    ["手机", 375],
+    ["桌面", 1440],
+  ])("DASS-591 在%s视口应显示 placeholder 且不请求 artwork", async (_viewport, width) => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    window.dispatchEvent(new Event("resize"));
+    stubGalleryApi(async () =>
+      Response.json({
+        items: [
+          {
+            id: "dass-591-invalid-artwork",
+            path: "/media/DASS-591/DASS-591.mp4",
+            jav_code: "DASS-591",
+            title: "DASS-591",
+            artwork_url: null,
+            captured_date: "2026-08-31",
+            state: "normal",
+            exception: null,
+          },
+        ],
+        groups: [{ date: "2026-08-31", count: 1 }],
+        page: 1,
+        total: 1,
+        total_pages: 1,
+      }),
+    );
+
+    render(<App />);
+    const card = await screen.findByRole("button", { name: "查看资产 DASS-591" });
+
+    expect(within(card).getByRole("img", { name: "DASS-591 暂无封面" })).toBeVisible();
+    expect(within(card).queryByRole("img", { name: "DASS-591 封面" })).not.toBeInTheDocument();
+  });
+});
+
 describe("Issue #38 图库反馈与可访问性", () => {
   it("当资产请求仍在进行时，应显示加载状态且不得闪现空态", async () => {
     let resolveAssets: ((response: Response) => void) | undefined;

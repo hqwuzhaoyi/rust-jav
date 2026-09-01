@@ -11,6 +11,9 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 use url::Url;
 
+#[path = "support/artwork_fixtures.rs"]
+mod artwork_fixtures;
+
 #[derive(Clone)]
 struct TestClock(u64);
 
@@ -339,7 +342,7 @@ async fn authenticated_asset_detail_api_exposes_nfo_and_rejects_anonymous_access
     std::fs::create_dir(&root).unwrap();
     std::fs::create_dir_all(actor_root.join("miru/ABC-123")).unwrap();
     std::fs::write(root.join("ABC-123.mp4"), b"video").unwrap();
-    std::fs::write(root.join("ABC-123.jpg"), b"poster").unwrap();
+    std::fs::write(root.join("ABC-123.jpg"), artwork_fixtures::valid_jpeg()).unwrap();
     std::fs::write(root.join("ABC-123.nfo"), r#"<movie><title>Blue Room</title><studio>Example</studio><actor><name>miru</name></actor><plot>Local plot</plot></movie>"#).unwrap();
     std::fs::hard_link(
         root.join("ABC-123.mp4"),
@@ -486,7 +489,8 @@ async fn artwork_route_serves_only_the_artwork_bound_to_an_indexed_asset() {
     let root = dir.path().join("media");
     std::fs::create_dir(&root).unwrap();
     std::fs::write(root.join("ART-101.mp4"), b"secret video").unwrap();
-    std::fs::write(root.join("ART-101.jpg"), b"jpeg artwork").unwrap();
+    let jpeg_artwork = artwork_fixtures::valid_jpeg();
+    std::fs::write(root.join("ART-101.jpg"), &jpeg_artwork).unwrap();
     config.media_roots.push(root);
     password_secrets(
         &SecretsStore::new(config.secrets_file.clone()),
@@ -523,7 +527,7 @@ async fn artwork_route_serves_only_the_artwork_bound_to_an_indexed_asset() {
     let artwork = json_request(app(state.clone()), "GET", url, "", Some(&cookie)).await;
     assert_eq!(
         to_bytes(artwork.into_body(), usize::MAX).await.unwrap(),
-        "jpeg artwork"
+        jpeg_artwork
     );
     assert_eq!(
         json_request(
@@ -537,6 +541,249 @@ async fn artwork_route_serves_only_the_artwork_bound_to_an_indexed_asset() {
         .status(),
         StatusCode::NOT_FOUND
     );
+}
+
+async fn authenticated_artwork_matrix() -> (
+    TempDir,
+    AppState,
+    String,
+    Vec<artwork_fixtures::ArtworkFixture>,
+) {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    let artwork = artwork_fixtures::write_artwork_fixtures(&root);
+    config.media_roots.push(root);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+    (dir, state, cookie, artwork)
+}
+
+#[tokio::test]
+async fn asset_api_lists_and_details_only_valid_artwork_urls() {
+    let (_dir, state, cookie, artwork) = authenticated_artwork_matrix().await;
+    let listed = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/assets?per_page=48",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let mut observed = Vec::new();
+    for expected in artwork {
+        let item = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["jav_code"] == expected.jav_code)
+            .unwrap();
+        let detail = json_request(
+            app(state.clone()),
+            "GET",
+            &format!("/api/v1/assets/{}", item["id"].as_str().unwrap()),
+            "",
+            Some(&cookie),
+        )
+        .await;
+        let detail: serde_json::Value =
+            serde_json::from_slice(&to_bytes(detail.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        observed.push((
+            expected.jav_code,
+            !item["artwork_url"].is_null(),
+            !detail["artwork_url"].is_null(),
+        ));
+    }
+
+    assert_eq!(
+        observed,
+        vec![
+            ("JPG-101", true, true),
+            ("PNG-102", true, true),
+            ("WEBP-103", true, true),
+            ("ZERO-104", false, false),
+            ("TRUNC-105", false, false),
+            ("DASS-591", false, false),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn artwork_route_serves_valid_formats_with_matching_content_types() {
+    let (_dir, state, cookie, artwork) = authenticated_artwork_matrix().await;
+    let listed = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/assets",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
+
+    for expected in artwork.into_iter().filter(|fixture| fixture.valid) {
+        let item = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["jav_code"] == expected.jav_code)
+            .unwrap();
+        let response = json_request(
+            app(state.clone()),
+            "GET",
+            item["artwork_url"].as_str().unwrap(),
+            "",
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "{}", expected.jav_code);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            expected.content_type
+        );
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            expected.bytes
+        );
+    }
+}
+
+#[tokio::test]
+async fn artwork_route_does_not_serve_zero_byte_truncated_or_fake_images() {
+    let (_dir, state, cookie, artwork) = authenticated_artwork_matrix().await;
+    let listed = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/assets",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let mut observed = Vec::new();
+
+    for expected in artwork.into_iter().filter(|fixture| !fixture.valid) {
+        let item = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["jav_code"] == expected.jav_code)
+            .unwrap();
+        let response = json_request(
+            app(state.clone()),
+            "GET",
+            &format!("/api/v1/assets/{}/artwork", item["id"].as_str().unwrap()),
+            "",
+            Some(&cookie),
+        )
+        .await;
+        observed.push((expected.jav_code, response.status()));
+    }
+
+    assert_eq!(
+        observed,
+        vec![
+            ("ZERO-104", StatusCode::NOT_FOUND),
+            ("TRUNC-105", StatusCode::NOT_FOUND),
+            ("DASS-591", StatusCode::NOT_FOUND),
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn artwork_route_rejects_a_media_root_replaced_by_an_external_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    let parked_root = dir.path().join("parked-media");
+    let outside = dir.path().join("outside");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(root.join("ROOT-301.mp4"), b"video").unwrap();
+    std::fs::write(
+        root.join("ROOT-301.nfo"),
+        b"<movie><title>Root replacement</title></movie>",
+    )
+    .unwrap();
+    std::fs::write(root.join("ROOT-301.jpg"), artwork_fixtures::valid_jpeg()).unwrap();
+    config.media_roots.push(root.clone());
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+    let listed = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/assets",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let listed: serde_json::Value =
+        serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let artwork_url = listed["items"][0]["artwork_url"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    std::fs::rename(&root, &parked_root).unwrap();
+    std::fs::write(outside.join("ROOT-301.jpg"), artwork_fixtures::valid_jpeg()).unwrap();
+    symlink(&outside, &root).unwrap();
+
+    let response = json_request(app(state), "GET", &artwork_url, "", Some(&cookie)).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn artwork_route_rejects_a_valid_file_replaced_after_reconciliation() {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("RACE-302.mp4"), b"video").unwrap();
+    std::fs::write(root.join("RACE-302.jpg"), artwork_fixtures::valid_jpeg()).unwrap();
+    config.media_roots.push(root.clone());
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+    let listed = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/assets",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let listed: serde_json::Value =
+        serde_json::from_slice(&to_bytes(listed.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let artwork_url = listed["items"][0]["artwork_url"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    std::fs::remove_file(root.join("RACE-302.jpg")).unwrap();
+    std::fs::write(root.join("RACE-302.jpg"), artwork_fixtures::valid_jpeg()).unwrap();
+
+    let response = json_request(app(state), "GET", &artwork_url, "", Some(&cookie)).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 async fn authenticated_fixture() -> (TempDir, AppState, String) {
@@ -2116,7 +2363,7 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
     let root = dir.path().join("media/jav");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("ABC-123.mp4"), b"video").unwrap();
-    std::fs::write(root.join("ABC-123.jpg"), b"asset artwork").unwrap();
+    std::fs::write(root.join("ABC-123.jpg"), artwork_fixtures::valid_jpeg()).unwrap();
     std::fs::write(
         root.join("ABC-123.nfo"),
         "<movie><title>ABC-123</title><actor><name>Alice</name></actor></movie>",

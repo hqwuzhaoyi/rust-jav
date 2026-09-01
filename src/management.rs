@@ -1,9 +1,8 @@
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::{
     collections::{HashMap, HashSet},
     fs,
     future::Future,
-    io::Read,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     pin::Pin,
@@ -28,12 +27,16 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures::{stream, StreamExt};
+use once_cell::sync::Lazy;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
 
 const MIN_PASSWORD_LENGTH: usize = 4;
+const MAX_CONCURRENT_ARTWORK_READS: usize = 4;
+static ARTWORK_READ_LIMIT: Lazy<tokio::sync::Semaphore> =
+    Lazy::new(|| tokio::sync::Semaphore::new(MAX_CONCURRENT_ARTWORK_READS));
 
 use crate::active_rules::{ActiveRuleSet, ActiveRuleSetError};
 use std::convert::Infallible;
@@ -1181,36 +1184,21 @@ async fn indexed_artwork(
     if let Err(status) = authorized(&state, &headers) {
         return status.into_response();
     }
-    let Ok(Some(path)) = state.assets.indexed_artwork(&asset_id) else {
-        return StatusCode::NOT_FOUND.into_response();
+    let Ok(_permit) = ARTWORK_READ_LIMIT.acquire().await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let Ok(mut file) = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)
+    let assets = state.assets.clone();
+    let Ok(Ok(Some(artwork))) =
+        tokio::task::spawn_blocking(move || assets.read_indexed_artwork(&asset_id)).await
     else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let mut bytes = Vec::new();
-    if file.read_to_end(&mut bytes).is_err() {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let content_type = match path
-        .extension()
-        .and_then(|v| v.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("png") => "image/png",
-        Some("webp") => "image/webp",
-        _ => "image/jpeg",
-    };
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_TYPE, artwork.content_type)
         .header(header::CACHE_CONTROL, "private, max-age=3600")
         .header("X-Content-Type-Options", "nosniff")
-        .body(Body::from(bytes))
+        .body(Body::from(artwork.bytes))
         .unwrap()
         .into_response()
 }
@@ -2746,6 +2734,22 @@ fn openapi_document() -> serde_json::Value {
             }}
         }}
     });
+    document["components"]["schemas"]["ArtworkProvenance"] = serde_json::json!({
+        "type": "object",
+        "required": ["status", "source_path", "content_type", "error"],
+        "properties": {
+            "status": {"type":"string","enum":["missing","valid","empty","unrecognized","animated","truncated_or_corrupt","too_large","unreadable"]},
+            "source_path": {"type":["string","null"]},
+            "content_type": {"type":["string","null"],"enum":["image/jpeg","image/png","image/webp",null]},
+            "error": {"type":["string","null"]}
+        }
+    });
+    document["components"]["schemas"]["AssetDetail"]["required"]
+        .as_array_mut()
+        .expect("AssetDetail required is an array")
+        .push(serde_json::json!("artwork"));
+    document["components"]["schemas"]["AssetDetail"]["properties"]["artwork"] =
+        serde_json::json!({"$ref":"#/components/schemas/ArtworkProvenance"});
     let properties = &mut document["components"]["schemas"]["ManagementTask"]["properties"];
     properties["source_plan_id"] = serde_json::json!({"type":["string","null"]});
     properties["plan_consumed_at"] = serde_json::json!({"type":["integer","null"]});

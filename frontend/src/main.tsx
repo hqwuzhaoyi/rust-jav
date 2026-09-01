@@ -43,6 +43,20 @@ type JellyfinBaseline = { url: string; libraries: string };
 type JellyfinLoadState = "idle" | "loading" | "ready" | "error";
 const EMPTY_JELLYFIN_BASELINE: JellyfinBaseline = { url: "", libraries: "" };
 type AssetState = "normal" | "synchronizing" | "exception";
+type ArtworkProvenance = {
+  status:
+    | "missing"
+    | "valid"
+    | "empty"
+    | "unrecognized"
+    | "animated"
+    | "truncated_or_corrupt"
+    | "too_large"
+    | "unreadable";
+  source_path: string | null;
+  content_type: "image/jpeg" | "image/png" | "image/webp" | null;
+  error: string | null;
+};
 type Asset = {
   id: string;
   path: string;
@@ -90,6 +104,7 @@ type AssetDetail = {
   exception: string | null;
   jellyfin?: JellyfinAssociation;
   artwork_url: string | null;
+  artwork?: ArtworkProvenance;
   captured_date: string;
 };
 type AssetTab = "overview" | "nfo";
@@ -2384,14 +2399,12 @@ function AssetInspector({
         </button>
       )}
       <div className="inspector-hero">
-        {asset.artwork_url ? (
-          <img src={asset.artwork_url} alt="" />
-        ) : (
-          <div className="placeholder">
-            <span>◇</span>
-            <small>NO ARTWORK</small>
-          </div>
-        )}
+        <AssetArtwork
+          asset={{
+            ...asset,
+            artwork_url: detail ? detail.artwork_url : asset.artwork_url,
+          }}
+        />
         <div>
           <h2 id="asset-detail-title">
             {asset.jav_code ?? "Media Asset"}
@@ -2422,6 +2435,24 @@ function AssetInspector({
                   ? "Automatic filesystem reconciliation is in progress."
                   : "The local indexed asset remains authoritative.")}
               />
+              {detail.artwork && (
+                <Status
+                  name="Local artwork"
+                  label={detail.artwork.status.replaceAll("_", " ")}
+                  tone={detail.artwork.status === "valid"
+                    ? "normal"
+                    : detail.artwork.status === "missing"
+                      ? "synchronizing"
+                      : "exception"}
+                  description={detail.artwork.error ?? (detail.artwork.status === "valid"
+                    ? "Validated local JPEG, PNG, or WebP artwork is authoritative."
+                    : "No local artwork candidate was discovered during reconciliation.")}
+                  action={<DataList items={[
+                    ["Artwork source", detail.artwork.source_path],
+                    ["Detected media type", detail.artwork.content_type],
+                  ]} />}
+                />
+              )}
               <Status
                 name="Jellyfin"
                 label={detail.jellyfin?.status?.replaceAll("_", " ") ?? "not configured"}
@@ -2758,7 +2789,7 @@ function ActorInspector({
               <div className="linked-asset-grid">
                 {(actor.linked_assets ?? []).map((asset) => (
                   <button key={asset.id} data-asset-id={asset.id} aria-label={`Open ${asset.jav_code ?? asset.title ?? "Media Asset"}`} onClick={() => openAsset(asset)}>
-                    {asset.artwork_url ? <img src={asset.artwork_url} alt="" loading="lazy" /> : <Film aria-hidden="true" />}
+                    <LinkedAssetArtwork asset={asset} />
                     <span><b>{asset.jav_code ?? "Media Asset"}</b><small>{asset.title ?? asset.path}</small></span>
                   </button>
                 ))}
@@ -2953,6 +2984,20 @@ function AssetArtwork({ asset }: { asset: Asset }) {
       <span>◇</span>
       <small>暂无封面</small>
     </div>
+  );
+}
+
+function LinkedAssetArtwork({ asset }: { asset: Asset }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [asset.artwork_url]);
+  if (!asset.artwork_url || failed) return <Film aria-hidden="true" />;
+  return (
+    <img
+      src={asset.artwork_url}
+      alt=""
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
   );
 }
 function TaskPanel({

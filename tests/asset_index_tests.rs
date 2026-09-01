@@ -4,7 +4,10 @@ use std::{
     path::Path,
 };
 
-use rust_jav::asset_index::{AssetIndex, AssetQuery, AssetState, ScanMode};
+use rust_jav::asset_index::{ArtworkStatus, AssetIndex, AssetQuery, AssetState, ScanMode};
+
+#[path = "support/artwork_fixtures.rs"]
+mod artwork_fixtures;
 
 fn media(path: &Path) {
     fs::write(path, b"video").unwrap();
@@ -277,7 +280,7 @@ fn indexed_artwork_rejects_a_symlink_replaced_after_reconciliation() {
     fs::create_dir(&root).unwrap();
     media(&root.join("ART-101.mp4"));
     let artwork = root.join("ART-101.jpg");
-    fs::write(&artwork, b"indexed artwork").unwrap();
+    fs::write(&artwork, artwork_fixtures::valid_jpeg()).unwrap();
     let outside = fixture.path().join("outside.jpg");
     fs::write(&outside, b"outside secret").unwrap();
     let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
@@ -326,7 +329,7 @@ fn artwork_resolution_accepts_only_indexed_artwork_and_never_video() {
     let root = fixture.path().join("media");
     fs::create_dir(&root).unwrap();
     media(&root.join("ABC-123.mp4"));
-    fs::write(root.join("ABC-123.jpg"), b"jpeg").unwrap();
+    fs::write(root.join("ABC-123.jpg"), artwork_fixtures::valid_jpeg()).unwrap();
     let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
     index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
     let asset = index.search(AssetQuery::default()).unwrap().items.remove(0);
@@ -343,12 +346,296 @@ fn artwork_resolution_accepts_only_indexed_artwork_and_never_video() {
 }
 
 #[test]
+fn asset_index_exposes_only_valid_jpeg_png_and_webp_artwork() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    fs::create_dir(&root).unwrap();
+    let artwork = artwork_fixtures::write_artwork_fixtures(&root);
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+    let assets = index.search(AssetQuery::default()).unwrap().items;
+    let observed = artwork
+        .iter()
+        .map(|expected| {
+            let asset = assets
+                .iter()
+                .find(|asset| asset.jav_code.as_deref() == Some(expected.jav_code))
+                .unwrap();
+            (
+                expected.jav_code,
+                asset.artwork_url.is_some(),
+                index
+                    .detail(&asset.id)
+                    .unwrap()
+                    .unwrap()
+                    .artwork_url
+                    .is_some(),
+                index.indexed_artwork(&asset.id).unwrap().is_some(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        observed,
+        vec![
+            ("JPG-101", true, true, true),
+            ("PNG-102", true, true, true),
+            ("WEBP-103", true, true, true),
+            ("ZERO-104", false, false, false),
+            ("TRUNC-105", false, false, false),
+            ("DASS-591", false, false, false),
+        ]
+    );
+}
+
+#[test]
+fn artwork_candidates_skip_invalid_higher_priority_files_and_include_conventional_webp_names() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    let sibling = root.join("sibling");
+    let conventional = root.join("conventional");
+    let folder_webp = root.join("folder-webp");
+    let cover_webp = root.join("cover-webp");
+    fs::create_dir_all(&sibling).unwrap();
+    fs::create_dir_all(&conventional).unwrap();
+    fs::create_dir_all(&folder_webp).unwrap();
+    fs::create_dir_all(&cover_webp).unwrap();
+
+    media(&sibling.join("FALL-201.mp4"));
+    fs::write(sibling.join("FALL-201.jpg"), b"not a jpeg").unwrap();
+    fs::write(sibling.join("FALL-201.png"), artwork_fixtures::valid_png()).unwrap();
+
+    media(&conventional.join("FALL-202.mp4"));
+    fs::write(conventional.join("folder.jpg"), b"not a jpeg").unwrap();
+    fs::write(
+        conventional.join("poster.webp"),
+        artwork_fixtures::valid_webp(),
+    )
+    .unwrap();
+
+    media(&folder_webp.join("FALL-203.mp4"));
+    fs::write(
+        folder_webp.join("folder.webp"),
+        artwork_fixtures::valid_webp(),
+    )
+    .unwrap();
+
+    media(&cover_webp.join("FALL-204.mp4"));
+    fs::write(
+        cover_webp.join("cover.webp"),
+        artwork_fixtures::valid_webp(),
+    )
+    .unwrap();
+
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+    let assets = index.search(AssetQuery::default()).unwrap().items;
+
+    for (code, suffix, content_type) in [
+        ("FALL-201", "FALL-201.png", "image/png"),
+        ("FALL-202", "poster.webp", "image/webp"),
+        ("FALL-203", "folder.webp", "image/webp"),
+        ("FALL-204", "cover.webp", "image/webp"),
+    ] {
+        let asset = assets
+            .iter()
+            .find(|asset| asset.jav_code.as_deref() == Some(code))
+            .unwrap();
+        let detail = index.detail(&asset.id).unwrap().unwrap();
+        assert!(asset.artwork_url.is_some());
+        assert!(detail
+            .artwork
+            .source_path
+            .as_deref()
+            .unwrap()
+            .ends_with(suffix));
+        assert_eq!(detail.artwork.content_type.as_deref(), Some(content_type));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn artwork_fifo_is_rejected_as_unreadable_without_blocking_reconciliation() {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt, time::Duration};
+
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    fs::create_dir(&root).unwrap();
+    media(&root.join("FIFO-203.mp4"));
+    let fifo = root.join("FIFO-203.jpg");
+    let fifo_name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+
+    let started = std::time::Instant::now();
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+
+    let asset = index.search(AssetQuery::default()).unwrap().items.remove(0);
+    let detail = index.detail(&asset.id).unwrap().unwrap();
+    assert!(asset.artwork_url.is_none());
+    assert_eq!(detail.artwork.status, ArtworkStatus::Unreadable);
+    assert!(detail
+        .artwork
+        .error
+        .unwrap()
+        .contains("ordinary regular file"));
+}
+
+#[cfg(unix)]
+#[test]
+fn reconciliation_rejects_a_symlink_media_root_without_indexing_external_assets() {
+    let fixture = tempfile::tempdir().unwrap();
+    let outside = fixture.path().join("outside");
+    let root = fixture.path().join("media");
+    fs::create_dir(&outside).unwrap();
+    media(&outside.join("ESCAPE-204.mp4"));
+    symlink(&outside, &root).unwrap();
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+
+    assert!(index.reconcile(&[root], ScanMode::Startup, 100).is_err());
+    assert!(index
+        .search(AssetQuery::default())
+        .unwrap()
+        .items
+        .is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn recursive_reconciliation_never_follows_a_nested_directory_symlink() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    let outside = fixture.path().join("outside");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(&outside).unwrap();
+    media(&root.join("SAFE-205.mp4"));
+    media(&outside.join("ESCAPE-206.mp4"));
+    symlink(&outside, root.join("escape")).unwrap();
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+    let assets = index.search(AssetQuery::default()).unwrap().items;
+
+    assert_eq!(assets.len(), 1);
+    assert_eq!(assets[0].jav_code.as_deref(), Some("SAFE-205"));
+}
+
+#[test]
+fn artwork_larger_than_the_encoded_size_limit_is_rejected_before_decoding() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    fs::create_dir(&root).unwrap();
+    media(&root.join("HUGE-207.mp4"));
+    let artwork = fs::File::create(root.join("HUGE-207.jpg")).unwrap();
+    artwork.set_len(32 * 1024 * 1024 + 1).unwrap();
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+    let asset = index.search(AssetQuery::default()).unwrap().items.remove(0);
+    let detail = index.detail(&asset.id).unwrap().unwrap();
+
+    assert!(asset.artwork_url.is_none());
+    assert_eq!(detail.artwork.status, ArtworkStatus::TooLarge);
+}
+
+#[test]
+fn webp_preflight_rejects_excessive_pixels_output_and_multiple_frames() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("media");
+    fs::create_dir(&root).unwrap();
+    for (code, bytes) in [
+        (
+            "PIXEL-208",
+            artwork_fixtures::oversized_lossy_webp(4_001, 4_000),
+        ),
+        (
+            "OUTPUT-209",
+            artwork_fixtures::oversized_alpha_webp(4_000, 4_000),
+        ),
+        ("ANIM-210", artwork_fixtures::animated_webp()),
+    ] {
+        media(&root.join(format!("{code}.mp4")));
+        fs::write(root.join(format!("{code}.webp")), bytes).unwrap();
+    }
+    let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+
+    index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+    let assets = index.search(AssetQuery::default()).unwrap().items;
+    let observed = ["PIXEL-208", "OUTPUT-209", "ANIM-210"].map(|code| {
+        let asset = assets
+            .iter()
+            .find(|asset| asset.jav_code.as_deref() == Some(code))
+            .unwrap();
+        let artwork = index.detail(&asset.id).unwrap().unwrap().artwork;
+        (
+            code,
+            asset.artwork_url.is_some(),
+            artwork.status,
+            artwork.error.unwrap(),
+        )
+    });
+
+    assert_eq!(
+        observed.map(|(code, has_url, status, error)| (
+            code,
+            has_url,
+            status,
+            error.contains("pixel")
+                || error.contains("decoded output")
+                || error.contains("animated")
+        )),
+        [
+            ("PIXEL-208", false, ArtworkStatus::TooLarge, true),
+            ("OUTPUT-209", false, ArtworkStatus::TooLarge, true),
+            ("ANIM-210", false, ArtworkStatus::Animated, true),
+        ]
+    );
+}
+
+#[test]
+fn concurrent_static_webp_reconciliations_complete_through_the_decode_gate() {
+    use std::sync::{Arc, Barrier};
+
+    let workers = 8;
+    let barrier = Arc::new(Barrier::new(workers));
+    let handles = (0..workers)
+        .map(|worker| {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let fixture = tempfile::tempdir().unwrap();
+                let root = fixture.path().join("media");
+                fs::create_dir(&root).unwrap();
+                let code = format!("GATE-{}", 300 + worker);
+                media(&root.join(format!("{code}.mp4")));
+                fs::write(
+                    root.join(format!("{code}.webp")),
+                    artwork_fixtures::valid_webp(),
+                )
+                .unwrap();
+                let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
+                barrier.wait();
+                index.reconcile(&[root], ScanMode::Startup, 100).unwrap();
+                assert!(index.search(AssetQuery::default()).unwrap().items[0]
+                    .artwork_url
+                    .is_some());
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
+#[test]
 fn asset_detail_parses_complete_nfo_metadata_and_actors() {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().join("media");
     fs::create_dir(&root).unwrap();
     media(&root.join("ABC-123.mp4"));
-    fs::write(root.join("ABC-123.jpg"), b"poster").unwrap();
+    fs::write(root.join("ABC-123.jpg"), artwork_fixtures::valid_jpeg()).unwrap();
     fs::write(
         root.join("ABC-123.nfo"),
         r#"<?xml version="1.0"?><movie>
@@ -405,7 +692,7 @@ fn asset_index_recognizes_movie_nfo_and_folder_artwork_conventions() {
         "<movie><title>Conventional Layout</title><actor><name>Alice</name></actor></movie>",
     )
     .unwrap();
-    fs::write(movie.join("folder.jpg"), b"poster").unwrap();
+    fs::write(movie.join("folder.jpg"), artwork_fixtures::valid_jpeg()).unwrap();
     let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
 
     index.reconcile(&[root], ScanMode::Startup, 100).unwrap();

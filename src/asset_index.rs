@@ -1,11 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
-    ffi::CString,
+    ffi::{CStr, CString, OsString},
     fs,
-    io::Read,
+    io::{Cursor, Read},
     mem::MaybeUninit,
     os::fd::{AsRawFd, FromRawFd},
-    os::unix::ffi::OsStrExt,
+    os::unix::ffi::{OsStrExt, OsStringExt},
     os::unix::fs::MetadataExt,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
@@ -13,6 +13,8 @@ use std::{
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Utc};
+use image::{ImageFormat, ImageReader};
+use once_cell::sync::Lazy;
 use rand::{rngs::OsRng, RngCore};
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -37,6 +39,56 @@ pub enum AssetState {
     Normal,
     Synchronizing,
     Exception,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtworkStatus {
+    #[default]
+    Missing,
+    Valid,
+    Empty,
+    Unrecognized,
+    Animated,
+    TruncatedOrCorrupt,
+    TooLarge,
+    Unreadable,
+}
+
+impl ArtworkStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Valid => "valid",
+            Self::Empty => "empty",
+            Self::Unrecognized => "unrecognized",
+            Self::Animated => "animated",
+            Self::TruncatedOrCorrupt => "truncated_or_corrupt",
+            Self::TooLarge => "too_large",
+            Self::Unreadable => "unreadable",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        match value {
+            "valid" => Self::Valid,
+            "empty" => Self::Empty,
+            "unrecognized" => Self::Unrecognized,
+            "animated" => Self::Animated,
+            "truncated_or_corrupt" => Self::TruncatedOrCorrupt,
+            "too_large" => Self::TooLarge,
+            "unreadable" => Self::Unreadable,
+            _ => Self::Missing,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtworkProvenance {
+    pub status: ArtworkStatus,
+    pub source_path: Option<String>,
+    pub content_type: Option<String>,
+    pub error: Option<String>,
 }
 
 impl AssetState {
@@ -75,6 +127,14 @@ pub struct MediaAsset {
     pub title: Option<String>,
     pub nfo_path: Option<String>,
     pub artwork_url: Option<String>,
+    #[serde(skip)]
+    pub artwork_path: Option<String>,
+    #[serde(skip)]
+    pub artwork_status: ArtworkStatus,
+    #[serde(skip)]
+    pub artwork_content_type: Option<String>,
+    #[serde(skip)]
+    pub artwork_error: Option<String>,
     pub observed_at: u64,
     pub captured_date: String,
     pub state: AssetState,
@@ -95,6 +155,7 @@ pub struct AssetDetail {
     pub jav_code: Option<String>,
     pub title: Option<String>,
     pub artwork_url: Option<String>,
+    pub artwork: ArtworkProvenance,
     pub captured_date: String,
     pub actors: Vec<AssetActor>,
     pub studio: Option<String>,
@@ -107,6 +168,60 @@ pub struct AssetDetail {
     pub source_path: Option<String>,
     pub state: AssetState,
     pub exception: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct IndexedArtwork {
+    pub bytes: Vec<u8>,
+    pub content_type: &'static str,
+}
+
+const MAX_ARTWORK_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_ARTWORK_DIMENSION: u32 = 16_384;
+const MAX_ARTWORK_PIXELS: u64 = 16_000_000;
+const MAX_ARTWORK_OUTPUT_BYTES: u64 = 48 * 1024 * 1024;
+const MAX_ARTWORK_DECODE_ALLOC: u64 = 64 * 1024 * 1024;
+const MAX_WEBP_INTERNAL_BYTES: usize = 64 * 1024 * 1024;
+static ARTWORK_DECODE_LIMIT: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+#[derive(Debug)]
+struct ArtworkInspection {
+    status: ArtworkStatus,
+    content_type: Option<&'static str>,
+    error: Option<String>,
+    identity: Option<ArtworkIdentity>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ArtworkIdentity {
+    root_device: u64,
+    root_inode: u64,
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+#[derive(Debug)]
+struct IndexedArtworkRecord {
+    path: PathBuf,
+    root: PathBuf,
+    content_type: String,
+    identity: ArtworkIdentity,
+}
+
+impl ArtworkInspection {
+    fn invalid(status: ArtworkStatus, content_type: Option<&'static str>, error: String) -> Self {
+        Self {
+            status,
+            content_type,
+            error: Some(error),
+            identity: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -327,6 +442,27 @@ impl AssetIndex {
             mode TEXT, started_at INTEGER, completed_at INTEGER, error TEXT
           );
           INSERT OR IGNORE INTO asset_index_health(singleton,state) VALUES(1,'idle');")?;
+        ensure_column(
+            &connection,
+            "media_assets",
+            "artwork_status",
+            "TEXT NOT NULL DEFAULT 'missing'",
+        )?;
+        ensure_column(&connection, "media_assets", "artwork_content_type", "TEXT")?;
+        ensure_column(&connection, "media_assets", "artwork_error", "TEXT")?;
+        for column in [
+            "artwork_root_device",
+            "artwork_root_inode",
+            "artwork_device",
+            "artwork_inode",
+            "artwork_size",
+            "artwork_modified_seconds",
+            "artwork_modified_nanoseconds",
+            "artwork_changed_seconds",
+            "artwork_changed_nanoseconds",
+        ] {
+            ensure_column(&connection, "media_assets", column, "INTEGER")?;
+        }
         Ok(Self(Arc::new(Mutex::new(connection))))
     }
 
@@ -360,8 +496,9 @@ impl AssetIndex {
                     .execute("DELETE FROM media_assets WHERE media_root=?1", [stale])?;
             }
             for root in roots {
-                for path in media_files(root)? {
-                    self.observe(root, &path, now, generation)?;
+                let (paths, root_identity) = media_files(root)?;
+                for path in paths {
+                    self.observe(root, root_identity, &path, now, generation)?;
                 }
                 self.connection()?.execute(
                     "DELETE FROM media_assets WHERE media_root=?1 AND generation<>?2",
@@ -391,9 +528,20 @@ impl AssetIndex {
             None,
             None,
         )?;
+        let root_file = open_root(root).map_err(|source| Error::Scan {
+            path: root.to_owned(),
+            source,
+        })?;
+        let root_metadata = root_file.metadata().map_err(|source| Error::Scan {
+            path: root.to_owned(),
+            source,
+        })?;
+        let root_identity = (root_metadata.dev(), root_metadata.ino());
         for path in paths {
-            if path.exists() && is_video(path) {
-                self.observe(root, path, now, now as i64)?;
+            if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+                && is_video(path)
+            {
+                self.observe(root, root_identity, path, now, now as i64)?;
             } else {
                 self.connection()?.execute(
                     "DELETE FROM media_assets WHERE media_root=?1 AND path=?2",
@@ -410,8 +558,37 @@ impl AssetIndex {
         )
     }
 
-    fn observe(&self, root: &Path, path: &Path, now: u64, generation: i64) -> Result<(), Error> {
-        let metadata = fs::metadata(path).map_err(|source| Error::Scan {
+    fn observe(
+        &self,
+        root: &Path,
+        root_identity: (u64, u64),
+        path: &Path,
+        now: u64,
+        generation: i64,
+    ) -> Result<(), Error> {
+        let root_file = open_root(root).map_err(|source| Error::Scan {
+            path: root.to_owned(),
+            source,
+        })?;
+        let root_metadata = root_file.metadata().map_err(|source| Error::Scan {
+            path: root.to_owned(),
+            source,
+        })?;
+        if (root_metadata.dev(), root_metadata.ino()) != root_identity {
+            return Err(Error::Scan {
+                path: root.to_owned(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Media Root identity changed while scanning",
+                ),
+            });
+        }
+        let media_file =
+            open_beneath_from(&root_file, root, path).map_err(|source| Error::Scan {
+                path: path.to_owned(),
+                source,
+            })?;
+        let metadata = media_file.metadata().map_err(|source| Error::Scan {
             path: path.to_owned(),
             source,
         })?;
@@ -424,18 +601,19 @@ impl AssetIndex {
             .captures(stem)
             .map(|c| format!("{}-{}", c[1].to_uppercase(), &c[2]));
         let nfo = metadata_companion(path, &["movie.nfo"], &["nfo"]);
-        let artwork = metadata_companion(
-            path,
-            &[
-                "folder.jpg",
-                "poster.jpg",
-                "cover.jpg",
-                "folder.png",
-                "poster.png",
-                "cover.png",
-            ],
-            &["jpg", "jpeg", "png", "webp"],
-        );
+        let (artwork, artwork_inspection) = artwork_companion(root, path);
+        let artwork_status = artwork_inspection
+            .as_ref()
+            .map_or(ArtworkStatus::Missing, |inspection| inspection.status);
+        let artwork_content_type = artwork_inspection
+            .as_ref()
+            .and_then(|inspection| inspection.content_type);
+        let artwork_error = artwork_inspection
+            .as_ref()
+            .and_then(|inspection| inspection.error.as_deref());
+        let artwork_identity = artwork_inspection
+            .as_ref()
+            .and_then(|inspection| inspection.identity);
         let parsed = nfo.as_deref().map(|path| parse_nfo(root, path));
         let title = parsed
             .as_ref()
@@ -460,10 +638,10 @@ impl AssetIndex {
             "DELETE FROM media_assets WHERE path=?1 AND id<>?2",
             params![path.display().to_string(), id],
         )?;
-        connection.execute("INSERT INTO media_assets(id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,observed_at,captured_date,state,exception,generation)
-          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
-          ON CONFLICT(id) DO UPDATE SET media_root=excluded.media_root,path=excluded.path,device=excluded.device,inode=excluded.inode,jav_code=excluded.jav_code,title=excluded.title,nfo_path=excluded.nfo_path,artwork_path=excluded.artwork_path,observed_at=excluded.observed_at,captured_date=excluded.captured_date,state=excluded.state,exception=excluded.exception,generation=excluded.generation",
-          params![id, root.display().to_string(), path.display().to_string(), metadata.dev() as i64, metadata.ino() as i64, jav_code, title, nfo.map(|p|p.display().to_string()), artwork.map(|p|p.display().to_string()), now as i64, captured_date, state.as_str(), exception, generation])?;
+        connection.execute("INSERT INTO media_assets(id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,artwork_status,artwork_content_type,artwork_error,artwork_root_device,artwork_root_inode,artwork_device,artwork_inode,artwork_size,artwork_modified_seconds,artwork_modified_nanoseconds,artwork_changed_seconds,artwork_changed_nanoseconds,observed_at,captured_date,state,exception,generation)
+          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)
+          ON CONFLICT(id) DO UPDATE SET media_root=excluded.media_root,path=excluded.path,device=excluded.device,inode=excluded.inode,jav_code=excluded.jav_code,title=excluded.title,nfo_path=excluded.nfo_path,artwork_path=excluded.artwork_path,artwork_status=excluded.artwork_status,artwork_content_type=excluded.artwork_content_type,artwork_error=excluded.artwork_error,artwork_root_device=excluded.artwork_root_device,artwork_root_inode=excluded.artwork_root_inode,artwork_device=excluded.artwork_device,artwork_inode=excluded.artwork_inode,artwork_size=excluded.artwork_size,artwork_modified_seconds=excluded.artwork_modified_seconds,artwork_modified_nanoseconds=excluded.artwork_modified_nanoseconds,artwork_changed_seconds=excluded.artwork_changed_seconds,artwork_changed_nanoseconds=excluded.artwork_changed_nanoseconds,observed_at=excluded.observed_at,captured_date=excluded.captured_date,state=excluded.state,exception=excluded.exception,generation=excluded.generation",
+          params![id, root.display().to_string(), path.display().to_string(), metadata.dev() as i64, metadata.ino() as i64, jav_code, title, nfo.map(|p|p.display().to_string()), artwork.map(|p|p.display().to_string()), artwork_status.as_str(), artwork_content_type, artwork_error, artwork_identity.map(|identity| identity.root_device as i64), artwork_identity.map(|identity| identity.root_inode as i64), artwork_identity.map(|identity| identity.device as i64), artwork_identity.map(|identity| identity.inode as i64), artwork_identity.map(|identity| identity.size as i64), artwork_identity.map(|identity| identity.modified_seconds), artwork_identity.map(|identity| identity.modified_nanoseconds), artwork_identity.map(|identity| identity.changed_seconds), artwork_identity.map(|identity| identity.changed_nanoseconds), now as i64, captured_date, state.as_str(), exception, generation])?;
         Ok(())
     }
 
@@ -497,7 +675,7 @@ impl AssetIndex {
         } else {
             requested_page.min(total_pages)
         };
-        let mut statement = connection.prepare(&format!("SELECT id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,observed_at,captured_date,state,exception FROM media_assets WHERE {filter} ORDER BY captured_date DESC, path LIMIT ?3 OFFSET ?4"))?;
+        let mut statement = connection.prepare(&format!("SELECT id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,artwork_status,artwork_content_type,artwork_error,observed_at,captured_date,state,exception FROM media_assets WHERE {filter} ORDER BY captured_date DESC, path LIMIT ?3 OFFSET ?4"))?;
         let items = statement
             .query_map(
                 params![
@@ -529,30 +707,69 @@ impl AssetIndex {
     }
 
     pub fn indexed_artwork(&self, id: &str) -> Result<Option<PathBuf>, Error> {
-        let value: Option<(Option<String>, String)> = self
-            .connection()?
-            .query_row(
-                "SELECT artwork_path,media_root FROM media_assets WHERE id=?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let Some((Some(path), root)) = value else {
+        let Some(record) = self.indexed_artwork_record(id)? else {
             return Ok(None);
         };
-        let path = PathBuf::from(path);
-        let root = PathBuf::from(root);
-        if !fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_file()) {
+        let path = record.path.clone();
+        Ok(read_artwork_fast(&record).map(|_| path))
+    }
+
+    pub fn read_indexed_artwork(&self, id: &str) -> Result<Option<IndexedArtwork>, Error> {
+        let Some(record) = self.indexed_artwork_record(id)? else {
             return Ok(None);
-        }
-        let (Ok(path_canonical), Ok(root_canonical)) = (path.canonicalize(), root.canonicalize())
+        };
+        Ok(read_artwork_fast(&record))
+    }
+
+    fn indexed_artwork_record(&self, id: &str) -> Result<Option<IndexedArtworkRecord>, Error> {
+        let value = self.connection()?.query_row(
+            "SELECT artwork_path,media_root,artwork_status,artwork_content_type,artwork_root_device,artwork_root_inode,artwork_device,artwork_inode,artwork_size,artwork_modified_seconds,artwork_modified_nanoseconds,artwork_changed_seconds,artwork_changed_nanoseconds FROM media_assets WHERE id=?1",
+            [id],
+            |row| Ok((
+                row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?, row.get::<_, Option<i64>>(4)?, row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?, row.get::<_, Option<i64>>(7)?, row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<i64>>(9)?, row.get::<_, Option<i64>>(10)?, row.get::<_, Option<i64>>(11)?,
+                row.get::<_, Option<i64>>(12)?,
+            )),
+        ).optional()?;
+        let Some((
+            Some(path),
+            root,
+            status,
+            Some(content_type),
+            Some(root_device),
+            Some(root_inode),
+            Some(device),
+            Some(inode),
+            Some(size),
+            Some(modified_seconds),
+            Some(modified_nanoseconds),
+            Some(changed_seconds),
+            Some(changed_nanoseconds),
+        )) = value
         else {
             return Ok(None);
         };
-        Ok(
-            (path_canonical.starts_with(root_canonical) && is_artwork(&path_canonical))
-                .then_some(path),
-        )
+        if ArtworkStatus::parse(&status) != ArtworkStatus::Valid {
+            return Ok(None);
+        }
+        Ok(Some(IndexedArtworkRecord {
+            path: PathBuf::from(path),
+            root: PathBuf::from(root),
+            content_type,
+            identity: ArtworkIdentity {
+                root_device: root_device as u64,
+                root_inode: root_inode as u64,
+                device: device as u64,
+                inode: inode as u64,
+                size: size as u64,
+                modified_seconds,
+                modified_nanoseconds,
+                changed_seconds,
+                changed_nanoseconds,
+            },
+        }))
     }
 
     pub fn assets_by_identities(
@@ -560,7 +777,7 @@ impl AssetIndex {
         identities: &[(u64, u64)],
     ) -> Result<Vec<MediaAsset>, Error> {
         let connection = self.connection()?;
-        let mut statement = connection.prepare("SELECT id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,observed_at,captured_date,state,exception FROM media_assets WHERE device=?1 AND inode=?2 ORDER BY path")?;
+        let mut statement = connection.prepare("SELECT id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,artwork_status,artwork_content_type,artwork_error,observed_at,captured_date,state,exception FROM media_assets WHERE device=?1 AND inode=?2 ORDER BY path")?;
         let mut seen = HashSet::new();
         let mut assets = Vec::new();
         for &(device, inode) in identities {
@@ -578,7 +795,7 @@ impl AssetIndex {
 
     pub fn detail(&self, id: &str) -> Result<Option<AssetDetail>, Error> {
         let asset = self.connection()?.query_row(
-            "SELECT id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,observed_at,captured_date,state,exception FROM media_assets WHERE id=?1",
+            "SELECT id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,artwork_status,artwork_content_type,artwork_error,observed_at,captured_date,state,exception FROM media_assets WHERE id=?1",
             [id], asset_from_row,
         ).optional()?;
         let Some(asset) = asset else { return Ok(None) };
@@ -612,12 +829,19 @@ impl AssetIndex {
                 actor_folder_url: None,
             })
             .collect();
+        let artwork = ArtworkProvenance {
+            status: asset.artwork_status,
+            source_path: asset.artwork_path.clone(),
+            content_type: asset.artwork_content_type.clone(),
+            error: asset.artwork_error.clone(),
+        };
         Ok(Some(AssetDetail {
             id: asset.id,
             path: asset.path,
             jav_code: asset.jav_code,
             title: metadata.title.or(asset.title),
             artwork_url: asset.artwork_url,
+            artwork,
             captured_date: asset.captured_date,
             actors,
             studio: metadata.studio,
@@ -671,6 +895,26 @@ impl AssetIndex {
     }
 }
 
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), rusqlite::Error> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    if !columns.iter().any(|existing| existing == column) {
+        connection.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_roots(roots: &[PathBuf]) -> Result<(), Error> {
     for (i, a) in roots.iter().enumerate() {
         for b in &roots[i + 1..] {
@@ -687,26 +931,150 @@ fn validate_roots(roots: &[PathBuf]) -> Result<(), Error> {
     }
     Ok(())
 }
-fn media_files(root: &Path) -> Result<Vec<PathBuf>, Error> {
-    let mut out = Vec::new();
-    let entries = fs::read_dir(root).map_err(|source| Error::Scan {
+fn media_files(root: &Path) -> Result<(Vec<PathBuf>, (u64, u64)), Error> {
+    let directory = open_root(root).map_err(|source| Error::Scan {
         path: root.to_owned(),
         source,
     })?;
-    for entry in entries {
-        let path = entry
-            .map_err(|source| Error::Scan {
-                path: root.to_owned(),
-                source,
-            })?
-            .path();
-        if path.is_dir() {
-            out.extend(media_files(&path)?)
-        } else if is_video(&path) && !is_secondary_multipart(&path) {
+    let metadata = directory.metadata().map_err(|source| Error::Scan {
+        path: root.to_owned(),
+        source,
+    })?;
+    let identity = (metadata.dev(), metadata.ino());
+    Ok((media_files_from(&directory, root)?, identity))
+}
+
+fn media_files_from(directory: &fs::File, display_path: &Path) -> Result<Vec<PathBuf>, Error> {
+    let mut out = Vec::new();
+    let entries = directory_entries(directory).map_err(|source| Error::Scan {
+        path: display_path.to_owned(),
+        source,
+    })?;
+    for name in entries {
+        let path = display_path.join(&name);
+        let name = CString::new(name.as_bytes()).map_err(|_| Error::Scan {
+            path: path.clone(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "directory entry contains NUL",
+            ),
+        })?;
+        let mut stat = MaybeUninit::<libc::stat>::zeroed();
+        if unsafe {
+            libc::fstatat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                stat.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } != 0
+        {
+            return Err(Error::Scan {
+                path,
+                source: std::io::Error::last_os_error(),
+            });
+        }
+        let stat = unsafe { stat.assume_init() };
+        let kind = stat.st_mode & libc::S_IFMT;
+        if kind == libc::S_IFDIR {
+            let fd = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY
+                        | libc::O_DIRECTORY
+                        | libc::O_CLOEXEC
+                        | libc::O_NOFOLLOW
+                        | libc::O_NONBLOCK,
+                )
+            };
+            if fd < 0 {
+                return Err(Error::Scan {
+                    path,
+                    source: std::io::Error::last_os_error(),
+                });
+            }
+            let child = unsafe { fs::File::from_raw_fd(fd) };
+            if !child.metadata().is_ok_and(|metadata| {
+                metadata.file_type().is_dir()
+                    && metadata.dev() == stat.st_dev as u64
+                    && metadata.ino() == stat.st_ino as u64
+            }) {
+                return Err(Error::Scan {
+                    path,
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "directory entry changed while scanning",
+                    ),
+                });
+            }
+            out.extend(media_files_from(&child, &path)?)
+        } else if kind == libc::S_IFREG && is_video(&path) && !is_secondary_multipart(&path) {
             out.push(path)
         }
     }
     Ok(out)
+}
+
+fn directory_entries(directory: &fs::File) -> std::io::Result<Vec<OsString>> {
+    let duplicate = unsafe { libc::dup(directory.as_raw_fd()) };
+    if duplicate < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let stream = unsafe { libc::fdopendir(duplicate) };
+    if stream.is_null() {
+        unsafe { libc::close(duplicate) };
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut entries = Vec::new();
+    let mut read_error = None;
+    loop {
+        set_errno(0);
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            let errno = current_errno();
+            if errno != 0 {
+                read_error = Some(std::io::Error::from_raw_os_error(errno));
+            }
+            break;
+        }
+        let bytes = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if bytes == b"." || bytes == b".." {
+            continue;
+        }
+        entries.push(OsString::from_vec(bytes.to_vec()));
+    }
+    if unsafe { libc::closedir(stream) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if let Some(error) = read_error {
+        return Err(error);
+    }
+    Ok(entries)
+}
+
+#[cfg(target_os = "linux")]
+fn errno_location() -> *mut libc::c_int {
+    unsafe { libc::__errno_location() }
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd"
+))]
+fn errno_location() -> *mut libc::c_int {
+    unsafe { libc::__error() }
+}
+
+fn set_errno(value: libc::c_int) {
+    unsafe { *errno_location() = value }
+}
+
+fn current_errno() -> libc::c_int {
+    unsafe { *errno_location() }
 }
 
 fn is_secondary_multipart(path: &Path) -> bool {
@@ -753,15 +1121,6 @@ fn is_video(path: &Path) -> bool {
         Some("mp4" | "mkv" | "avi" | "mov" | "m4v" | "wmv" | "ts" | "m2ts")
     )
 }
-fn is_artwork(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|v| v.to_str())
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("jpg" | "jpeg" | "png" | "webp")
-    )
-}
 fn sibling(path: &Path, exts: &[&str]) -> Option<PathBuf> {
     exts.iter()
         .map(|e| path.with_extension(e))
@@ -783,6 +1142,50 @@ fn metadata_companion(path: &Path, conventional_names: &[&str], exts: &[&str]) -
                 })
         })
 }
+
+fn artwork_companion(
+    root: &Path,
+    media_path: &Path,
+) -> (Option<PathBuf>, Option<ArtworkInspection>) {
+    let mut candidates = ["jpg", "jpeg", "png", "webp"]
+        .into_iter()
+        .map(|extension| media_path.with_extension(extension))
+        .collect::<Vec<_>>();
+    if let Some(parent) = media_path.parent() {
+        candidates.extend(
+            [
+                "folder.jpg",
+                "poster.jpg",
+                "cover.jpg",
+                "folder.png",
+                "poster.png",
+                "cover.png",
+                "folder.webp",
+                "poster.webp",
+                "cover.webp",
+            ]
+            .into_iter()
+            .map(|name| parent.join(name)),
+        );
+    }
+
+    let mut first_invalid = None;
+    for candidate in candidates {
+        if fs::symlink_metadata(&candidate).is_err() {
+            continue;
+        }
+        let inspection = inspect_artwork(root, &candidate);
+        if inspection.status == ArtworkStatus::Valid {
+            return (Some(candidate), Some(inspection));
+        }
+        if first_invalid.is_none() {
+            first_invalid = Some((candidate, inspection));
+        }
+    }
+    first_invalid.map_or((None, None), |(path, inspection)| {
+        (Some(path), Some(inspection))
+    })
+}
 fn asset_id() -> String {
     let mut bytes = [0u8; 18];
     OsRng.fill_bytes(&mut bytes);
@@ -797,7 +1200,8 @@ fn access(path: &Path, mode: i32) -> bool {
 }
 fn asset_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MediaAsset> {
     let id: String = row.get(0)?;
-    let artwork: Option<String> = row.get(8)?;
+    let artwork_path: Option<String> = row.get(8)?;
+    let artwork_status = ArtworkStatus::parse(&row.get::<_, String>(9)?);
     Ok(MediaAsset {
         id: id.clone(),
         media_root: row.get(1)?,
@@ -807,15 +1211,328 @@ fn asset_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MediaAsset> {
         jav_code: row.get(5)?,
         title: row.get(6)?,
         nfo_path: row.get(7)?,
-        artwork_url: artwork.map(|_| format!("/api/v1/assets/{id}/artwork")),
-        observed_at: row.get::<_, i64>(9)? as u64,
-        captured_date: row.get(10)?,
-        state: AssetState::parse(&row.get::<_, String>(11)?),
-        exception: row.get(12)?,
+        artwork_url: (artwork_status == ArtworkStatus::Valid)
+            .then(|| format!("/api/v1/assets/{id}/artwork")),
+        artwork_path,
+        artwork_status,
+        artwork_content_type: row.get(10)?,
+        artwork_error: row.get(11)?,
+        observed_at: row.get::<_, i64>(12)? as u64,
+        captured_date: row.get(13)?,
+        state: AssetState::parse(&row.get::<_, String>(14)?),
+        exception: row.get(15)?,
     })
 }
 
+fn artwork_format(bytes: &[u8]) -> Option<(ImageFormat, &'static str)> {
+    match image::guess_format(bytes).ok()? {
+        ImageFormat::Jpeg => Some((ImageFormat::Jpeg, "image/jpeg")),
+        ImageFormat::Png => Some((ImageFormat::Png, "image/png")),
+        ImageFormat::WebP => Some((ImageFormat::WebP, "image/webp")),
+        _ => None,
+    }
+}
+
+fn validate_pixel_budget(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err("image dimensions must be non-zero".to_owned());
+    }
+    if width > MAX_ARTWORK_DIMENSION || height > MAX_ARTWORK_DIMENSION {
+        return Err(format!(
+            "image dimensions {width}x{height} exceed the {MAX_ARTWORK_DIMENSION}px axis limit"
+        ));
+    }
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| "image pixel count overflowed".to_owned())?;
+    if pixels > MAX_ARTWORK_PIXELS {
+        return Err(format!(
+            "image contains {pixels} pixels, exceeding the {MAX_ARTWORK_PIXELS} pixel limit"
+        ));
+    }
+    let output_bytes = pixels
+        .checked_mul(4)
+        .ok_or_else(|| "decoded image output size overflowed".to_owned())?;
+    if output_bytes > MAX_ARTWORK_OUTPUT_BYTES {
+        return Err(format!(
+            "decoded output (RGBA) requires {output_bytes} bytes, exceeding the {MAX_ARTWORK_OUTPUT_BYTES} byte limit"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_artwork_decode(
+    bytes: &[u8],
+    format: ImageFormat,
+) -> Result<(), (ArtworkStatus, String)> {
+    let _permit = ARTWORK_DECODE_LIMIT.lock().map_err(|_| {
+        (
+            ArtworkStatus::Unreadable,
+            "artwork decoder concurrency gate was poisoned".to_owned(),
+        )
+    })?;
+
+    if format == ImageFormat::WebP {
+        let mut decoder = image_webp::WebPDecoder::new(Cursor::new(bytes)).map_err(|error| {
+            (
+                ArtworkStatus::TruncatedOrCorrupt,
+                format!("WebP header is invalid: {error}"),
+            )
+        })?;
+        if decoder.is_animated() {
+            return Err((
+                ArtworkStatus::Animated,
+                "animated WebP artwork is not supported; replace it with a static image".to_owned(),
+            ));
+        }
+        let (width, height) = decoder.dimensions();
+        validate_pixel_budget(width, height).map_err(|error| (ArtworkStatus::TooLarge, error))?;
+        let output_size = decoder.output_buffer_size().ok_or_else(|| {
+            (
+                ArtworkStatus::TooLarge,
+                "WebP decoded output size overflowed".to_owned(),
+            )
+        })?;
+        if output_size as u64 > MAX_ARTWORK_OUTPUT_BYTES {
+            return Err((
+                ArtworkStatus::TooLarge,
+                format!(
+                    "WebP decoded output requires {output_size} bytes, exceeding the {MAX_ARTWORK_OUTPUT_BYTES} byte limit"
+                ),
+            ));
+        }
+        decoder.set_memory_limit(MAX_WEBP_INTERNAL_BYTES);
+        let mut output = Vec::new();
+        output.try_reserve_exact(output_size).map_err(|error| {
+            (
+                ArtworkStatus::TooLarge,
+                format!("WebP decoded output allocation failed: {error}"),
+            )
+        })?;
+        output.resize(output_size, 0);
+        decoder.read_image(&mut output).map_err(|error| {
+            (
+                ArtworkStatus::TruncatedOrCorrupt,
+                format!("WebP decode failed: {error}"),
+            )
+        })?;
+        return Ok(());
+    }
+
+    let dimensions = ImageReader::with_format(Cursor::new(bytes), format)
+        .into_dimensions()
+        .map_err(|error| {
+            (
+                ArtworkStatus::TruncatedOrCorrupt,
+                format!("image dimensions cannot be decoded: {error}"),
+            )
+        })?;
+    validate_pixel_budget(dimensions.0, dimensions.1)
+        .map_err(|error| (ArtworkStatus::TooLarge, error))?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_ARTWORK_DIMENSION);
+    limits.max_image_height = Some(MAX_ARTWORK_DIMENSION);
+    limits.max_alloc = Some(MAX_ARTWORK_DECODE_ALLOC);
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    reader.limits(limits);
+    reader.decode().map_err(|error| {
+        (
+            ArtworkStatus::TruncatedOrCorrupt,
+            format!("image decode failed: {error}"),
+        )
+    })?;
+    Ok(())
+}
+
+fn metadata_matches(metadata: &fs::Metadata, identity: ArtworkIdentity) -> bool {
+    metadata.file_type().is_file()
+        && metadata.dev() == identity.device
+        && metadata.ino() == identity.inode
+        && metadata.len() == identity.size
+        && metadata.mtime() == identity.modified_seconds
+        && metadata.mtime_nsec() == identity.modified_nanoseconds
+        && metadata.ctime() == identity.changed_seconds
+        && metadata.ctime_nsec() == identity.changed_nanoseconds
+}
+
+fn read_artwork_fast(record: &IndexedArtworkRecord) -> Option<IndexedArtwork> {
+    let root_file = open_root(&record.root).ok()?;
+    let root_metadata = root_file.metadata().ok()?;
+    if root_metadata.dev() != record.identity.root_device
+        || root_metadata.ino() != record.identity.root_inode
+    {
+        return None;
+    }
+    let mut file = open_beneath_from(&root_file, &record.root, &record.path).ok()?;
+    let before = file.metadata().ok()?;
+    if !metadata_matches(&before, record.identity) || before.len() > MAX_ARTWORK_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(before.len() as usize);
+    file.by_ref()
+        .take(MAX_ARTWORK_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 != before.len()
+        || !metadata_matches(&file.metadata().ok()?, record.identity)
+    {
+        return None;
+    }
+    let (_, content_type) = artwork_format(&bytes)?;
+    if content_type != record.content_type {
+        return None;
+    }
+    Some(IndexedArtwork {
+        bytes,
+        content_type,
+    })
+}
+
+fn inspect_artwork(root: &Path, path: &Path) -> ArtworkInspection {
+    let root_file = match open_root(root) {
+        Ok(root_file) => root_file,
+        Err(error) => {
+            return ArtworkInspection::invalid(
+                ArtworkStatus::Unreadable,
+                None,
+                format!("Media Root cannot be opened safely: {error}"),
+            )
+        }
+    };
+    let root_metadata = match root_file.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return ArtworkInspection::invalid(
+                ArtworkStatus::Unreadable,
+                None,
+                format!("Media Root metadata is unavailable: {error}"),
+            )
+        }
+    };
+    let mut file = match open_beneath_from(&root_file, root, path) {
+        Ok(file) => file,
+        Err(error) => {
+            return ArtworkInspection::invalid(
+                ArtworkStatus::Unreadable,
+                None,
+                format!(
+                    "Local artwork cannot be opened safely: {error}; replace or remove {}, then reconcile the Asset Index.",
+                    path.display()
+                ),
+            )
+        }
+    };
+    let metadata = match file.metadata() {
+        Ok(metadata) if metadata.file_type().is_file() => metadata,
+        Ok(_) => {
+            return ArtworkInspection::invalid(
+                ArtworkStatus::Unreadable,
+                None,
+                format!("Local artwork is not a regular file: {}", path.display()),
+            )
+        }
+        Err(error) => {
+            return ArtworkInspection::invalid(
+                ArtworkStatus::Unreadable,
+                None,
+                format!("Local artwork metadata is unavailable: {error}"),
+            )
+        }
+    };
+    let identity = ArtworkIdentity {
+        root_device: root_metadata.dev(),
+        root_inode: root_metadata.ino(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.len(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    };
+    if metadata.len() == 0 {
+        return ArtworkInspection::invalid(
+            ArtworkStatus::Empty,
+            None,
+            format!(
+                "Local artwork is empty; replace or remove {}, then reconcile the Asset Index.",
+                path.display()
+            ),
+        );
+    }
+    if metadata.len() > MAX_ARTWORK_BYTES {
+        return ArtworkInspection::invalid(
+            ArtworkStatus::TooLarge,
+            None,
+            format!(
+                "Local artwork exceeds the {} byte safety limit: {}",
+                MAX_ARTWORK_BYTES,
+                path.display()
+            ),
+        );
+    }
+
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    if let Err(error) = file
+        .by_ref()
+        .take(MAX_ARTWORK_BYTES + 1)
+        .read_to_end(&mut bytes)
+    {
+        return ArtworkInspection::invalid(
+            ArtworkStatus::Unreadable,
+            None,
+            format!("Local artwork cannot be read: {error}"),
+        );
+    }
+    if bytes.len() as u64 > MAX_ARTWORK_BYTES {
+        return ArtworkInspection::invalid(
+            ArtworkStatus::TooLarge,
+            None,
+            format!(
+                "Local artwork exceeds the {} byte safety limit",
+                MAX_ARTWORK_BYTES
+            ),
+        );
+    }
+
+    let (format, content_type) = match artwork_format(&bytes) {
+        Some(detected) => detected,
+        None => {
+            return ArtworkInspection::invalid(
+                ArtworkStatus::Unrecognized,
+                None,
+                format!(
+                    "Local artwork is not recognized JPEG, PNG, or WebP content: {}",
+                    path.display()
+                ),
+            )
+        }
+    };
+    if let Err((status, error)) = validate_artwork_decode(&bytes, format) {
+        return ArtworkInspection::invalid(
+            status,
+            Some(content_type),
+            format!(
+                "Local artwork is unusable: {error}; replace or remove {}, then reconcile the Asset Index.",
+                path.display()
+            ),
+        );
+    }
+
+    ArtworkInspection {
+        status: ArtworkStatus::Valid,
+        content_type: Some(content_type),
+        error: None,
+        identity: Some(identity),
+    }
+}
+
 fn open_beneath(root: &Path, path: &Path) -> std::io::Result<fs::File> {
+    let root_file = open_root(root)?;
+    open_beneath_from(&root_file, root, path)
+}
+
+fn open_beneath_from(root_file: &fs::File, root: &Path, path: &Path) -> std::io::Result<fs::File> {
     let relative = path.strip_prefix(root).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
@@ -838,7 +1555,11 @@ fn open_beneath(root: &Path, path: &Path) -> std::io::Result<fs::File> {
             "path does not name a file",
         ));
     }
-    let mut current = fs::File::open(root)?;
+    let root_fd = unsafe { libc::dup(root_file.as_raw_fd()) };
+    if root_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut current = unsafe { fs::File::from_raw_fd(root_fd) };
     for (index, part) in parts.iter().enumerate() {
         let name = CString::new(part.as_bytes()).map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains NUL")
@@ -852,7 +1573,11 @@ fn open_beneath(root: &Path, path: &Path) -> std::io::Result<fs::File> {
             libc::openat(
                 current.as_raw_fd(),
                 name.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | directory_flag,
+                libc::O_RDONLY
+                    | libc::O_CLOEXEC
+                    | libc::O_NOFOLLOW
+                    | libc::O_NONBLOCK
+                    | directory_flag,
             )
         };
         if fd < 0 {
@@ -860,7 +1585,39 @@ fn open_beneath(root: &Path, path: &Path) -> std::io::Result<fs::File> {
         }
         current = unsafe { fs::File::from_raw_fd(fd) };
     }
+    if !current.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path is not an ordinary regular file",
+        ));
+    }
     Ok(current)
+}
+
+fn open_root(root: &Path) -> std::io::Result<fs::File> {
+    let name = CString::new(root.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "root contains NUL"))?;
+    let fd = unsafe {
+        libc::open(
+            name.as_ptr(),
+            libc::O_RDONLY
+                | libc::O_DIRECTORY
+                | libc::O_CLOEXEC
+                | libc::O_NOFOLLOW
+                | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let root = unsafe { fs::File::from_raw_fd(fd) };
+    if !root.metadata()?.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Media Root is not a real directory",
+        ));
+    }
+    Ok(root)
 }
 
 fn parse_nfo(root: &Path, path: &Path) -> Result<ParsedNfo, String> {
