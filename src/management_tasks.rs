@@ -105,6 +105,10 @@ pub struct TaskItem {
     pub message: Option<String>,
     pub source_path: Option<String>,
     pub quarantine_token: Option<String>,
+    pub intent: Option<String>,
+    pub mutation_phase: Option<String>,
+    pub identity_device: Option<u64>,
+    pub identity_inode: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +124,10 @@ pub struct RunningMutationItem {
     pub media_root: String,
     pub source_path: Option<String>,
     pub quarantine_token: Option<String>,
+    pub intent: Option<String>,
+    pub mutation_phase: Option<String>,
+    pub identity_device: Option<u64>,
+    pub identity_inode: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,7 +172,8 @@ impl TaskStore {
              CREATE TABLE IF NOT EXISTS management_task_items (
                id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
                kind TEXT NOT NULL, path TEXT, status TEXT NOT NULL, message TEXT,
-               source_path TEXT, quarantine_token TEXT,
+               source_path TEXT, quarantine_token TEXT, intent TEXT,
+               mutation_phase TEXT, identity_device TEXT, identity_inode TEXT,
                FOREIGN KEY(task_id) REFERENCES management_tasks(id) ON DELETE CASCADE
              );
              CREATE TABLE IF NOT EXISTS deletion_audit_records (
@@ -182,6 +191,10 @@ impl TaskStore {
             "ALTER TABLE management_tasks ADD COLUMN planned_item_count INTEGER",
             "ALTER TABLE management_task_items ADD COLUMN source_path TEXT",
             "ALTER TABLE management_task_items ADD COLUMN quarantine_token TEXT",
+            "ALTER TABLE management_task_items ADD COLUMN intent TEXT",
+            "ALTER TABLE management_task_items ADD COLUMN mutation_phase TEXT",
+            "ALTER TABLE management_task_items ADD COLUMN identity_device TEXT",
+            "ALTER TABLE management_task_items ADD COLUMN identity_inode TEXT",
         ] {
             let _ = connection.execute(migration, []);
         }
@@ -197,6 +210,55 @@ impl TaskStore {
         self.connection()?.execute(
             "INSERT INTO management_tasks (id, task_type, media_root, kind, status, created_at, source_plan_id) VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6)",
             params![id, input.task_type, input.media_root, input.kind.as_str(), now, input.source_plan_id],
+        )?;
+        Ok(self.get(&id)?.expect("inserted task must exist"))
+    }
+
+    pub fn create_deletion_mutation(
+        &self,
+        media_root: &str,
+        now: u64,
+        authority: &serde_json::Value,
+    ) -> Result<ManagementTask, Error> {
+        let valid_authority = authority["id"].is_string()
+            && authority["created_at"].is_u64()
+            && authority["expires_at"].is_u64()
+            && matches!(
+                authority["selection"].as_str(),
+                Some("selected" | "unified")
+            )
+            && authority["hard_link_search_roots"].is_array()
+            && authority["paths"].is_array()
+            && authority["rule_set_version"].is_u64()
+            && authority["rules"]
+                .as_array()
+                .is_some_and(|rules| rules.iter().all(serde_json::Value::is_string));
+        if !valid_authority {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "permanent deletion authority snapshot is incomplete".to_string(),
+            )
+            .into());
+        }
+        let id = task_id();
+        let plan_id = authority["id"].as_str();
+        let expires_at = authority["expires_at"].as_u64();
+        let item_count = authority["paths"]
+            .as_array()
+            .map(|paths| paths.len() as u64);
+        self.connection()?.execute(
+            "INSERT INTO management_tasks
+               (id, task_type, media_root, kind, status, created_at, source_plan_id,
+                plan_expires_at, operation_plan, planned_item_count)
+             VALUES (?1, 'permanent_deletion', ?2, 'mutation', 'queued', ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                media_root,
+                now,
+                plan_id,
+                expires_at,
+                authority.to_string(),
+                item_count
+            ],
         )?;
         Ok(self.get(&id)?.expect("inserted task must exist"))
     }
@@ -266,10 +328,83 @@ impl TaskStore {
         })
     }
 
+    pub fn start_deletion_item(
+        &self,
+        task_id: &str,
+        source_path: &str,
+        identity_device: u64,
+        identity_inode: u64,
+    ) -> Result<StartedTaskItem, Error> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let inserted = transaction.execute(
+            "INSERT INTO management_task_items
+               (task_id, kind, path, status, source_path, intent, mutation_phase, identity_device, identity_inode)
+             SELECT ?1, 'permanent_deletion', ?2, 'running', ?2, 'permanent_delete', 'intent', ?3, ?4
+             FROM management_tasks
+             WHERE id=?1 AND task_type='permanent_deletion' AND kind='mutation'
+               AND status='running' AND operation_plan IS NOT NULL",
+            params![
+                task_id,
+                source_path,
+                identity_device.to_string(),
+                identity_inode.to_string()
+            ],
+        )?;
+        if inserted != 1 {
+            transaction.rollback()?;
+            return Err(rusqlite::Error::QueryReturnedNoRows.into());
+        }
+        let id = transaction.last_insert_rowid();
+        let quarantine_token = format!(".rust-jav-quarantine-item-{id}");
+        transaction.execute(
+            "UPDATE management_task_items SET quarantine_token=?2 WHERE id=?1",
+            params![id, quarantine_token],
+        )?;
+        transaction.commit()?;
+        Ok(StartedTaskItem {
+            id,
+            quarantine_token,
+        })
+    }
+
+    pub fn mark_deletion_item_quarantined(&self, task_id: &str, item_id: i64) -> Result<(), Error> {
+        let updated = self.connection()?.execute(
+            "UPDATE management_task_items SET mutation_phase='quarantined'
+             WHERE id=?2 AND task_id=?1 AND status='running' AND mutation_phase='intent'",
+            params![task_id, item_id],
+        )?;
+        if updated == 1 {
+            Ok(())
+        } else {
+            Err(rusqlite::Error::QueryReturnedNoRows.into())
+        }
+    }
+
+    pub fn advance_deletion_item_phase(
+        &self,
+        task_id: &str,
+        item_id: i64,
+        expected: &str,
+        next: &str,
+    ) -> Result<(), Error> {
+        let updated = self.connection()?.execute(
+            "UPDATE management_task_items SET mutation_phase=?4
+             WHERE id=?2 AND task_id=?1 AND status='running' AND mutation_phase=?3",
+            params![task_id, item_id, expected, next],
+        )?;
+        if updated == 1 {
+            Ok(())
+        } else {
+            Err(rusqlite::Error::QueryReturnedNoRows.into())
+        }
+    }
+
     pub fn running_mutation_items(&self) -> Result<Vec<RunningMutationItem>, Error> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT i.id, t.task_type, t.media_root, i.source_path, i.quarantine_token
+            "SELECT i.id, t.task_type, t.media_root, i.source_path, i.quarantine_token,
+                    i.intent, i.mutation_phase, i.identity_device, i.identity_inode
              FROM management_task_items i JOIN management_tasks t ON t.id=i.task_id
              WHERE t.kind='mutation' AND t.status IN ('queued','running') AND i.status='running'
              ORDER BY i.id",
@@ -282,6 +417,10 @@ impl TaskStore {
                     media_root: row.get(2)?,
                     source_path: row.get(3)?,
                     quarantine_token: row.get(4)?,
+                    intent: row.get(5)?,
+                    mutation_phase: row.get(6)?,
+                    identity_device: parse_u64_column(row, 7)?,
+                    identity_inode: parse_u64_column(row, 8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -296,6 +435,25 @@ impl TaskStore {
         Ok(())
     }
 
+    pub fn recover_deletion_item(
+        &self,
+        item_id: i64,
+        status: &str,
+        message: &str,
+    ) -> Result<(), Error> {
+        let updated = self.connection()?.execute(
+            "UPDATE management_task_items
+             SET status=?2, message=?3, mutation_phase='recovered'
+             WHERE id=?1 AND status='running' AND intent='permanent_delete'",
+            params![item_id, status, message],
+        )?;
+        if updated == 1 {
+            Ok(())
+        } else {
+            Err(rusqlite::Error::QueryReturnedNoRows.into())
+        }
+    }
+
     pub fn complete_item(
         &self,
         task_id: &str,
@@ -304,7 +462,10 @@ impl TaskStore {
         message: Option<&str>,
     ) -> Result<(), Error> {
         let updated = self.connection()?.execute(
-            "UPDATE management_task_items SET status=?3, message=?4 WHERE id=?2 AND task_id=?1 AND status='running'",
+            "UPDATE management_task_items
+             SET status=?3, message=?4,
+                 mutation_phase=CASE WHEN mutation_phase IS NULL THEN NULL ELSE 'finished' END
+             WHERE id=?2 AND task_id=?1 AND status='running'",
             params![task_id, item_id, status, message],
         )?;
         if updated == 1 {
@@ -492,7 +653,9 @@ fn hydrate_task_items(
             continue;
         }
         let mut statement = connection.prepare(&format!(
-            "SELECT id, task_id, kind, path, status, message, source_path, quarantine_token FROM management_task_items WHERE task_id IN ({placeholders}) ORDER BY id"
+            "SELECT id, task_id, kind, path, status, message, source_path, quarantine_token,
+                    intent, mutation_phase, identity_device, identity_inode
+             FROM management_task_items WHERE task_id IN ({placeholders}) ORDER BY id"
         ))?;
         let ids = task_chunk
             .iter()
@@ -509,6 +672,10 @@ fn hydrate_task_items(
                     message: row.get(5)?,
                     source_path: row.get(6)?,
                     quarantine_token: row.get(7)?,
+                    intent: row.get(8)?,
+                    mutation_phase: row.get(9)?,
+                    identity_device: parse_u64_column(row, 10)?,
+                    identity_inode: parse_u64_column(row, 11)?,
                 },
             ))
         })?;
@@ -521,6 +688,19 @@ fn hydrate_task_items(
         task.items = grouped.remove(&task.id).unwrap_or_default();
     }
     Ok(())
+}
+
+fn parse_u64_column(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<u64>> {
+    row.get::<_, Option<String>>(index)?
+        .map_or(Ok(None), |value| {
+            value.parse::<u64>().map(Some).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    index,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
 }
 
 fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ManagementTask> {
@@ -551,7 +731,11 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ManagementTask> {
 }
 
 fn items(connection: &Connection, task_id: &str) -> rusqlite::Result<Vec<TaskItem>> {
-    let mut statement = connection.prepare("SELECT id, kind, path, status, message, source_path, quarantine_token FROM management_task_items WHERE task_id=?1 ORDER BY id")?;
+    let mut statement = connection.prepare(
+        "SELECT id, kind, path, status, message, source_path, quarantine_token,
+                intent, mutation_phase, identity_device, identity_inode
+         FROM management_task_items WHERE task_id=?1 ORDER BY id",
+    )?;
     let rows = statement.query_map([task_id], |row| {
         Ok(TaskItem {
             id: row.get(0)?,
@@ -561,6 +745,10 @@ fn items(connection: &Connection, task_id: &str) -> rusqlite::Result<Vec<TaskIte
             message: row.get(4)?,
             source_path: row.get(5)?,
             quarantine_token: row.get(6)?,
+            intent: row.get(7)?,
+            mutation_phase: row.get(8)?,
+            identity_device: parse_u64_column(row, 9)?,
+            identity_inode: parse_u64_column(row, 10)?,
         })
     })?;
     rows.collect()

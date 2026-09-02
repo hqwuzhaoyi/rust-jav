@@ -8,14 +8,17 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io;
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use rustix::fs::{
-    open, renameat_with, statat, unlinkat, AtFlags, FileType as RustixFileType, Mode, OFlags,
-    RenameFlags,
+    fsync, open, openat, renameat_with, statat, unlinkat, AtFlags, FileType as RustixFileType,
+    Mode, OFlags, RenameFlags,
 };
+
+use crate::management_tasks::TaskStore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
@@ -39,6 +42,7 @@ pub struct PlannedDeletionPath {
     pub logical_size: u64,
     pub allocated_size: u64,
     pub observed_link_count: u64,
+    secure_path: PathBuf,
     snapshot: FileSnapshot,
 }
 
@@ -65,6 +69,7 @@ pub struct PermanentDeletionPlan {
     pub logical_size: u64,
     pub reclaimable_space: u64,
     pub video_warnings: Vec<VideoWarning>,
+    secure_hard_link_search_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +228,15 @@ impl PermanentDeletionPlanner {
             .ok_or(PlanCreationError::ExpirationOverflow)?;
         let approved_roots = self.validated_roots(&self.approved_roots)?;
         let search_roots = self.validated_roots(&self.hard_link_search_roots)?;
+        let secure_hard_link_search_roots = search_roots
+            .iter()
+            .map(|root| {
+                fs::canonicalize(root).map_err(|source| PlanCreationError::InvalidRoot {
+                    path: root.clone(),
+                    source,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut planned_paths = Vec::with_capacity(approved_paths.len());
         let mut seen_paths = HashSet::new();
 
@@ -295,6 +309,7 @@ impl PermanentDeletionPlanner {
             logical_size,
             reclaimable_space,
             video_warnings,
+            secure_hard_link_search_roots,
         })
     }
 
@@ -302,8 +317,10 @@ impl PermanentDeletionPlanner {
         &self,
         plan: &PermanentDeletionPlan,
         now: SystemTime,
+        tasks: &TaskStore,
+        task_id: &str,
     ) -> Result<DeletionExecutionResult, PlanExecutionError> {
-        self.execute_with_pre_unlink_hook(plan, now, |_| {})
+        self.execute_with_hooks(plan, now, tasks, task_id, |_| {}, |_, _| {})
     }
 
     #[doc(hidden)]
@@ -311,79 +328,108 @@ impl PermanentDeletionPlanner {
         &self,
         plan: &PermanentDeletionPlan,
         now: SystemTime,
+        tasks: &TaskStore,
+        task_id: &str,
         mut before_unlink: F,
     ) -> Result<DeletionExecutionResult, PlanExecutionError>
     where
         F: FnMut(&PlannedDeletionPath),
     {
-        let validations = preflight_plan(plan, now)?;
-        let outcomes = plan
-            .approved_paths
-            .iter()
-            .zip(validations)
-            .enumerate()
-            .map(|(index, (path, invalid))| {
-                invalid.unwrap_or_else(|| {
-                    before_unlink(path);
-                    let mut after_capture = || {};
-                    remove_path_atomically(
-                        path,
-                        &format!(
-                            ".rust-jav-quarantine-item-{}{}",
-                            path.identity.inode,
-                            index + 1
-                        ),
-                        &mut after_capture,
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
-        Ok(deletion_result(outcomes))
-    }
-
-    pub fn execute_journaled<Start, Finish>(
-        &self,
-        plan: &PermanentDeletionPlan,
-        now: SystemTime,
-        start_item: Start,
-        finish_item: Finish,
-    ) -> Result<DeletionExecutionResult, PlanExecutionError>
-    where
-        Start: FnMut(&PlannedDeletionPath) -> Result<(i64, String), String>,
-        Finish: FnMut(i64, &DeletionOutcome) -> Result<(), String>,
-    {
-        self.execute_journaled_with_capture_hook(plan, now, start_item, finish_item, |_, _| {})
+        self.execute_with_hooks(plan, now, tasks, task_id, &mut before_unlink, |_, _| {})
     }
 
     #[doc(hidden)]
-    pub fn execute_journaled_with_capture_hook<Start, Finish, Hook>(
+    pub fn execute_journaled_with_capture_hook<Hook>(
         &self,
         plan: &PermanentDeletionPlan,
         now: SystemTime,
-        mut start_item: Start,
-        mut finish_item: Finish,
+        tasks: &TaskStore,
+        task_id: &str,
         mut after_capture: Hook,
     ) -> Result<DeletionExecutionResult, PlanExecutionError>
     where
-        Start: FnMut(&PlannedDeletionPath) -> Result<(i64, String), String>,
-        Finish: FnMut(i64, &DeletionOutcome) -> Result<(), String>,
         Hook: FnMut(&PlannedDeletionPath, &str),
     {
+        self.execute_with_hooks(plan, now, tasks, task_id, |_| {}, &mut after_capture)
+    }
+
+    fn execute_with_hooks<Before, Captured>(
+        &self,
+        plan: &PermanentDeletionPlan,
+        now: SystemTime,
+        tasks: &TaskStore,
+        task_id: &str,
+        mut before_unlink: Before,
+        mut after_capture: Captured,
+    ) -> Result<DeletionExecutionResult, PlanExecutionError>
+    where
+        Before: FnMut(&PlannedDeletionPath),
+        Captured: FnMut(&PlannedDeletionPath, &str),
+    {
+        validate_durable_authority(tasks, task_id, plan)?;
         let validations = preflight_plan(plan, now)?;
+        let approved_roots = open_approved_root_handles(plan).map_err(|error| {
+            PlanExecutionError::Persistence(format!(
+                "cannot open approved deletion roots without following symlinks: {error}"
+            ))
+        })?;
         let mut outcomes = Vec::with_capacity(plan.approved_paths.len());
         for (path, invalid) in plan.approved_paths.iter().zip(validations) {
-            // The durable running item and deterministic quarantine token must
-            // exist before the first filesystem change for this path.
-            let (item_id, quarantine_token) = start_item(path).map_err(|error| {
-                PlanExecutionError::Persistence(format!(
-                    "cannot create durable deletion journal before mutation: {error}"
-                ))
+            let source = path.path.to_str().ok_or_else(|| {
+                PlanExecutionError::Persistence(
+                    "approved path is not UTF-8 and cannot be durably journaled".to_string(),
+                )
             })?;
-            let outcome = invalid.unwrap_or_else(|| {
-                let mut captured = || after_capture(path, &quarantine_token);
-                remove_path_atomically(path, &quarantine_token, &mut captured)
-            });
-            finish_item(item_id, &outcome).map_err(|error| {
+            let journal = tasks
+                .start_deletion_item(task_id, source, path.identity.device, path.identity.inode)
+                .map_err(|error| {
+                    PlanExecutionError::Persistence(format!(
+                        "cannot create durable deletion journal before mutation: {error}"
+                    ))
+                })?;
+            let outcome = if let Some(invalid) = invalid {
+                invalid
+            } else {
+                before_unlink(path);
+                let mut captured = || {
+                    tasks
+                        .mark_deletion_item_quarantined(task_id, journal.id)
+                        .map_err(|error| error.to_string())?;
+                    after_capture(path, &journal.quarantine_token);
+                    Ok(())
+                };
+                let mut advance_phase = |expected: &str, next: &str| {
+                    tasks
+                        .advance_deletion_item_phase(task_id, journal.id, expected, next)
+                        .map_err(|error| error.to_string())
+                };
+                remove_path_atomically(
+                    path,
+                    &journal.quarantine_token,
+                    &approved_roots,
+                    &mut captured,
+                    &mut advance_phase,
+                )
+                .map_err(|error| {
+                    PlanExecutionError::Persistence(format!(
+                        "durable deletion filesystem phase for {} is unresolved: {error}",
+                        path.path.display()
+                    ))
+                })?
+            };
+            let status = match outcome.status {
+                DeletionOutcomeStatus::Deleted => "deleted",
+                DeletionOutcomeStatus::Changed => "changed",
+                DeletionOutcomeStatus::Failed => "failed",
+            };
+            tasks
+                .complete_item(
+                    task_id,
+                    journal.id,
+                    status,
+                    outcome.message.as_deref(),
+                )
+                .map_err(|error| {
                 PlanExecutionError::Persistence(format!(
                     "cannot update durable deletion journal after filesystem outcome for {}: {error}",
                     path.path.display()
@@ -435,6 +481,62 @@ impl PermanentDeletionPlanner {
     }
 }
 
+fn validate_durable_authority(
+    tasks: &TaskStore,
+    task_id: &str,
+    plan: &PermanentDeletionPlan,
+) -> Result<(), PlanExecutionError> {
+    let task = tasks
+        .get(task_id)
+        .map_err(|error| {
+            PlanExecutionError::Persistence(format!(
+                "cannot load durable deletion authority: {error}"
+            ))
+        })?
+        .ok_or_else(|| {
+            PlanExecutionError::Persistence("durable deletion task does not exist".to_string())
+        })?;
+    let authority = task.operation_plan.ok_or_else(|| {
+        PlanExecutionError::Persistence(
+            "durable deletion task has no Operation Plan authority snapshot".to_string(),
+        )
+    })?;
+    let expires_at = plan
+        .expires_at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs());
+    let roots_match = authority["hard_link_search_roots"]
+        .as_array()
+        .is_some_and(|roots| {
+            roots.len() == plan.hard_link_search_roots.len()
+                && roots
+                    .iter()
+                    .zip(&plan.hard_link_search_roots)
+                    .all(|(stored, planned)| stored.as_str() == planned.to_str())
+        });
+    let paths_match = authority["paths"].as_array().is_some_and(|paths| {
+        paths.len() == plan.approved_paths.len()
+            && paths
+                .iter()
+                .zip(&plan.approved_paths)
+                .all(|(stored, planned)| {
+                    stored["path"].as_str() == planned.path.to_str()
+                        && stored["filesystem_identity"]["device"].as_u64()
+                            == Some(planned.identity.device)
+                        && stored["filesystem_identity"]["inode"].as_u64()
+                            == Some(planned.identity.inode)
+                })
+    });
+    if authority["expires_at"].as_u64() != expires_at || !roots_match || !paths_match {
+        return Err(PlanExecutionError::Persistence(
+            "durable deletion task authority does not match the supplied Operation Plan"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn preflight_plan(
     plan: &PermanentDeletionPlan,
     now: SystemTime,
@@ -450,6 +552,86 @@ fn preflight_plan(
         .iter()
         .map(revalidate_path)
         .collect::<Vec<_>>())
+}
+
+struct ApprovedRootHandle {
+    path: PathBuf,
+    directory: OwnedFd,
+}
+
+fn open_approved_root_handles(
+    plan: &PermanentDeletionPlan,
+) -> Result<Vec<ApprovedRootHandle>, String> {
+    plan.hard_link_search_roots
+        .iter()
+        .zip(&plan.secure_hard_link_search_roots)
+        .map(|(display_root, secure_root)| {
+            open_absolute_directory_without_symlinks(secure_root)
+                .map(|directory| ApprovedRootHandle {
+                    path: secure_root.clone(),
+                    directory,
+                })
+                .map_err(|error| format!("{}: {error}", display_root.display()))
+        })
+        .collect()
+}
+
+fn open_absolute_directory_without_symlinks(path: &Path) -> Result<OwnedFd, String> {
+    if !path.is_absolute() {
+        return Err(format!("approved root is not absolute: {}", path.display()));
+    }
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let mut current = open(Path::new("/"), flags, Mode::empty())
+        .map_err(|error| format!("cannot open filesystem root: {error}"))?;
+    for component in path.components() {
+        match component {
+            std::path::Component::RootDir => {}
+            std::path::Component::Normal(component) => {
+                current = openat(&current, component, flags, Mode::empty()).map_err(|error| {
+                    format!(
+                        "cannot open approved root component {} without following symlinks: {error}",
+                        component.to_string_lossy()
+                    )
+                })?;
+            }
+            _ => {
+                return Err(format!(
+                    "approved root is not a normalized absolute path: {}",
+                    path.display()
+                ))
+            }
+        }
+    }
+    Ok(current)
+}
+
+fn secure_parent_handle(path: &Path, roots: &[ApprovedRootHandle]) -> Result<OwnedFd, String> {
+    let root = roots
+        .iter()
+        .filter(|root| path.starts_with(&root.path))
+        .max_by_key(|root| root.path.components().count())
+        .ok_or_else(|| format!("{} is outside opened approved roots", path.display()))?;
+    let relative = path
+        .strip_prefix(&root.path)
+        .map_err(|_| "approved path cannot be made relative to its opened root".to_string())?;
+    let parent = relative
+        .parent()
+        .ok_or_else(|| "approved path has no relative parent".to_string())?;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let mut current = openat(&root.directory, ".", flags, Mode::empty())
+        .map_err(|error| format!("cannot duplicate approved root handle: {error}"))?;
+    for component in parent.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err("approved path parent is not normalized".to_string());
+        };
+        current = openat(&current, component, flags, Mode::empty()).map_err(|error| {
+            format!(
+                "cannot open approved parent component {} without following symlinks: {error}",
+                component.to_string_lossy()
+            )
+        })?;
+    }
+    Ok(current)
 }
 
 fn deletion_result(outcomes: Vec<DeletionOutcome>) -> DeletionExecutionResult {
@@ -495,9 +677,15 @@ fn validate_path_scope(path: &Path, roots: &[PathBuf]) -> Result<(), PlanCreatio
     }
 }
 
-fn planned_path(path: PathBuf, metadata: fs::Metadata) -> PlannedDeletionPath {
+fn planned_path(path: PathBuf, metadata: fs::Metadata) -> io::Result<PlannedDeletionPath> {
     let file_type = classify_file_type(&metadata);
-    PlannedDeletionPath {
+    let parent = path.parent().unwrap_or(Path::new("/"));
+    let secure_parent = fs::canonicalize(parent)?;
+    let secure_path = path
+        .file_name()
+        .map(|name| secure_parent.join(name))
+        .unwrap_or(secure_parent);
+    Ok(PlannedDeletionPath {
         path,
         file_type,
         identity: FilesystemIdentity {
@@ -508,8 +696,9 @@ fn planned_path(path: PathBuf, metadata: fs::Metadata) -> PlannedDeletionPath {
         // POSIX st_blocks is expressed in 512-byte units, including on ZFS.
         allocated_size: metadata.blocks().saturating_mul(512),
         observed_link_count: metadata.nlink(),
+        secure_path,
         snapshot: FileSnapshot::from_metadata(&metadata),
-    }
+    })
 }
 
 fn collect_approved_path(
@@ -542,7 +731,14 @@ fn collect_approved_path(
     }
     // Child-first order lets execution remove an approved directory only after
     // every enumerated entry has received its own outcome.
-    result.push(planned_path(path.to_path_buf(), metadata));
+    result.push(
+        planned_path(path.to_path_buf(), metadata).map_err(|source| {
+            PlanCreationError::InspectPath {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?,
+    );
     Ok(())
 }
 
@@ -667,27 +863,34 @@ fn revalidate_path(path: &PlannedDeletionPath) -> Option<DeletionOutcome> {
 fn remove_path_atomically(
     path: &PlannedDeletionPath,
     quarantine_token: &str,
-    after_capture: &mut impl FnMut(),
-) -> DeletionOutcome {
+    approved_roots: &[ApprovedRootHandle],
+    after_capture: &mut impl FnMut() -> Result<(), String>,
+    advance_phase: &mut impl FnMut(&str, &str) -> Result<(), String>,
+) -> Result<DeletionOutcome, String> {
     let Some(parent) = path.path.parent() else {
-        return failed_outcome(path, "approved path has no parent directory".to_string());
+        return Ok(failed_outcome(
+            path,
+            "approved path has no parent directory".to_string(),
+        ));
     };
     let Some(name) = path.path.file_name() else {
-        return failed_outcome(path, "approved path has no final component".to_string());
+        return Ok(failed_outcome(
+            path,
+            "approved path has no final component".to_string(),
+        ));
     };
-    let parent_fd = match open(
-        parent,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    ) {
+    let parent_fd = match secure_parent_handle(&path.secure_path, approved_roots) {
         Ok(parent_fd) => parent_fd,
         Err(error) => {
-            return failed_outcome(path, format!("cannot open parent directory: {error}"))
+            return Ok(failed_outcome(
+                path,
+                format!("cannot open parent directory from approved root handle: {error}"),
+            ))
         }
     };
     let quarantine_name = match durable_quarantine_name(quarantine_token) {
         Ok(name) => name,
-        Err(error) => return failed_outcome(path, error),
+        Err(error) => return Ok(failed_outcome(path, error)),
     };
     if let Err(error) = renameat_with(
         &parent_fd,
@@ -698,25 +901,32 @@ fn remove_path_atomically(
     ) {
         let message =
             format!("pathname could not be atomically quarantined before unlink: {error}");
-        return if error == rustix::io::Errno::NOENT {
+        return Ok(if error == rustix::io::Errno::NOENT {
             changed_outcome(path, message)
         } else {
             failed_outcome(path, message)
-        };
+        });
     }
-    after_capture();
+    fsync(&parent_fd).map_err(|error| {
+        format!(
+            "captured durable quarantine {} but parent directory fsync failed: {error}",
+            parent.join(quarantine_name).display()
+        )
+    })?;
+    after_capture()?;
 
     let quarantined = match statat(&parent_fd, quarantine_name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(metadata) => metadata,
         Err(error) => {
-            return failed_outcome(
-                path,
-                format!("quarantined path cannot be inspected safely: {error}"),
-            )
+            return Err(format!(
+                "durable quarantine {} cannot be inspected safely: {error}",
+                parent.join(quarantine_name).display()
+            ))
         }
     };
     if !quarantined_snapshot_matches(path, &quarantined) {
         let quarantine_path = parent.join(quarantine_name);
+        advance_phase("quarantined", "restoring_replacement")?;
         let message = match renameat_with(
             &parent_fd,
             quarantine_name,
@@ -724,14 +934,21 @@ fn remove_path_atomically(
             name,
             RenameFlags::NOREPLACE,
         ) {
-            Ok(()) => "filesystem identity changed after preflight; replacement was restored"
-                .to_string(),
+            Ok(()) => {
+                fsync(&parent_fd).map_err(|error| {
+                    format!(
+                        "replacement was restored after identity mismatch but parent directory fsync failed: {error}"
+                    )
+                })?;
+                advance_phase("restoring_replacement", "restored")?;
+                "filesystem identity changed after preflight; replacement was restored".to_string()
+            }
             Err(error) => format!(
                 "filesystem identity changed after preflight; replacement was preserved at {} because its pathname could not be restored without overwriting another entry: {error}",
                 quarantine_path.display()
             ),
         };
-        return changed_outcome(path, message);
+        return Ok(changed_outcome(path, message));
     }
 
     let flags = if path.file_type == FileType::Directory {
@@ -739,14 +956,27 @@ fn remove_path_atomically(
     } else {
         AtFlags::empty()
     };
+    advance_phase("quarantined", "unlinking")?;
     match unlinkat(&parent_fd, quarantine_name, flags) {
-        Ok(()) => DeletionOutcome {
-            path: path.path.clone(),
-            status: DeletionOutcomeStatus::Deleted,
-            message: None,
-        },
+        Ok(()) => {
+            fsync(&parent_fd).map_err(|error| {
+                format!(
+                    "approved inode was unlinked but parent directory fsync failed; journal remains quarantined for recovery: {error}"
+                )
+            })?;
+            advance_phase("unlinking", "unlinked")?;
+            Ok(DeletionOutcome {
+                path: path.path.clone(),
+                status: DeletionOutcomeStatus::Deleted,
+                message: None,
+            })
+        }
         Err(error) => {
             let quarantine_path = parent.join(quarantine_name);
+            // Persist rollback intent before moving the durable quarantine.
+            // If this write fails, leave the quarantine in place so restart
+            // recovery has an unambiguous locator and filesystem state.
+            advance_phase("unlinking", "restoring_replacement")?;
             let message = match renameat_with(
                 &parent_fd,
                 quarantine_name,
@@ -754,15 +984,23 @@ fn remove_path_atomically(
                 name,
                 RenameFlags::NOREPLACE,
             ) {
-                Ok(()) => format!(
-                    "approved inode could not be unlinked and was restored to its source path: {error}"
-                ),
+                Ok(()) => {
+                    fsync(&parent_fd).map_err(|sync_error| {
+                        format!(
+                            "approved inode rollback completed after unlink failure but parent directory fsync failed: {sync_error}"
+                        )
+                    })?;
+                    advance_phase("restoring_replacement", "restored")?;
+                    format!(
+                        "approved inode could not be unlinked and was restored to its source path: {error}"
+                    )
+                }
                 Err(rollback) => format!(
                     "approved inode could not be unlinked: {error}; rollback refused without replacement: {rollback}; durable quarantine remains at {}",
                     quarantine_path.display()
                 ),
             };
-            failed_outcome(path, message)
+            Ok(failed_outcome(path, message))
         }
     }
 }

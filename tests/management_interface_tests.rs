@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{os::unix::fs::MetadataExt, time::Duration};
 
 use axum::body::{to_bytes, Body};
 use http::{header, Request, StatusCode};
@@ -2030,25 +2030,27 @@ fn startup_recovers_a_permanent_deletion_quarantine_from_its_source_root() {
     std::fs::write(&source, b"approved").unwrap();
     let store = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
     let task = store
-        .create(
-            rust_jav::management_tasks::NewTask::mutation(
-                "permanent_deletion",
-                format!("{},{}", media_root.display(), actor_root.display()),
-            ),
+        .create_deletion_mutation(
+            &format!("{},{}", media_root.display(), actor_root.display()),
             100,
+            &serde_json::json!({"id":"recovery-plan","created_at":100,"expires_at":700,"selection":"unified","hard_link_search_roots":[media_root,actor_root],"paths":[{"path":source}],"rule_set_version":1,"rules":["delete-*"]}),
         )
         .unwrap();
     store.mark_running(&task.id, 101).unwrap();
+    let identity = std::fs::symlink_metadata(&source).unwrap();
     let journal = store
-        .start_item(
+        .start_deletion_item(
             &task.id,
-            "permanent_deletion",
-            Some(source.to_str().unwrap()),
-            Some(source.to_str().unwrap()),
+            source.to_str().unwrap(),
+            identity.dev(),
+            identity.ino(),
         )
         .unwrap();
     let quarantine = actor_root.join(&journal.quarantine_token);
     std::fs::rename(&source, &quarantine).unwrap();
+    store
+        .mark_deletion_item_quarantined(&task.id, journal.id)
+        .unwrap();
     drop(store);
 
     let _state = AppState::new(config.clone(), TestClock(200)).unwrap();
@@ -2078,25 +2080,27 @@ fn startup_retains_an_occupied_directory_and_its_deletion_quarantine_locator() {
     std::fs::create_dir(&source).unwrap();
     let store = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
     let task = store
-        .create(
-            rust_jav::management_tasks::NewTask::mutation(
-                "permanent_deletion",
-                media_root.display().to_string(),
-            ),
+        .create_deletion_mutation(
+            &media_root.display().to_string(),
             100,
+            &serde_json::json!({"id":"directory-recovery-plan","created_at":100,"expires_at":700,"selection":"selected","hard_link_search_roots":[media_root],"paths":[{"path":source}],"rule_set_version":1,"rules":["delete-*"]}),
         )
         .unwrap();
     store.mark_running(&task.id, 101).unwrap();
+    let identity = std::fs::symlink_metadata(&source).unwrap();
     let journal = store
-        .start_item(
+        .start_deletion_item(
             &task.id,
-            "permanent_deletion",
-            Some(source.to_str().unwrap()),
-            Some(source.to_str().unwrap()),
+            source.to_str().unwrap(),
+            identity.dev(),
+            identity.ino(),
         )
         .unwrap();
     let quarantine = media_root.join(&journal.quarantine_token);
     std::fs::rename(&source, &quarantine).unwrap();
+    store
+        .mark_deletion_item_quarantined(&task.id, journal.id)
+        .unwrap();
     std::fs::write(quarantine.join("arrived-after-capture.txt"), b"new").unwrap();
     std::fs::create_dir(&source).unwrap();
     drop(store);
@@ -2113,6 +2117,65 @@ fn startup_retains_an_occupied_directory_and_its_deletion_quarantine_locator() {
     assert!(message.contains(&journal.quarantine_token));
     assert!(source.is_dir());
     assert!(quarantine.join("arrived-after-capture.txt").exists());
+}
+
+#[test]
+fn startup_does_not_report_a_restored_identity_mismatch_as_deleted() {
+    let (dir, mut config) = fixture();
+    let media_root = dir.path().join("media");
+    std::fs::create_dir(&media_root).unwrap();
+    config.media_roots.push(media_root.clone());
+    let source = media_root.join("replacement.mp4");
+    let approved_inode = media_root.join("approved-inode-preserved.mp4");
+    std::fs::write(&source, b"approved").unwrap();
+    let identity = std::fs::symlink_metadata(&source).unwrap();
+    let store = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
+    let task = store
+        .create_deletion_mutation(
+            &media_root.display().to_string(),
+            100,
+            &serde_json::json!({"id":"restored-plan","created_at":100,"expires_at":700,"selection":"selected","hard_link_search_roots":[media_root],"paths":[{"path":source,"filesystem_identity":{"device":identity.dev(),"inode":identity.ino()}}],"rule_set_version":1,"rules":["delete-*"]}),
+        )
+        .unwrap();
+    store.mark_running(&task.id, 101).unwrap();
+    let journal = store
+        .start_deletion_item(
+            &task.id,
+            source.to_str().unwrap(),
+            identity.dev(),
+            identity.ino(),
+        )
+        .unwrap();
+    let quarantine = media_root.join(&journal.quarantine_token);
+    std::fs::rename(&source, &quarantine).unwrap();
+    store
+        .mark_deletion_item_quarantined(&task.id, journal.id)
+        .unwrap();
+    store
+        .advance_deletion_item_phase(&task.id, journal.id, "quarantined", "restoring_replacement")
+        .unwrap();
+    std::fs::rename(&quarantine, &approved_inode).unwrap();
+    std::fs::write(&source, b"replacement").unwrap();
+    // Simulate a crash after rollback rename+fsync but before the final
+    // restored phase can be persisted.
+    drop(store);
+
+    let _state = AppState::new(config.clone(), TestClock(200)).unwrap();
+    let reopened = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
+    let recovered = reopened.get(&task.id).unwrap().unwrap();
+    assert_eq!(recovered.items[0].status, "interrupted");
+    assert!(recovered.items[0]
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("replacement was restored"));
+    assert!(!recovered.items[0]
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("durably unlinked"));
+    assert_eq!(std::fs::read(&source).unwrap(), b"replacement");
+    assert_eq!(std::fs::read(&approved_inode).unwrap(), b"approved");
 }
 
 async fn wait_for_task(
@@ -2569,6 +2632,10 @@ async fn deletion_audit_persistence_failure_returns_a_durable_failed_task_with_r
     assert!(task["error"].as_str().unwrap().contains("audit"));
     assert_eq!(task["items"].as_array().unwrap().len(), 1);
     assert_eq!(task["items"][0]["status"], "deleted");
+    assert_eq!(task["operation_plan"], plan);
+    assert_eq!(task["operation_plan"]["rule_set_version"], 1);
+    assert_eq!(task["operation_plan"]["rules"][0], "delete-*");
+    assert!(task["operation_plan"]["paths"][0]["filesystem_identity"]["inode"].is_number());
     assert!(!selected.exists());
 
     let durable = json_request(
@@ -2583,6 +2650,7 @@ async fn deletion_audit_persistence_failure_returns_a_durable_failed_task_with_r
         serde_json::from_slice(&to_bytes(durable.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(durable["status"], "failed");
     assert_eq!(durable["items"][0]["status"], "deleted");
+    assert_eq!(durable["operation_plan"], plan);
 }
 
 #[tokio::test]
@@ -2783,7 +2851,10 @@ async fn deletion_journal_failure_stops_later_paths_returns_5xx_and_recovers_on_
     assert_eq!(task.status, rust_jav::management_tasks::TaskStatus::Running);
     assert_eq!(task.items.len(), 1);
     assert_eq!(task.items[0].status, "running");
+    assert_eq!(task.items[0].mutation_phase.as_deref(), Some("unlinked"));
+    assert!(task.items[0].identity_inode.is_some());
     assert!(task.items[0].quarantine_token.is_some());
+    assert_eq!(task.operation_plan.as_ref(), Some(&plan));
     drop(store);
     drop(state);
 
@@ -2804,12 +2875,13 @@ async fn deletion_journal_failure_stops_later_paths_returns_5xx_and_recovers_on_
         recovered.status,
         rust_jav::management_tasks::TaskStatus::Interrupted
     );
-    assert_eq!(recovered.items[0].status, "interrupted");
+    assert_eq!(recovered.items[0].status, "deleted_needs_audit");
     assert!(recovered.items[0]
         .message
         .as_deref()
         .unwrap()
-        .contains("quarantine is absent"));
+        .contains("durably unlinked"));
+    assert_eq!(recovered.operation_plan.as_ref(), Some(&plan));
 }
 
 #[tokio::test]

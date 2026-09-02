@@ -949,6 +949,151 @@ pub(crate) fn recover_durable_quarantine(
     }
 }
 
+pub(crate) struct DurableDeletionRecovery {
+    pub status: &'static str,
+    pub message: String,
+}
+
+pub(crate) fn recover_durable_deletion(
+    media_root: &std::path::Path,
+    source_path: &std::path::Path,
+    quarantine_token: &str,
+    mutation_phase: Option<&str>,
+    identity_device: Option<u64>,
+    identity_inode: Option<u64>,
+) -> DurableDeletionRecovery {
+    let interrupted = |message| DurableDeletionRecovery {
+        status: "interrupted",
+        message,
+    };
+    let deleted = |message| DurableDeletionRecovery {
+        status: "deleted_needs_audit",
+        message,
+    };
+    let (Some(expected_device), Some(expected_inode)) = (identity_device, identity_inode) else {
+        return interrupted(format!(
+            "interrupted permanent deletion: durable identity is missing; inspect source {} and token {quarantine_token} manually",
+            source_path.display()
+        ));
+    };
+    let canonical_root = match std::fs::canonicalize(media_root) {
+        Ok(root) => root,
+        Err(error) => return interrupted(format!(
+            "interrupted permanent deletion: cannot canonicalize recovery root: {error}; inspect token {quarantine_token} manually"
+        )),
+    };
+    let canonical_source = source_path
+        .strip_prefix(media_root)
+        .map(|relative| canonical_root.join(relative))
+        .unwrap_or_else(|_| source_path.to_path_buf());
+    let root = match SafeMutationRoot::open(&canonical_root) {
+        Ok(root) => root,
+        Err(error) => return interrupted(format!(
+            "interrupted permanent deletion: cannot open recovery root: {error}; inspect token {quarantine_token} manually"
+        )),
+    };
+    let (parent, source_name) = match root.parent_and_name(&canonical_source, false) {
+        Ok(entry) => entry,
+        Err(error) => return interrupted(format!(
+            "interrupted permanent deletion: unsafe source path: {error}; inspect token {quarantine_token} manually"
+        )),
+    };
+    let quarantine_name = match quarantine_name(quarantine_token) {
+        Ok(name) => name,
+        Err(error) => return interrupted(format!("interrupted permanent deletion: {error}")),
+    };
+    let quarantine_path = canonical_source
+        .parent()
+        .unwrap_or(&canonical_root)
+        .join(quarantine_token);
+    match fstatat_identity(&parent, &quarantine_name) {
+        Ok(identity) => {
+            if identity.device != expected_device || identity.inode != expected_inode {
+                return interrupted(format!(
+                    "interrupted permanent deletion: quarantine identity does not match approved device/inode; retained at {} for manual inspection",
+                    quarantine_path.display()
+                ));
+            }
+            match fstatat_identity(&parent, &source_name) {
+                Ok(_) => interrupted(format!(
+                    "interrupted permanent deletion: source is occupied; approved quarantine retained at {} and no pathname was overwritten",
+                    quarantine_path.display()
+                )),
+                Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
+                    match rename_noreplace(&parent, &quarantine_name, &parent, &source_name) {
+                        Ok(()) => match fsync_directory(&parent) {
+                            Ok(()) => interrupted(format!(
+                                "interrupted permanent deletion: restored approved quarantine to {} after restart",
+                                canonical_source.display()
+                            )),
+                            Err(error) => interrupted(format!(
+                                "interrupted permanent deletion: restored source but parent fsync failed: {error}; verify {} manually",
+                                canonical_source.display()
+                            )),
+                        },
+                        Err(error) => interrupted(format!(
+                            "interrupted permanent deletion: restore refused without replacement: {error}; quarantine retained at {}",
+                            quarantine_path.display()
+                        )),
+                    }
+                }
+                Err(error) => interrupted(format!(
+                    "interrupted permanent deletion: cannot inspect source: {error}; quarantine retained at {}",
+                    quarantine_path.display()
+                )),
+            }
+        }
+        Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
+            let source = fstatat_identity(&parent, &source_name);
+            if matches!(mutation_phase, Some("unlinking" | "unlinked")) {
+                match source {
+                    Err(error) if error.raw_os_error() == Some(libc::ENOENT) => deleted(format!(
+                        "approved device/inode {expected_device}:{expected_inode} was durably unlinked; quarantine is absent and audit completion is required"
+                    )),
+                    Ok(identity)
+                        if identity.device == expected_device && identity.inode == expected_inode =>
+                    {
+                        interrupted(format!(
+                            "interrupted permanent deletion: approved source remains at {}; unlink did not commit",
+                            canonical_source.display()
+                        ))
+                    }
+                    Ok(_) => deleted(format!(
+                        "approved device/inode {expected_device}:{expected_inode} was durably unlinked; a replacement at {} was preserved and audit completion is required",
+                        canonical_source.display()
+                    )),
+                    Err(error) => interrupted(format!(
+                        "interrupted permanent deletion: quarantine is absent but source cannot be inspected: {error}; audit manually"
+                    )),
+                }
+            } else if matches!(mutation_phase, Some("restoring_replacement" | "restored")) {
+                interrupted(format!(
+                    "interrupted permanent deletion: identity-mismatched replacement was restored at {}; approved device/inode {expected_device}:{expected_inode} was not reported deleted",
+                    canonical_source.display()
+                ))
+            } else {
+                interrupted(format!(
+                    "interrupted permanent deletion intent: quarantine is absent before a durable unlinking phase; inspect source {} and token {quarantine_token} manually",
+                    canonical_source.display()
+                ))
+            }
+        }
+        Err(error) => interrupted(format!(
+            "interrupted permanent deletion: cannot inspect quarantine {}: {error}",
+            quarantine_path.display()
+        )),
+    }
+}
+
+fn fsync_directory(directory: &File) -> std::io::Result<()> {
+    let result = unsafe { libc::fsync(directory.as_raw_fd()) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 fn fstatat_identity(parent: &File, name: &CString) -> std::io::Result<SourceIdentity> {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
     let result = unsafe {
