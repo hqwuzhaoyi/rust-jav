@@ -248,7 +248,7 @@ describe("Issue #43 permanent-deletion review", () => {
       within(dialog).getByRole("button", {
         name: "Create fresh Operation Plan",
       }),
-    ).toBeVisible();
+    ).toHaveClass("ui-touch-target");
     expect(
       requests.filter((request) => request.url.endsWith("/execute")),
     ).toHaveLength(1);
@@ -309,6 +309,8 @@ describe("Issue #43 permanent-deletion review", () => {
     expect(within(outcome).getByText("Permission denied")).toBeVisible();
     expect(within(outcome).getByText("No rollback was attempted.")).toBeVisible();
     expect(within(outcome).queryByText(/rolled back successfully/i)).toBeNull();
+    expect(within(outcome).getByRole("button", { name: "Close" }))
+      .toHaveClass("ui-touch-target");
   });
 
   it("preserves an interrupted durable task instead of coercing it to completed", async () => {

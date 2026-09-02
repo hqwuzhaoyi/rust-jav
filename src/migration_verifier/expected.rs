@@ -123,7 +123,10 @@ pub fn build_expected_for_actor_links(
 
     for action in actions {
         let (Some(source), Some(target)) = (action.source.as_ref(), action.target.as_ref()) else {
-            conflicts.push(format!("{} missing source or target path", action.action_id));
+            conflicts.push(format!(
+                "{} missing source or target path",
+                action.action_id
+            ));
             continue;
         };
 

@@ -606,6 +606,109 @@ impl TaskStore {
         )?)
     }
 
+    pub fn recover_deletion_audits(&self, now: u64) -> Result<usize, Error> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let candidates = {
+            let mut statement = transaction.prepare(
+                "SELECT t.id, t.operation_plan, t.planned_item_count, t.status
+                 FROM management_tasks t
+                 WHERE t.task_type='permanent_deletion' AND t.kind='mutation'
+                   AND t.status IN ('queued','running','failed') AND t.operation_plan IS NOT NULL
+                   AND EXISTS (
+                     SELECT 1 FROM management_task_items i
+                     WHERE i.task_id=t.id AND (
+                       i.status IN ('deleted_needs_audit','deleted') OR
+                       (i.status='running' AND i.intent='permanent_delete' AND i.mutation_phase='unlinked')
+                     )
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM deletion_audit_records a WHERE a.task_id=t.id
+                   )
+                 ORDER BY t.created_at, t.id",
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<u64>>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        let mut recovered = 0;
+        for (task_id, authority_json, planned_item_count, task_status) in candidates {
+            let authority: serde_json::Value =
+                serde_json::from_str(&authority_json).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            transaction.execute(
+                "UPDATE management_task_items
+                 SET status='deleted_needs_audit', mutation_phase='recovered',
+                     message=COALESCE(message, 'approved inode was durably unlinked before audit persistence')
+                 WHERE task_id=?1 AND status='running' AND intent='permanent_delete'
+                   AND mutation_phase='unlinked'",
+                [&task_id],
+            )?;
+            let task_items = items(&transaction, &task_id)?;
+            let outcomes = task_items
+                .iter()
+                .map(|item| {
+                    let status = if item.status == "deleted_needs_audit" {
+                        "deleted"
+                    } else {
+                        item.status.as_str()
+                    };
+                    serde_json::json!({
+                        "path": item.path,
+                        "status": status,
+                        "message": item.message,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let partial = planned_item_count != Some(outcomes.len() as u64)
+                || outcomes
+                    .iter()
+                    .any(|outcome| outcome["status"] != "deleted");
+            let audit = serde_json::json!({
+                "administrator": "Administrator",
+                "time": now,
+                "task_id": task_id,
+                "active_rule_set": {
+                    "version": authority["rule_set_version"],
+                    "rules": authority["rules"],
+                },
+                "operation_plan": authority,
+                "outcomes": outcomes,
+                "partial": partial,
+                "rolled_back": false,
+                "recovered_on_startup": true,
+            });
+            transaction.execute(
+                "INSERT INTO deletion_audit_records(task_id,created_at,record_json)
+                 VALUES (?1,?2,?3)",
+                params![task_id, now, audit.to_string()],
+            )?;
+            if task_status != "failed" {
+                let updated = transaction.execute(
+                    "UPDATE management_tasks
+                     SET status='interrupted', finished_at=?2,
+                         error='service restarted after permanent deletion changed the filesystem; recovery audit persisted'
+                     WHERE id=?1 AND status IN ('queued','running')",
+                    params![task_id, now],
+                )?;
+                if updated != 1 {
+                    return Err(rusqlite::Error::QueryReturnedNoRows.into());
+                }
+            }
+            recovered += 1;
+        }
+        transaction.commit()?;
+        Ok(recovered)
+    }
+
     pub fn runnable_tasks(&self) -> Result<Vec<ManagementTask>, Error> {
         Ok(self
             .list()?

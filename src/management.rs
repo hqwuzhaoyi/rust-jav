@@ -68,6 +68,7 @@ const IMAGE_RESPONSE_BUDGET_WAIT: Duration = Duration::from_millis(250);
 const INDEX_HTML: &[u8] = include_bytes!("../frontend/dist/index.html");
 const APP_JS: &[u8] = include_bytes!("../frontend/dist/assets/app.js");
 const APP_CSS: &[u8] = include_bytes!("../frontend/dist/assets/app.css");
+const ASSET_MANIFEST: &[u8] = include_bytes!("../frontend/dist/assets/asset-manifest.json");
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -787,6 +788,7 @@ impl AppState {
         // A missing or incorrectly-permissioned TrueNAS mount degrades the
         // rebuildable index; it must not prevent the diagnostic API starting.
         let _ = assets.reconcile(&config.media_roots, ScanMode::Startup, now);
+        tasks.recover_deletion_audits(now)?;
         tasks.interrupt_running_destructive(now)?;
         Ok(Self {
             store: SecretsStore::new(config.secrets_file.clone()),
@@ -948,6 +950,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/assets/app.css",
             get(|| async { asset("text/css; charset=utf-8", APP_CSS) }),
+        )
+        .route(
+            "/assets/asset-manifest.json",
+            get(|| async { asset("application/json", ASSET_MANIFEST) }),
         )
         .fallback(spa_fallback)
         .with_state(state)

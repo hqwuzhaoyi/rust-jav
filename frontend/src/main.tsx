@@ -33,8 +33,8 @@ import { AnimatedToastStack } from "./components/motion/animated-toast-stack";
 import { MorphingModal } from "./components/motion/morphing-modal";
 import { TiltCard } from "./components/motion/tilt-card";
 import { EASE_OUT } from "./lib/ease";
-import "./style.css";
 import "./design-system.css";
+import "./style.css";
 type View = "loading" | "initialize" | "login" | "ready";
 type ControlButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   density?: "touch" | "compact";
@@ -2150,7 +2150,7 @@ export function App() {
       {actorRemovalNotice && (
         <div className="shell-notice" role="status">
           <p>{actorRemovalNotice}</p>
-          <ControlButton className="ui-touch-target ui-icon-button" onClick={() => setActorRemovalNotice(null)} aria-label="Dismiss Actor removal notification">
+          <ControlButton className="ui-icon-button" onClick={() => setActorRemovalNotice(null)} aria-label="Dismiss Actor removal notification">
             <X aria-hidden="true" />
           </ControlButton>
         </div>
@@ -2158,7 +2158,7 @@ export function App() {
       {actorRemovalFailure && (
         <div className="shell-notice actor-removal-failure" role="alert">
           <p>{actorRemovalFailure}</p>
-          <ControlButton className="ui-touch-target ui-icon-button" onClick={() => setActorRemovalFailure(null)} aria-label="Dismiss Actor removal error">
+          <ControlButton className="ui-icon-button" onClick={() => setActorRemovalFailure(null)} aria-label="Dismiss Actor removal error">
             <X aria-hidden="true" />
           </ControlButton>
         </div>
@@ -2386,7 +2386,7 @@ export function App() {
               <p className="no-rollback">No rollback was attempted.</p>
             )}
             <div className="confirm-actions">
-              <button type="button" onClick={closeDeletionReview}>Close</button>
+              <ControlButton type="button" onClick={closeDeletionReview}>Close</ControlButton>
             </div>
           </section>
         ) : plan ? (
@@ -2472,14 +2472,14 @@ export function App() {
             )}
             {deletionError && <p className="deletion-inline-error" role="alert">{deletionError}</p>}
             {deletionPlanInvalid && (
-              <button
+              <ControlButton
                 type="button"
                 className="fresh-plan-button"
                 disabled={Boolean(deletionPending)}
                 onClick={() => void previewDeletion(plan.selection)}
               >
                 {deletionPending === "planning" ? "Creating fresh Operation Plan…" : "Create fresh Operation Plan"}
-              </button>
+              </ControlButton>
             )}
             <label htmlFor="confirm-delete">
               Type <b>PERMANENTLY DELETE</b> to confirm
@@ -2615,7 +2615,7 @@ function AssetInspector({
       <div className="sheet-handle" aria-hidden="true" />
       <ControlButton
         ref={closeButtonRef}
-        className="inspector-close ui-touch-target ui-icon-button"
+        className="inspector-close ui-icon-button"
         onClick={close}
         aria-label="Close asset details"
       >
@@ -2996,7 +2996,7 @@ function ActorInspector({
       transition={reduce ? { duration: 0 } : undefined}
     >
       <div className="sheet-handle" aria-hidden="true" />
-      <ControlButton ref={closeButtonRef} className="inspector-close ui-touch-target ui-icon-button" onClick={close} aria-label="Close actor details"><X aria-hidden="true" /></ControlButton>
+      <ControlButton ref={closeButtonRef} className="inspector-close ui-icon-button" onClick={close} aria-label="Close actor details"><X aria-hidden="true" /></ControlButton>
       {loading && !actor ? <p role="status">Loading Actor Folder…</p> : actor && (
         <>
           <div className="actor-detail-hero">

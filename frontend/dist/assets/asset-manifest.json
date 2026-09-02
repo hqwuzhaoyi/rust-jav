@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "source_digest": "6e66d9be6f3a30c16280eac464ea04440f5b6be0bbc130f3f559fa8986759beb",
+  "index": {
+    "path": "/index.html",
+    "normalized_sha256": "5b1cbf76d9df19f34d2c13a8fc8236b13d7324deb80e87d6381ed8af77bbaeef"
+  },
+  "assets": {
+    "javascript": {
+      "path": "/assets/app.js",
+      "sha256": "346dcb333636d848a3e407387825bd7215469ae89892b83dd5cbf029a9267f1e"
+    },
+    "stylesheet": {
+      "path": "/assets/app.css",
+      "sha256": "b7cf44a6648385b64919ec70f4c604dabd93fcd3637430e40ca8d7570803f421"
+    }
+  }
+}

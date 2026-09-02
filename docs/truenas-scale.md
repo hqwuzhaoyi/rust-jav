@@ -22,7 +22,7 @@ Actor View uses hard links. `/media` and `/actors` must report the same filesyst
 
 1. Copy `deploy/truenas/management.yaml` into the configuration Host Path and adjust paths only if you also adjust the Compose mounts.
 2. In **Apps**, select **Discover Apps > Custom App > Install via YAML** and paste `deploy/truenas/compose.yaml`.
-3. Pin `image` to an immutable release tag or digest for controlled rollback. Replace all `/mnt/tank/...` examples with your existing dataset paths.
+3. `RUST_JAV_IMAGE` is required and has no default. Set it to the image produced for the reviewed commit, using a commit tag or immutable digest; floating release aliases and `latest` are not accepted for this deployment. Replace all `/mnt/tank/...` examples with your existing dataset paths.
 4. Keep the `9317:9317` port mapping. Host networking is neither required nor recommended.
 5. Start the app and inspect `/health/live`, `/health/ready`, `/health/mounts`, and `/health/jellyfin`. Local readiness checks process and SQLite independently of Jellyfin availability.
 6. Initialize the administrator with `docker exec rust-jav rust-jav administrator init --config /config/management.yaml`, then open the one-use URL. The packaged `rust-jav` command re-enters the container identity wrapper, so the secrets document is written as the configured `RUST_JAV_UID:RUST_JAV_GID`; do not bypass it by invoking `rust-jav-bin` directly.

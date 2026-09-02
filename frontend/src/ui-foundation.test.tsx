@@ -138,10 +138,10 @@ describe("生产 toast foundation", () => {
     expect(close.classList.contains("ui-compact-icon-button")).toBe(true);
     const closeStyle = productionStyle(close);
     expect([
-      closeStyle.width,
-      closeStyle.height,
-      closeStyle.minWidth,
-      closeStyle.minHeight,
+      productionValue(close, "width"),
+      productionValue(close, "height"),
+      productionValue(close, "min-width"),
+      productionValue(close, "min-height"),
       closeStyle.borderRadius,
       closeStyle.flexShrink,
     ]).toEqual([

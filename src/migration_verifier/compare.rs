@@ -25,7 +25,8 @@ pub fn compare_manifests(
     let mut scope_counts = Vec::new();
     let mut scope_extension_counts = Vec::new();
     let mut diffs = Vec::new();
-    let mut has_mismatch = failed_actions > 0 || !extra_errors.is_empty() || !plan_conflicts.is_empty();
+    let mut has_mismatch =
+        failed_actions > 0 || !extra_errors.is_empty() || !plan_conflicts.is_empty();
 
     let after_by_scope = after
         .iter()

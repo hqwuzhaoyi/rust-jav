@@ -12,8 +12,8 @@ use expected::{build_expected_for_actor_links, build_expected_for_ops};
 use fs_scan::scan_scope;
 use report::{default_report_path, write_report};
 use types::{
-    ApprovalStatus, MigrationAction, MigrationScope, ScopeConfig, VerificationPlan, VerificationReport,
-    VerificationStatus, VerificationSummary,
+    ApprovalStatus, MigrationAction, MigrationScope, ScopeConfig, VerificationPlan,
+    VerificationReport, VerificationStatus, VerificationSummary,
 };
 
 pub use types::{
@@ -93,16 +93,30 @@ pub fn verify_ops(
     ))
 }
 
+pub struct ActorLinkVerificationInput {
+    pub source_dir: PathBuf,
+    pub actors_root: PathBuf,
+    pub before_source: types::ScopeManifest,
+    pub before_actors: types::ScopeManifest,
+    pub actions: Vec<MigrationAction>,
+    pub failed_actions: usize,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
 pub fn verify_actor_links(
-    source_dir: PathBuf,
-    actors_root: PathBuf,
-    before_source: types::ScopeManifest,
-    before_actors: types::ScopeManifest,
-    actions: Vec<MigrationAction>,
-    failed_actions: usize,
-    warnings: Vec<String>,
-    errors: Vec<String>,
+    input: ActorLinkVerificationInput,
 ) -> io::Result<(VerificationSummary, VerificationReport)> {
+    let ActorLinkVerificationInput {
+        source_dir,
+        actors_root,
+        before_source,
+        before_actors,
+        actions,
+        failed_actions,
+        warnings,
+        errors,
+    } = input;
     let plan = VerificationPlan {
         command: "actor-links".to_string(),
         mode: "apply".to_string(),

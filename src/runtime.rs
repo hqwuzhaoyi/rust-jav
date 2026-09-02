@@ -14,7 +14,7 @@ pub enum RunRequest {
         dir: PathBuf,
     },
     Report {
-        report: CommandReport,
+        report: Box<CommandReport>,
         format: OutputFormat,
         exit_code: i32,
     },
@@ -51,7 +51,7 @@ pub async fn resolve_run_request(cli: Cli) -> Result<RunRequest> {
                 } else {
                     OutputFormat::Text
                 },
-                report,
+                report: Box::new(report),
             })
         }
         Command::ActorLinks(args) => {
@@ -68,7 +68,7 @@ pub async fn resolve_run_request(cli: Cli) -> Result<RunRequest> {
                 } else {
                     OutputFormat::Text
                 },
-                report,
+                report: Box::new(report),
             })
         }
         Command::NfoCheck(args) => {
@@ -102,7 +102,7 @@ pub async fn resolve_run_request(cli: Cli) -> Result<RunRequest> {
                 } else {
                     OutputFormat::Text
                 },
-                report,
+                report: Box::new(report),
             })
         }
         Command::Serve(args) => Ok(RunRequest::Serve {

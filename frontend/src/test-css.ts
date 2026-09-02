@@ -10,9 +10,9 @@ function unlayered(source: string) {
     .replace(/@theme\s+inline\s*\{[^{}]*\}/g, "");
 }
 
-export const productionCss = [styleCss, designSystemCss]
-  .map(unlayered)
-  .join("\n");
+export const applicationCss = unlayered(styleCss);
+export const foundationCss = unlayered(designSystemCss);
+export const productionCss = [foundationCss, applicationCss].join("\n");
 
 export function installProductionStyles() {
   let style = document.querySelector<HTMLStyleElement>("style[data-production-css]");

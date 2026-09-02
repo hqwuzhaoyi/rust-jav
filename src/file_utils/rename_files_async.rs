@@ -24,7 +24,10 @@ pub async fn move_and_delete_directory<P: AsRef<Path>>(path: P, new_path: P) -> 
 }
 
 #[async_recursion]
-pub async fn remove_nfo_files<P: AsRef<Path> + Send + Sync + 'static>(path: P) -> IoResult<()> {
+pub async fn remove_nfo_files<P>(path: P) -> IoResult<()>
+where
+    P: AsRef<Path> + Send + Sync + 'static,
+{
     let path = path.as_ref();
     let metadata = fs::metadata(path).await?;
     if metadata.is_dir() {

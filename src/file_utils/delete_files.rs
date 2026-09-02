@@ -36,9 +36,10 @@ pub async fn delete_files_matching_patterns<P: AsRef<Path>>(
 
 // 删除目录下有nfo文件但是没有视频的目录
 #[async_recursion]
-pub async fn delete_dir_with_no_video<P: AsRef<Path> + Send + Sync + 'static>(
-    path: P,
-) -> io::Result<bool> {
+pub async fn delete_dir_with_no_video<P>(path: P) -> io::Result<bool>
+where
+    P: AsRef<Path> + Send + Sync + 'static,
+{
     let path_ref = path.as_ref();
     let mut dir_deleted = false;
     let mut is_empty = true;

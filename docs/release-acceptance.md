@@ -1,4 +1,4 @@
-# Release acceptance record for issue 20
+# Production design-system and release acceptance record
 
 This record separates repeatable local evidence from checks that require real external systems. Never mark an unexecuted row as passed. Record immutable image digests, OS/browser versions, timestamps, and redacted evidence paths when running the external procedures.
 
@@ -14,13 +14,14 @@ This record separates repeatable local evidence from checks that require real ex
 | Deletion | root confinement, symlink defense, expiry/revalidation, hard-link selection, partial outcomes, audit tests |
 | Jellyfin | mock-server auth, selected libraries, association confidence, batch refresh, bounded retry tests |
 | TrueNAS packaging | Compose, non-root image, layered health, distinct mount roles, overlap/missing mount tests |
-| Responsive UI | jsdom interaction tests for navigation, asset/NFO/actor details, exceptions, Rules, dialogs, task recovery, and audits; CSS breakpoint assertions |
+| Embedded interface | Vite writes source and final JS/CSS content provenance into `dist/index.html` and a tracked manifest; every Rust build independently checks HTML references and bundle hashes and rejects stale or replaced assets |
+| Responsive UI | jsdom interaction tests for navigation, asset/NFO/actor details, exceptions, Rules, dialogs, task recovery, and audits; CSS breakpoint, safe-area, reduced-motion, long-content, empty-state, keyboard/focus, and explicit touch-target assertions |
 
 ## Native Linux and macOS matrix
 
 Run on a native filesystem (APFS for macOS, ext4/XFS/ZFS for Linux) with disposable fixtures:
 
-1. Run `cargo test --all-targets`, frontend checks, and `test-tui-demos.sh`.
+1. In `frontend`, run `npm test`, `npm run check`, and `npm run build`; then run `cargo test --all-targets` and `test-tui-demos.sh`. Rust must accept the digest in the newly generated embedded shell.
 2. Run full and incremental scans; make one root unreadable and confirm an actionable exception without service loss.
 3. Download a valid allowlisted Rule proposal, then test invalid YAML, disallowed host, non-HTTPS, oversized response, and timeout. Confirm the active file is unchanged on failure.
 4. Preview then apply an ordinary rename/move and a disposable permanent deletion. Verify final reports and deletion audit history.
@@ -36,7 +37,7 @@ Cross-filesystem tests may skip when the runner has no second device. Record tha
 
 ## Phone, tablet, desktop browser matrix
 
-Test at minimum 390×844, 768×1024, and 1440×900. At each size verify login/logout, all navigation destinations, asset search/filter/pagination, artwork fallback, NFO and actor detail, exception text, Rule edit/validation/failure, deletion and Actor Folder confirmation/cancel paths, task progress/reconnect, and audit history. Verify keyboard focus/Escape on desktop and touch targets/no horizontal overflow on phone/tablet.
+Test at minimum 390×844, 768×1024, and 1440×900. At each size verify login/logout; Media Root capacity; asset search/filter/pagination and detail; local artwork validation plus Jellyfin artwork fallback; Actor View; Management Tasks; Settings; permanent-deletion review; exception text; Rule edit/validation/failure; task progress/reconnect; and audit history. Exercise long paths/titles and empty results. Verify keyboard order, visible focus, focus trap/restore and Escape on desktop; reduced-motion behavior; close-control geometry; safe-area padding; touch targets; and no horizontal overflow on phone/tablet.
 
 Automated jsdom tests prove interactions and semantic labels but not real layout, touch behavior, or browser rendering. Those three viewport passes therefore remain external until screenshots and browser/version metadata are attached by the parent verifier.
 

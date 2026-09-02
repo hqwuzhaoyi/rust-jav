@@ -97,14 +97,16 @@ impl VerificationService {
         errors: Vec<String>,
     ) -> io::Result<(VerificationSummary, VerificationReport)> {
         crate::migration_verifier::verify_actor_links(
-            source_dir,
-            actors_root,
-            before_source,
-            before_actors,
-            actions,
-            failed_actions,
-            warnings,
-            errors,
+            crate::migration_verifier::ActorLinkVerificationInput {
+                source_dir,
+                actors_root,
+                before_source,
+                before_actors,
+                actions,
+                failed_actions,
+                warnings,
+                errors,
+            },
         )
     }
 

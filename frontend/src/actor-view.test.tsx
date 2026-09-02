@@ -517,10 +517,10 @@ describe("Issue #40 safe Actor Folder removal", () => {
     });
     const closeStyle = productionStyle(close);
     expect([
-      closeStyle.width,
-      closeStyle.height,
-      closeStyle.minWidth,
-      closeStyle.minHeight,
+      productionValue(close, "width"),
+      productionValue(close, "height"),
+      productionValue(close, "min-width"),
+      productionValue(close, "min-height"),
       closeStyle.borderRadius,
       closeStyle.flexShrink,
     ]).toEqual(["44px", "44px", "44px", "44px", "50%", "0"]);

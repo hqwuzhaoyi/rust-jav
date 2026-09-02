@@ -1,6 +1,6 @@
 services:
   rust-jav:
-    image: ghcr.io/hqwuzhaoyi/rust-jav:latest
+    image: ${RUST_JAV_IMAGE:?Set RUST_JAV_IMAGE to an immutable digest or commit tag}
     container_name: rust-jav
     restart: unless-stopped
     environment:

@@ -362,7 +362,7 @@ fn root_capacity(path: &Path) -> RootCapacity {
             return Err(std::io::Error::last_os_error().to_string());
         }
         let statistics = unsafe { statistics.assume_init() };
-        let fragment_size = statistics.f_frsize as u64;
+        let fragment_size = statistics.f_frsize;
         let blocks = statistics.f_blocks as u64;
         if fragment_size == 0 || blocks == 0 {
             return Err("Media Root capacity is unsupported".to_owned());
@@ -988,7 +988,7 @@ fn media_files_from(directory: &fs::File, display_path: &Path) -> Result<Vec<Pat
             if !child.metadata().is_ok_and(|metadata| {
                 metadata.file_type().is_dir()
                     && metadata.dev() == stat.st_dev as u64
-                    && metadata.ino() == stat.st_ino as u64
+                    && metadata.ino() == stat.st_ino
             }) {
                 return Err(Error::Scan {
                     path,

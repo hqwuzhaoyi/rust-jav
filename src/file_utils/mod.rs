@@ -15,10 +15,10 @@ pub mod rename_files;
 pub mod rename_files_async;
 
 #[async_recursion]
-pub async fn traverse_directory<P: AsRef<Path> + Send + Sync + 'static>(
-    is_root: bool,
-    sub_path: P,
-) -> io::Result<()> {
+pub async fn traverse_directory<P>(is_root: bool, sub_path: P) -> io::Result<()>
+where
+    P: AsRef<Path> + Send + Sync + 'static,
+{
     trace!("traverse_directory is called");
 
     let pb = ProgressBar::new_spinner();

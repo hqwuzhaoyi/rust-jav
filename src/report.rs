@@ -192,7 +192,10 @@ impl CommandReport {
                 "approval: {}",
                 verification.approval_status.as_str()
             ));
-            lines.push(format!("verification_exit_code: {}", verification.exit_code));
+            lines.push(format!(
+                "verification_exit_code: {}",
+                verification.exit_code
+            ));
             for scope in &verification.scopes {
                 lines.push(format!(
                     "  scope {}: before={}, expected={}, after={}",

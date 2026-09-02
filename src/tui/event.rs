@@ -349,12 +349,10 @@ fn handle_file_tree_event(app: &mut App, key: KeyCode, _modifiers: KeyModifiers)
             app.file_tree.toggle_multi_select();
             update_preview_from_file_tree(app);
         }
-        KeyCode::Char(' ') => {
+        KeyCode::Char(' ') if app.file_tree.is_multi_select() => {
             // In multi-select mode, toggle selection
-            if app.file_tree.is_multi_select() {
-                app.file_tree.toggle_current_selection();
-                update_preview_from_file_tree(app);
-            }
+            app.file_tree.toggle_current_selection();
+            update_preview_from_file_tree(app);
         }
         KeyCode::Char('a') => {
             // Select/deselect all files (auto-enable multi-select mode)

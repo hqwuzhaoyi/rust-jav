@@ -1323,7 +1323,9 @@ async fn embedded_shell_busts_legacy_asset_cache_and_static_assets_revalidate() 
     assert!(shell_html.contains("/assets/app.js?v=2"));
     assert!(shell_html.contains("/assets/app.css?v=2"));
 
-    let javascript = app(state)
+    assert!(shell_html.contains("/assets/asset-manifest.json"));
+
+    let javascript = app(state.clone())
         .oneshot(
             Request::builder()
                 .uri("/assets/app.js")
@@ -1333,6 +1335,22 @@ async fn embedded_shell_busts_legacy_asset_cache_and_static_assets_revalidate() 
         .await
         .unwrap();
     assert_eq!(javascript.headers()[header::CACHE_CONTROL], "no-cache");
+
+    let manifest = app(state)
+        .oneshot(
+            Request::builder()
+                .uri("/assets/asset-manifest.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(manifest.headers()[header::CONTENT_TYPE], "application/json");
+    let manifest_body = to_bytes(manifest.into_body(), usize::MAX).await.unwrap();
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_body).unwrap();
+    assert_eq!(manifest["version"], 1);
+    assert_eq!(manifest["assets"]["javascript"]["path"], "/assets/app.js");
+    assert_eq!(manifest["assets"]["stylesheet"]["path"], "/assets/app.css");
 }
 
 #[tokio::test]
@@ -2071,6 +2089,75 @@ fn startup_recovers_a_permanent_deletion_quarantine_from_its_source_root() {
 }
 
 #[test]
+fn startup_audits_a_completed_deletion_item_when_the_process_crashed_before_audit() {
+    let (dir, mut config) = fixture();
+    let media_root = dir.path().join("media");
+    std::fs::create_dir(&media_root).unwrap();
+    config.media_roots.push(media_root.clone());
+    let source = media_root.join("deleted-before-audit.mp4");
+    std::fs::write(&source, b"approved").unwrap();
+    let identity = std::fs::symlink_metadata(&source).unwrap();
+    let authority = serde_json::json!({
+        "id": "completed-item-recovery-plan",
+        "created_at": 100,
+        "expires_at": 700,
+        "selection": "selected",
+        "hard_link_search_roots": [media_root],
+        "paths": [{
+            "path": source,
+            "filesystem_identity": {"device": identity.dev(), "inode": identity.ino()}
+        }],
+        "rule_set_version": 1,
+        "rules": ["delete-*"],
+    });
+    let store = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
+    let task = store
+        .create_deletion_mutation(&media_root.display().to_string(), 100, &authority)
+        .unwrap();
+    store.mark_running(&task.id, 101).unwrap();
+    let journal = store
+        .start_deletion_item(
+            &task.id,
+            source.to_str().unwrap(),
+            identity.dev(),
+            identity.ino(),
+        )
+        .unwrap();
+    let quarantine = media_root.join(&journal.quarantine_token);
+    std::fs::rename(&source, &quarantine).unwrap();
+    store
+        .mark_deletion_item_quarantined(&task.id, journal.id)
+        .unwrap();
+    store
+        .advance_deletion_item_phase(&task.id, journal.id, "quarantined", "unlinking")
+        .unwrap();
+    std::fs::remove_file(&quarantine).unwrap();
+    store
+        .advance_deletion_item_phase(&task.id, journal.id, "unlinking", "unlinked")
+        .unwrap();
+    store
+        .complete_item(&task.id, journal.id, "deleted", None)
+        .unwrap();
+    drop(store);
+
+    let _restarted = AppState::new(config.clone(), TestClock(200)).unwrap();
+    let reopened = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
+    let recovered = reopened.get(&task.id).unwrap().unwrap();
+    assert_eq!(
+        recovered.status,
+        rust_jav::management_tasks::TaskStatus::Interrupted
+    );
+    assert_eq!(recovered.items[0].status, "deleted");
+    let audits = reopened.deletion_audits().unwrap();
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0]["task_id"], task.id);
+    assert_eq!(audits[0]["operation_plan"], authority);
+    assert_eq!(audits[0]["outcomes"][0]["status"], "deleted");
+    assert_eq!(audits[0]["partial"], false);
+    assert_eq!(audits[0]["recovered_on_startup"], true);
+}
+
+#[test]
 fn startup_retains_an_occupied_directory_and_its_deletion_quarantine_locator() {
     let (dir, mut config) = fixture();
     let media_root = dir.path().join("media");
@@ -2596,6 +2683,7 @@ async fn deletion_audit_persistence_failure_returns_a_durable_failed_task_with_r
         "a strong password",
     )
     .unwrap();
+    let restart_config = config.clone();
     let state = AppState::new(config, TestClock(100)).unwrap();
     let cookie = login_cookie(&state).await;
     let planned = json_request(
@@ -2651,6 +2739,85 @@ async fn deletion_audit_persistence_failure_returns_a_durable_failed_task_with_r
     assert_eq!(durable["status"], "failed");
     assert_eq!(durable["items"][0]["status"], "deleted");
     assert_eq!(durable["operation_plan"], plan);
+
+    let connection = rusqlite::Connection::open(&restart_config.database_file).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER injected_deletion_audit_failure;")
+        .unwrap();
+    drop(connection);
+    let restarted = AppState::new(restart_config.clone(), TestClock(200)).unwrap();
+    let store = rust_jav::management_tasks::TaskStore::open(&restart_config.database_file).unwrap();
+    let recovered = store.get(task["id"].as_str().unwrap()).unwrap().unwrap();
+    assert_eq!(
+        recovered.status,
+        rust_jav::management_tasks::TaskStatus::Failed
+    );
+    let audits = store.deletion_audits().unwrap();
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0]["task_id"], task["id"]);
+    assert_eq!(audits[0]["outcomes"][0]["status"], "deleted");
+    assert_eq!(audits[0]["recovered_on_startup"], true);
+    drop(store);
+    drop(restarted);
+
+    let _second_restart = AppState::new(restart_config.clone(), TestClock(300)).unwrap();
+    let store = rust_jav::management_tasks::TaskStore::open(&restart_config.database_file).unwrap();
+    assert_eq!(store.deletion_audits().unwrap().len(), 1);
+}
+
+#[test]
+fn startup_does_not_invent_an_audit_for_an_ordinary_failed_deletion_item() {
+    let (dir, mut config) = fixture();
+    let root = dir.path().join("media");
+    std::fs::create_dir(&root).unwrap();
+    config.media_roots.push(root.clone());
+    let source = root.join("not-deleted.mp4");
+    std::fs::write(&source, b"still here").unwrap();
+    let identity = std::fs::symlink_metadata(&source).unwrap();
+    let authority = serde_json::json!({
+        "id": "ordinary-failed-plan",
+        "created_at": 100,
+        "expires_at": 700,
+        "selection": "selected",
+        "hard_link_search_roots": [root],
+        "paths": [{"path": source}],
+        "rule_set_version": 1,
+        "rules": ["delete-*"],
+    });
+    let store = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
+    let task = store
+        .create_deletion_mutation(&root.display().to_string(), 100, &authority)
+        .unwrap();
+    store.mark_running(&task.id, 101).unwrap();
+    let item = store
+        .start_deletion_item(
+            &task.id,
+            source.to_str().unwrap(),
+            identity.dev(),
+            identity.ino(),
+        )
+        .unwrap();
+    store
+        .complete_item(
+            &task.id,
+            item.id,
+            "failed",
+            Some("permission denied before unlink"),
+        )
+        .unwrap();
+    store
+        .mark_failed(&task.id, 102, "permanent deletion failed before unlink")
+        .unwrap();
+    drop(store);
+
+    let _state = AppState::new(config.clone(), TestClock(200)).unwrap();
+    let store = rust_jav::management_tasks::TaskStore::open(&config.database_file).unwrap();
+    assert!(store.deletion_audits().unwrap().is_empty());
+    assert_eq!(
+        store.get(&task.id).unwrap().unwrap().status,
+        rust_jav::management_tasks::TaskStatus::Failed
+    );
+    assert!(source.exists());
 }
 
 #[tokio::test]
@@ -2862,12 +3029,30 @@ async fn deletion_journal_failure_stops_later_paths_returns_5xx_and_recovers_on_
     connection
         .execute_batch(
             "DROP TRIGGER injected_deletion_item_update_failure;
-         DROP TRIGGER injected_deletion_audit_failure_all;
-         DROP TRIGGER injected_deletion_mark_failed_failure;",
+             DROP TRIGGER injected_deletion_mark_failed_failure;",
         )
         .unwrap();
     drop(connection);
-    let _restarted = AppState::new(restart_config.clone(), TestClock(200)).unwrap();
+
+    let failed_restart = AppState::new(restart_config.clone(), TestClock(150));
+    assert!(failed_restart.is_err());
+    let after_failed_restart =
+        rust_jav::management_tasks::TaskStore::open(&restart_config.database_file).unwrap();
+    let still_running = after_failed_restart.get(&task.id).unwrap().unwrap();
+    assert_eq!(
+        still_running.status,
+        rust_jav::management_tasks::TaskStatus::Running
+    );
+    assert_eq!(still_running.items[0].status, "deleted_needs_audit");
+    assert!(after_failed_restart.deletion_audits().unwrap().is_empty());
+    drop(after_failed_restart);
+
+    let connection = rusqlite::Connection::open(&restart_config.database_file).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER injected_deletion_audit_failure_all;")
+        .unwrap();
+    drop(connection);
+    let restarted = AppState::new(restart_config.clone(), TestClock(200)).unwrap();
     let reopened =
         rust_jav::management_tasks::TaskStore::open(&restart_config.database_file).unwrap();
     let recovered = reopened.get(&task.id).unwrap().unwrap();
@@ -2882,6 +3067,23 @@ async fn deletion_journal_failure_stops_later_paths_returns_5xx_and_recovers_on_
         .unwrap()
         .contains("durably unlinked"));
     assert_eq!(recovered.operation_plan.as_ref(), Some(&plan));
+    let audits = reopened.deletion_audits().unwrap();
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0]["task_id"], task.id);
+    assert_eq!(audits[0]["operation_plan"], plan);
+    assert_eq!(
+        audits[0]["outcomes"][0]["path"],
+        first.display().to_string()
+    );
+    assert_eq!(audits[0]["outcomes"][0]["status"], "deleted");
+    assert_eq!(audits[0]["recovered_on_startup"], true);
+    drop(reopened);
+    drop(restarted);
+
+    let _second_restart = AppState::new(restart_config.clone(), TestClock(300)).unwrap();
+    let after_second_restart =
+        rust_jav::management_tasks::TaskStore::open(&restart_config.database_file).unwrap();
+    assert_eq!(after_second_restart.deletion_audits().unwrap().len(), 1);
 }
 
 #[tokio::test]

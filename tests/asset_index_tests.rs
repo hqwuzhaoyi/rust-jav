@@ -27,13 +27,13 @@ fn full_reconciliation_tracks_filesystem_and_preserves_identity_across_rename() 
     let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
 
     index
-        .reconcile(&[root.clone()], ScanMode::Startup, 100)
+        .reconcile(std::slice::from_ref(&root), ScanMode::Startup, 100)
         .unwrap();
     let original = index.search(AssetQuery::default()).unwrap().items.remove(0);
     fs::rename(root.join("ABC-123.mp4"), root.join("RENAMED.mp4")).unwrap();
     fs::rename(root.join("ABC-123.nfo"), root.join("RENAMED.nfo")).unwrap();
     index
-        .reconcile(&[root.clone()], ScanMode::Manual, 101)
+        .reconcile(std::slice::from_ref(&root), ScanMode::Manual, 101)
         .unwrap();
     let renamed = index.search(AssetQuery::default()).unwrap().items.remove(0);
 
@@ -57,7 +57,7 @@ fn stable_identity_survives_replaced_inode_at_the_observed_path() {
     media(&path);
     let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
     index
-        .reconcile(&[root.clone()], ScanMode::Startup, 100)
+        .reconcile(std::slice::from_ref(&root), ScanMode::Startup, 100)
         .unwrap();
     let before = index.search(AssetQuery::default()).unwrap().items.remove(0);
     fs::remove_file(&path).unwrap();
@@ -123,7 +123,7 @@ fn incremental_reconciliation_updates_only_observed_paths() {
     media(&root.join("TWO-002.mp4"));
     let index = AssetIndex::open(&fixture.path().join("index.sqlite3")).unwrap();
     index
-        .reconcile(&[root.clone()], ScanMode::Startup, 100)
+        .reconcile(std::slice::from_ref(&root), ScanMode::Startup, 100)
         .unwrap();
     fs::remove_file(root.join("ONE-001.mkv")).unwrap();
 

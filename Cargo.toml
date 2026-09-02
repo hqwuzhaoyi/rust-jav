@@ -54,3 +54,7 @@ path = "examples/create.rs"
 tempfile = "3.27.0"
 tower = { version = "0.5", features = ["util"] }
 http = "1"
+
+[build-dependencies]
+serde_json = "1"
+sha2 = "0.10"

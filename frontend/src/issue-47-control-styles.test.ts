@@ -26,6 +26,7 @@ describe("Issue #47 explicit touch target contracts", () => {
     expect(productionCss).not.toMatch(
       /(?:^|\})\s*button\s*\{[^}]*min-height\s*:\s*44px/,
     );
+    expect(productionCss).not.toMatch(/\bbutton\s*\{\s*touch-action\s*:/);
     expect(productionCss).not.toMatch(/\.ui-toast-stack\s+button\s*\{/);
     expect(productionCss).not.toMatch(/@(import|source|theme)\b/);
   });

@@ -80,6 +80,27 @@ fn compose_and_image_contract_are_multiarch_non_root_and_health_layered() {
     assert!(dockerfile.contains("HEALTHCHECK"));
     assert!(dockerfile.contains("RUST_JAV_UID"));
     assert!(dockerfile.contains("RUST_JAV_GID"));
+    assert!(dockerfile.contains("COPY build.rs ./build.rs"));
+    assert!(dockerfile.contains("COPY build_support ./build_support"));
+    assert!(dockerfile.contains("COPY frontend/src ./frontend/src"));
+    for input in [
+        "frontend/index.html",
+        "frontend/package*.json",
+        "frontend/source-digest.ts",
+        "frontend/tsconfig.json",
+        "frontend/vite.config.ts",
+    ] {
+        assert!(
+            dockerfile.contains(input),
+            "missing frontend build input {input}"
+        );
+    }
+    assert!(dockerfile.contains("COPY --from=frontend /src/frontend/dist ./frontend/dist"));
+    assert!(!compose.contains(":latest"));
+    assert!(!compose.contains("RUST_JAV_IMAGE:-"));
+    assert!(!compose.contains("ghcr.io/hqwuzhaoyi/rust-jav:0.4.0"));
+    assert!(compose
+        .contains("${RUST_JAV_IMAGE:?Set RUST_JAV_IMAGE to an immutable digest or commit tag}"));
     assert!(workflow.contains("linux/amd64,linux/arm64"));
 }
 
@@ -120,4 +141,8 @@ fn operations_guide_covers_the_complete_truenas_acceptance_lifecycle() {
     }
     assert!(guide.contains("Host Path data is not rolled back"));
     assert!(guide.contains("sqlite3 /state/management.sqlite3 .backup"));
+    assert!(guide.contains("RUST_JAV_IMAGE"));
+    assert!(guide.contains("required"));
+    assert!(guide.contains("commit tag or immutable digest"));
+    assert!(guide.contains("has no default"));
 }
