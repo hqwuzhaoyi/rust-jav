@@ -1025,7 +1025,7 @@ fn quarantined_snapshot_matches(path: &PlannedDeletionPath, metadata: &rustix::f
     file_type_matches
         && metadata.st_size as u64 == path.snapshot.size
         && metadata.st_mtime == path.snapshot.modified_seconds
-        && metadata.st_mtime_nsec == path.snapshot.modified_nanoseconds
+        && i128::from(metadata.st_mtime_nsec) == i128::from(path.snapshot.modified_nanoseconds)
         && (metadata.st_blocks as u64).saturating_mul(512) == path.snapshot.allocated_size
 }
 
