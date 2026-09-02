@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::{CStr, CString, OsString},
     fs,
-    io::{Cursor, Read},
+    io::Read,
     mem::MaybeUninit,
     os::fd::{AsRawFd, FromRawFd},
     os::unix::ffi::{OsStrExt, OsStringExt},
@@ -13,8 +13,6 @@ use std::{
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Utc};
-use image::{ImageFormat, ImageReader};
-use once_cell::sync::Lazy;
 use rand::{rngs::OsRng, RngCore};
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -175,14 +173,6 @@ pub struct IndexedArtwork {
     pub bytes: Vec<u8>,
     pub content_type: &'static str,
 }
-
-const MAX_ARTWORK_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_ARTWORK_DIMENSION: u32 = 16_384;
-const MAX_ARTWORK_PIXELS: u64 = 16_000_000;
-const MAX_ARTWORK_OUTPUT_BYTES: u64 = 48 * 1024 * 1024;
-const MAX_ARTWORK_DECODE_ALLOC: u64 = 64 * 1024 * 1024;
-const MAX_WEBP_INTERNAL_BYTES: usize = 64 * 1024 * 1024;
-static ARTWORK_DECODE_LIMIT: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 #[derive(Debug)]
 struct ArtworkInspection {
@@ -1224,126 +1214,6 @@ fn asset_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MediaAsset> {
     })
 }
 
-fn artwork_format(bytes: &[u8]) -> Option<(ImageFormat, &'static str)> {
-    match image::guess_format(bytes).ok()? {
-        ImageFormat::Jpeg => Some((ImageFormat::Jpeg, "image/jpeg")),
-        ImageFormat::Png => Some((ImageFormat::Png, "image/png")),
-        ImageFormat::WebP => Some((ImageFormat::WebP, "image/webp")),
-        _ => None,
-    }
-}
-
-fn validate_pixel_budget(width: u32, height: u32) -> Result<(), String> {
-    if width == 0 || height == 0 {
-        return Err("image dimensions must be non-zero".to_owned());
-    }
-    if width > MAX_ARTWORK_DIMENSION || height > MAX_ARTWORK_DIMENSION {
-        return Err(format!(
-            "image dimensions {width}x{height} exceed the {MAX_ARTWORK_DIMENSION}px axis limit"
-        ));
-    }
-    let pixels = u64::from(width)
-        .checked_mul(u64::from(height))
-        .ok_or_else(|| "image pixel count overflowed".to_owned())?;
-    if pixels > MAX_ARTWORK_PIXELS {
-        return Err(format!(
-            "image contains {pixels} pixels, exceeding the {MAX_ARTWORK_PIXELS} pixel limit"
-        ));
-    }
-    let output_bytes = pixels
-        .checked_mul(4)
-        .ok_or_else(|| "decoded image output size overflowed".to_owned())?;
-    if output_bytes > MAX_ARTWORK_OUTPUT_BYTES {
-        return Err(format!(
-            "decoded output (RGBA) requires {output_bytes} bytes, exceeding the {MAX_ARTWORK_OUTPUT_BYTES} byte limit"
-        ));
-    }
-    Ok(())
-}
-
-fn validate_artwork_decode(
-    bytes: &[u8],
-    format: ImageFormat,
-) -> Result<(), (ArtworkStatus, String)> {
-    let _permit = ARTWORK_DECODE_LIMIT.lock().map_err(|_| {
-        (
-            ArtworkStatus::Unreadable,
-            "artwork decoder concurrency gate was poisoned".to_owned(),
-        )
-    })?;
-
-    if format == ImageFormat::WebP {
-        let mut decoder = image_webp::WebPDecoder::new(Cursor::new(bytes)).map_err(|error| {
-            (
-                ArtworkStatus::TruncatedOrCorrupt,
-                format!("WebP header is invalid: {error}"),
-            )
-        })?;
-        if decoder.is_animated() {
-            return Err((
-                ArtworkStatus::Animated,
-                "animated WebP artwork is not supported; replace it with a static image".to_owned(),
-            ));
-        }
-        let (width, height) = decoder.dimensions();
-        validate_pixel_budget(width, height).map_err(|error| (ArtworkStatus::TooLarge, error))?;
-        let output_size = decoder.output_buffer_size().ok_or_else(|| {
-            (
-                ArtworkStatus::TooLarge,
-                "WebP decoded output size overflowed".to_owned(),
-            )
-        })?;
-        if output_size as u64 > MAX_ARTWORK_OUTPUT_BYTES {
-            return Err((
-                ArtworkStatus::TooLarge,
-                format!(
-                    "WebP decoded output requires {output_size} bytes, exceeding the {MAX_ARTWORK_OUTPUT_BYTES} byte limit"
-                ),
-            ));
-        }
-        decoder.set_memory_limit(MAX_WEBP_INTERNAL_BYTES);
-        let mut output = Vec::new();
-        output.try_reserve_exact(output_size).map_err(|error| {
-            (
-                ArtworkStatus::TooLarge,
-                format!("WebP decoded output allocation failed: {error}"),
-            )
-        })?;
-        output.resize(output_size, 0);
-        decoder.read_image(&mut output).map_err(|error| {
-            (
-                ArtworkStatus::TruncatedOrCorrupt,
-                format!("WebP decode failed: {error}"),
-            )
-        })?;
-        return Ok(());
-    }
-
-    let dimensions = ImageReader::with_format(Cursor::new(bytes), format)
-        .into_dimensions()
-        .map_err(|error| {
-            (
-                ArtworkStatus::TruncatedOrCorrupt,
-                format!("image dimensions cannot be decoded: {error}"),
-            )
-        })?;
-    validate_pixel_budget(dimensions.0, dimensions.1)
-        .map_err(|error| (ArtworkStatus::TooLarge, error))?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_ARTWORK_DIMENSION);
-    limits.max_image_height = Some(MAX_ARTWORK_DIMENSION);
-    limits.max_alloc = Some(MAX_ARTWORK_DECODE_ALLOC);
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    reader.limits(limits);
-    reader.decode().map_err(|error| {
-        (
-            ArtworkStatus::TruncatedOrCorrupt,
-            format!("image decode failed: {error}"),
-        )
-    })?;
-    Ok(())
-}
-
 fn metadata_matches(metadata: &fs::Metadata, identity: ArtworkIdentity) -> bool {
     metadata.file_type().is_file()
         && metadata.dev() == identity.device
@@ -1365,12 +1235,14 @@ fn read_artwork_fast(record: &IndexedArtworkRecord) -> Option<IndexedArtwork> {
     }
     let mut file = open_beneath_from(&root_file, &record.root, &record.path).ok()?;
     let before = file.metadata().ok()?;
-    if !metadata_matches(&before, record.identity) || before.len() > MAX_ARTWORK_BYTES {
+    if !metadata_matches(&before, record.identity)
+        || before.len() > crate::artwork_image::MAX_ARTWORK_BYTES
+    {
         return None;
     }
     let mut bytes = Vec::with_capacity(before.len() as usize);
     file.by_ref()
-        .take(MAX_ARTWORK_BYTES + 1)
+        .take(crate::artwork_image::MAX_ARTWORK_BYTES + 1)
         .read_to_end(&mut bytes)
         .ok()?;
     if bytes.len() as u64 != before.len()
@@ -1378,7 +1250,7 @@ fn read_artwork_fast(record: &IndexedArtworkRecord) -> Option<IndexedArtwork> {
     {
         return None;
     }
-    let (_, content_type) = artwork_format(&bytes)?;
+    let content_type = crate::artwork_image::sniff_content_type(&bytes)?;
     if content_type != record.content_type {
         return None;
     }
@@ -1460,13 +1332,13 @@ fn inspect_artwork(root: &Path, path: &Path) -> ArtworkInspection {
             ),
         );
     }
-    if metadata.len() > MAX_ARTWORK_BYTES {
+    if metadata.len() > crate::artwork_image::MAX_ARTWORK_BYTES {
         return ArtworkInspection::invalid(
             ArtworkStatus::TooLarge,
             None,
             format!(
                 "Local artwork exceeds the {} byte safety limit: {}",
-                MAX_ARTWORK_BYTES,
+                crate::artwork_image::MAX_ARTWORK_BYTES,
                 path.display()
             ),
         );
@@ -1475,7 +1347,7 @@ fn inspect_artwork(root: &Path, path: &Path) -> ArtworkInspection {
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     if let Err(error) = file
         .by_ref()
-        .take(MAX_ARTWORK_BYTES + 1)
+        .take(crate::artwork_image::MAX_ARTWORK_BYTES + 1)
         .read_to_end(&mut bytes)
     {
         return ArtworkInspection::invalid(
@@ -1484,44 +1356,46 @@ fn inspect_artwork(root: &Path, path: &Path) -> ArtworkInspection {
             format!("Local artwork cannot be read: {error}"),
         );
     }
-    if bytes.len() as u64 > MAX_ARTWORK_BYTES {
+    if bytes.len() as u64 > crate::artwork_image::MAX_ARTWORK_BYTES {
         return ArtworkInspection::invalid(
             ArtworkStatus::TooLarge,
             None,
             format!(
                 "Local artwork exceeds the {} byte safety limit",
-                MAX_ARTWORK_BYTES
+                crate::artwork_image::MAX_ARTWORK_BYTES
             ),
         );
     }
 
-    let (format, content_type) = match artwork_format(&bytes) {
-        Some(detected) => detected,
-        None => {
+    let sniffed_content_type = crate::artwork_image::sniff_content_type(&bytes);
+    let validated = match crate::artwork_image::validate(bytes) {
+        Ok(validated) => validated,
+        Err(error) => {
+            let status = match error.kind {
+                crate::artwork_image::ValidationErrorKind::Unrecognized => {
+                    ArtworkStatus::Unrecognized
+                }
+                crate::artwork_image::ValidationErrorKind::Animated => ArtworkStatus::Animated,
+                crate::artwork_image::ValidationErrorKind::TruncatedOrCorrupt => {
+                    ArtworkStatus::TruncatedOrCorrupt
+                }
+                crate::artwork_image::ValidationErrorKind::TooLarge => ArtworkStatus::TooLarge,
+                crate::artwork_image::ValidationErrorKind::Unreadable => ArtworkStatus::Unreadable,
+            };
             return ArtworkInspection::invalid(
-                ArtworkStatus::Unrecognized,
-                None,
+                status,
+                sniffed_content_type,
                 format!(
-                    "Local artwork is not recognized JPEG, PNG, or WebP content: {}",
+                    "Local artwork is unusable: {error}; replace or remove {}, then reconcile the Asset Index.",
                     path.display()
                 ),
-            )
+            );
         }
     };
-    if let Err((status, error)) = validate_artwork_decode(&bytes, format) {
-        return ArtworkInspection::invalid(
-            status,
-            Some(content_type),
-            format!(
-                "Local artwork is unusable: {error}; replace or remove {}, then reconcile the Asset Index.",
-                path.display()
-            ),
-        );
-    }
 
     ArtworkInspection {
         status: ArtworkStatus::Valid,
-        content_type: Some(content_type),
+        content_type: Some(validated.content_type),
         error: None,
         identity: Some(identity),
     }

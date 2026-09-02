@@ -2342,17 +2342,19 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
     let count = refreshes.clone();
     let image_count = image_requests.clone();
     let people_count = people_requests.clone();
+    let actor_portrait = artwork_fixtures::valid_jpeg();
+    let served_actor_portrait = actor_portrait.clone();
     let jellyfin = Router::new()
         .route("/System/Info", get(|| async { Json(serde_json::json!({"ServerName":"TrueNAS Jellyfin","Version":"10.11","Id":"server"})) }))
         .route("/Library/MediaFolders", get(|| async { Json(serde_json::json!({"Items":[{"Id":"jav","Name":"JAV","Path":"/media/jav"}]})) }))
         .route("/Items", get(|| async { Json(serde_json::json!({"Items":[{"Id":"jf-1","Name":"ABC-123","Path":"/media/jav/ABC-123.mp4","ProviderIds":{},"UserData":{"Played":true,"PlayCount":1,"PlaybackPositionTicks":0}}]})) }))
         .route("/Persons", get(move || { let people_count=people_count.clone(); async move { people_count.fetch_add(1, Ordering::SeqCst); Json(serde_json::json!({"Items":[{"Id":"person-alice","Name":"Alice","ImageTags":{"Primary":"portrait-tag"}}]})) }}))
-        .route("/Items/:id/Images/Primary", get(move |headers: axum::http::HeaderMap, axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String,String>>| { let image_count=image_count.clone(); async move {
+        .route("/Items/:id/Images/Primary", get(move |headers: axum::http::HeaderMap, axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String,String>>| { let image_count=image_count.clone(); let actor_portrait=served_actor_portrait.clone(); async move {
             assert_eq!(headers["X-Emby-Token"], "server-only-secret");
             assert_eq!(query.get("maxWidth").map(String::as_str), Some("320"));
             assert_eq!(query.get("tag").map(String::as_str), Some("portrait-tag"));
             image_count.fetch_add(1, Ordering::SeqCst);
-            ([(header::CONTENT_TYPE, "image/jpeg")], b"actor portrait".to_vec())
+            ([(header::CONTENT_TYPE, "image/jpeg")], actor_portrait)
         }}))
         .route("/Library/Refresh", post(move || { let count=count.clone(); async move { count.fetch_add(1, Ordering::SeqCst); StatusCode::NO_CONTENT } }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2505,7 +2507,7 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
             .await
             .unwrap()
             .as_ref(),
-        b"actor portrait"
+        actor_portrait.as_slice()
     );
     assert_eq!(image_requests.load(Ordering::SeqCst), 1);
     let cached_portrait = json_request(
@@ -2522,7 +2524,7 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
             .await
             .unwrap()
             .as_ref(),
-        b"actor portrait"
+        actor_portrait.as_slice()
     );
     assert_eq!(
         image_requests.load(Ordering::SeqCst),

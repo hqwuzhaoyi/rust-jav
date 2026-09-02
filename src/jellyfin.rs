@@ -1,7 +1,11 @@
 use std::{collections::BTreeMap, time::Duration};
 
+use futures::StreamExt;
 use reqwest::{Client, Url};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+const MAX_JSON_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -9,8 +13,24 @@ pub enum Error {
     InvalidUrl(#[from] url::ParseError),
     #[error("Jellyfin URL must not contain user credentials")]
     CredentialsInUrl,
+    #[error("Jellyfin URL must use http or https")]
+    InvalidScheme,
+    #[error("Jellyfin URL must not contain a query or fragment")]
+    QueryOrFragment,
+    #[error("Jellyfin endpoint escaped the configured server origin")]
+    CrossOrigin,
     #[error("Jellyfin request failed: {0}")]
     Request(#[from] reqwest::Error),
+    #[error("Jellyfin returned invalid JSON: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("Jellyfin JSON response exceeds the size limit")]
+    JsonTooLarge,
+    #[error("Jellyfin image exceeds the download size limit")]
+    ImageTooLarge,
+    #[error("Jellyfin returned unexpected HTTP status {0}")]
+    UnexpectedStatus(u16),
+    #[error("Jellyfin item has no Primary image tag")]
+    MissingPrimaryImage,
     #[error("configured Jellyfin library was not returned by the server: {0}")]
     MissingLibrary(String),
 }
@@ -79,6 +99,8 @@ pub struct JellyfinItem {
     pub provider_ids: BTreeMap<String, String>,
     #[serde(default)]
     pub user_data: JellyfinUserData,
+    #[serde(default)]
+    pub image_tags: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -114,6 +136,12 @@ pub struct JellyfinImage {
     pub content_type: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JellyfinImageRef {
+    pub item_id: String,
+    pub image_tag: String,
+}
+
 impl JellyfinItem {
     pub fn fixture(id: &str, name: &str, path: Option<&str>, code: Option<&str>) -> Self {
         let mut provider_ids = BTreeMap::new();
@@ -126,8 +154,30 @@ impl JellyfinItem {
             path: path.map(str::to_owned),
             provider_ids,
             user_data: JellyfinUserData::default(),
+            image_tags: BTreeMap::new(),
         }
     }
+
+    pub fn primary_image_ref(&self) -> Option<JellyfinImageRef> {
+        primary_image_ref(&self.id, &self.image_tags)
+    }
+}
+
+impl JellyfinPerson {
+    pub fn primary_image_ref(&self) -> Option<JellyfinImageRef> {
+        primary_image_ref(&self.id, &self.image_tags)
+    }
+}
+
+fn primary_image_ref(
+    item_id: &str,
+    image_tags: &BTreeMap<String, String>,
+) -> Option<JellyfinImageRef> {
+    let image_tag = image_tags.get("Primary")?.trim();
+    (!item_id.trim().is_empty() && !image_tag.is_empty()).then(|| JellyfinImageRef {
+        item_id: item_id.to_owned(),
+        image_tag: image_tag.to_owned(),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +186,7 @@ pub struct JellyfinClient {
     base_url: Url,
     config: JellyfinConfig,
     api_key: String,
+    cache_fingerprint: [u8; 32],
 }
 
 impl JellyfinClient {
@@ -144,22 +195,56 @@ impl JellyfinClient {
         if !base_url.username().is_empty() || base_url.password().is_some() {
             return Err(Error::CredentialsInUrl);
         }
+        if !matches!(base_url.scheme(), "http" | "https") {
+            return Err(Error::InvalidScheme);
+        }
+        if base_url.query().is_some() || base_url.fragment().is_some() {
+            return Err(Error::QueryOrFragment);
+        }
         if !base_url.path().ends_with('/') {
             base_url.set_path(&format!("{}/", base_url.path().trim_end_matches('/')));
         }
         config.url = base_url.as_str().trim_end_matches('/').to_owned();
         config.library_ids.sort();
         config.library_ids.dedup();
+        let cache_fingerprint = config_fingerprint(&config, &api_key);
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
         Ok(Self {
-            client: Client::new(),
+            client,
             base_url,
             config,
             api_key,
+            cache_fingerprint,
         })
     }
 
     fn endpoint(&self, path: &str) -> Result<Url, Error> {
-        Ok(self.base_url.join(path.trim_start_matches('/'))?)
+        let endpoint = self.base_url.join(path.trim_start_matches('/'))?;
+        self.require_same_origin(endpoint)
+    }
+
+    fn image_endpoint(&self, item_id: &str) -> Result<Url, Error> {
+        let mut endpoint = self.base_url.clone();
+        endpoint
+            .path_segments_mut()
+            .map_err(|_| Error::CrossOrigin)?
+            .pop_if_empty()
+            .push("Items")
+            .push(item_id)
+            .push("Images")
+            .push("Primary");
+        self.require_same_origin(endpoint)
+    }
+
+    fn require_same_origin(&self, endpoint: Url) -> Result<Url, Error> {
+        if endpoint.origin() != self.base_url.origin() {
+            return Err(Error::CrossOrigin);
+        }
+        Ok(endpoint)
     }
 
     fn get(&self, path: &str) -> Result<reqwest::RequestBuilder, Error> {
@@ -169,21 +254,45 @@ impl JellyfinClient {
             .header("X-Emby-Token", &self.api_key))
     }
 
+    async fn bounded_json<T: DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<T, Error> {
+        let bytes = self.bounded_body(request, MAX_JSON_RESPONSE_BYTES).await?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    async fn bounded_body(
+        &self,
+        request: reqwest::RequestBuilder,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, Error> {
+        let response = request.send().await?;
+        if !response.status().is_success() {
+            return Err(Error::UnexpectedStatus(response.status().as_u16()));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > max_bytes as u64)
+        {
+            return Err(Error::JsonTooLarge);
+        }
+        let mut bytes = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if bytes.len().saturating_add(chunk.len()) > max_bytes {
+                return Err(Error::JsonTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
+    }
+
     pub async fn test_connection(&self) -> Result<ConnectionStatus, Error> {
-        let server: SystemInfo = self
-            .get("System/Info")?
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        let result: QueryResult<LibraryDto> = self
-            .get("Library/MediaFolders")?
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let server: SystemInfo = self.bounded_json(self.get("System/Info")?).await?;
+        let result: QueryResult<LibraryDto> =
+            self.bounded_json(self.get("Library/MediaFolders")?).await?;
         let mut libraries = Vec::new();
         for id in &self.config.library_ids {
             let library = result
@@ -207,19 +316,25 @@ impl JellyfinClient {
 
     pub async fn selected_items(&self) -> Result<Vec<JellyfinItem>, Error> {
         let mut items = Vec::new();
+        let mut response_bytes = 0usize;
         for library_id in &self.config.library_ids {
-            let result: QueryResult<JellyfinItem> = self
-                .get("Items")?
-                .query(&[
-                    ("parentId", library_id.as_str()),
-                    ("recursive", "true"),
-                    ("fields", "Path,ProviderIds,UserData"),
-                ])
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
+            let remaining = MAX_JSON_RESPONSE_BYTES
+                .checked_sub(response_bytes)
+                .ok_or(Error::JsonTooLarge)?;
+            let bytes = self
+                .bounded_body(
+                    self.get("Items")?.query(&[
+                        ("parentId", library_id.as_str()),
+                        ("recursive", "true"),
+                        ("fields", "Path,ProviderIds,UserData,ImageTags"),
+                    ]),
+                    remaining,
+                )
                 .await?;
+            response_bytes = response_bytes
+                .checked_add(bytes.len())
+                .ok_or(Error::JsonTooLarge)?;
+            let result: QueryResult<JellyfinItem> = serde_json::from_slice(&bytes)?;
             items.extend(result.items);
         }
         Ok(items)
@@ -227,12 +342,7 @@ impl JellyfinClient {
 
     pub async fn people(&self) -> Result<Vec<JellyfinPerson>, Error> {
         let result: QueryResult<JellyfinPerson> = self
-            .get("Persons")?
-            .query(&[("fields", "ImageTags")])
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
+            .bounded_json(self.get("Persons")?.query(&[("fields", "ImageTags")]))
             .await?;
         Ok(result.items)
     }
@@ -242,23 +352,61 @@ impl JellyfinClient {
         person: &JellyfinPerson,
         max_width: u32,
     ) -> Result<JellyfinImage, Error> {
-        let tag = person.primary_image_tag().unwrap_or_default();
+        let image = person
+            .primary_image_ref()
+            .ok_or(Error::MissingPrimaryImage)?;
+        self.primary_image_ref(&image, max_width).await
+    }
+
+    pub async fn primary_image_ref(
+        &self,
+        image: &JellyfinImageRef,
+        max_width: u32,
+    ) -> Result<JellyfinImage, Error> {
         let response = self
-            .get(&format!("Items/{}/Images/Primary", person.id))?
-            .query(&[("maxWidth", max_width.to_string()), ("tag", tag.to_owned())])
+            .client
+            .get(self.image_endpoint(&image.item_id)?)
+            .header("X-Emby-Token", &self.api_key)
+            .query(&[
+                ("maxWidth", max_width.to_string()),
+                ("tag", image.image_tag.clone()),
+            ])
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
+        if !response.status().is_success() {
+            return Err(Error::UnexpectedStatus(response.status().as_u16()));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > crate::artwork_image::MAX_ARTWORK_BYTES)
+        {
+            return Err(Error::ImageTooLarge);
+        }
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .unwrap_or("image/jpeg")
             .to_owned();
+        let mut bytes = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if bytes.len().saturating_add(chunk.len())
+                > crate::artwork_image::MAX_ARTWORK_BYTES as usize
+            {
+                return Err(Error::ImageTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         Ok(JellyfinImage {
-            bytes: response.bytes().await?.to_vec(),
+            bytes,
             content_type,
         })
+    }
+
+    pub(crate) fn cache_fingerprint(&self) -> &[u8; 32] {
+        &self.cache_fingerprint
     }
 
     pub fn open_url(&self, item_id: &str) -> String {
@@ -289,6 +437,22 @@ impl JellyfinClient {
         }
         RefreshOutcome::ManualRetryRequired { attempts }
     }
+}
+
+fn config_fingerprint(config: &JellyfinConfig, api_key: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"rust-jav-jellyfin-config-v1\0");
+    fingerprint_field(&mut hasher, config.url.as_bytes());
+    for library_id in &config.library_ids {
+        fingerprint_field(&mut hasher, library_id.as_bytes());
+    }
+    fingerprint_field(&mut hasher, api_key.as_bytes());
+    hasher.finalize().into()
+}
+
+fn fingerprint_field(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
 }
 
 #[derive(Debug, Clone, Copy)]

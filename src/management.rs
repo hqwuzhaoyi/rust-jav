@@ -15,7 +15,7 @@ use argon2::{
     Argon2,
 };
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{Path as AxumPath, Query, State},
     http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri},
     response::{
@@ -43,15 +43,18 @@ use std::convert::Infallible;
 
 use crate::{
     application::{ApplicationServices, OperationsRequest},
+    artwork_image::{self, ValidatedImage},
     asset_index::{AssetIndex, AssetQuery, AssetState, MediaRootHealth, ScanMode},
     deletion_plan::{
         DeletionOutcomeStatus, FileType as DeletionFileType, PermanentDeletionPlan,
         PermanentDeletionPlanner, RelatedHardLink,
     },
+    image_blocking::{self, ImageBlockingBudget},
     jellyfin::{
-        associate, match_person, JellyfinClient, JellyfinConfig, JellyfinImage, JellyfinPerson,
-        RefreshOutcome, RetryPolicy,
+        associate, match_person, AssociationConfidence, JellyfinClient, JellyfinConfig,
+        JellyfinImageRef, JellyfinItem, JellyfinPerson, RefreshOutcome, RetryPolicy,
     },
+    jellyfin_image_cache::{self, JellyfinImageCache},
     management_tasks::{NewTask, TaskCoordinator, TaskKind, TaskStore},
     operations::{ConfirmedAction, SourceIdentity},
     tui::{executor::PlannedAction, state::OperationType},
@@ -59,6 +62,9 @@ use crate::{
 
 const PASSWORD_ENV: &str = "RUST_JAV_ADMIN_PASSWORD";
 const COOKIE_NAME: &str = "rust_jav_session";
+const MAX_IN_FLIGHT_IMAGE_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_LOADING_IMAGE_RESPONSES: usize = 4;
+const IMAGE_RESPONSE_BUDGET_WAIT: Duration = Duration::from_millis(250);
 const INDEX_HTML: &[u8] = include_bytes!("../frontend/dist/index.html");
 const APP_JS: &[u8] = include_bytes!("../frontend/dist/assets/app.js");
 const APP_CSS: &[u8] = include_bytes!("../frontend/dist/assets/app.css");
@@ -510,6 +516,10 @@ pub struct AppState {
     assets: AssetIndex,
     deletion_plans: Arc<Mutex<HashMap<String, StoredDeletionPlan>>>,
     jellyfin_people_cache: Arc<tokio::sync::Mutex<Option<CachedJellyfinPeople>>>,
+    jellyfin_items_cache: Arc<tokio::sync::Mutex<Option<CachedJellyfinItems>>>,
+    jellyfin_image_cache: JellyfinImageCache,
+    image_response_budget: ImageResponseBudget,
+    image_blocking_budget: ImageBlockingBudget,
     database: PathBuf,
 }
 
@@ -517,6 +527,91 @@ pub struct AppState {
 struct CachedJellyfinPeople {
     fetched_at: Instant,
     people: Vec<JellyfinPerson>,
+}
+
+#[derive(Clone)]
+struct CachedJellyfinItems {
+    fetched_at: Instant,
+    config_fingerprint: [u8; 32],
+    items: Arc<Vec<JellyfinItem>>,
+}
+
+#[derive(Clone)]
+struct ImageResponseBudget {
+    bytes: Arc<tokio::sync::Semaphore>,
+    loading: Arc<tokio::sync::Semaphore>,
+}
+
+struct ImageResponseAdmission {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+enum ImagePayload {
+    Owned(Vec<u8>),
+    Cached(Arc<ValidatedImage>),
+}
+
+impl ImagePayload {
+    fn len(&self) -> usize {
+        self.as_ref().len()
+    }
+}
+
+impl AsRef<[u8]> for ImagePayload {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Owned(bytes) => bytes,
+            Self::Cached(image) => &image.bytes,
+        }
+    }
+}
+
+struct BudgetedImagePayload {
+    payload: ImagePayload,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl AsRef<[u8]> for BudgetedImagePayload {
+    fn as_ref(&self) -> &[u8] {
+        self.payload.as_ref()
+    }
+}
+
+impl ImageResponseBudget {
+    fn new() -> Self {
+        Self {
+            bytes: Arc::new(tokio::sync::Semaphore::new(
+                MAX_IN_FLIGHT_IMAGE_RESPONSE_BYTES,
+            )),
+            loading: Arc::new(tokio::sync::Semaphore::new(MAX_LOADING_IMAGE_RESPONSES)),
+        }
+    }
+
+    async fn admit(&self) -> Result<ImageResponseAdmission, ()> {
+        let permit = tokio::time::timeout(
+            IMAGE_RESPONSE_BUDGET_WAIT,
+            self.loading.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())?;
+        Ok(ImageResponseAdmission { _permit: permit })
+    }
+
+    async fn bytes(&self, payload: ImagePayload) -> Result<Bytes, ()> {
+        let permits = u32::try_from(payload.len()).map_err(|_| ())?;
+        let permit = tokio::time::timeout(
+            IMAGE_RESPONSE_BUDGET_WAIT,
+            self.bytes.clone().acquire_many_owned(permits),
+        )
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())?;
+        Ok(Bytes::from_owner(BudgetedImagePayload {
+            payload,
+            _permit: permit,
+        }))
+    }
 }
 
 #[derive(Clone)]
@@ -620,6 +715,11 @@ impl AppState {
                 message: source.to_string(),
             })?;
         let now = clock.unix_seconds();
+        let image_blocking_budget = ImageBlockingBudget::new();
+        let jellyfin_image_cache = JellyfinImageCache::new(
+            config.artwork_cache_root.clone(),
+            image_blocking_budget.clone(),
+        );
         let database = config.database_file.clone();
         let tasks = TaskStore::open(&database)?;
         let assets = AssetIndex::open(&database)?;
@@ -658,6 +758,10 @@ impl AppState {
             assets,
             deletion_plans: Arc::new(Mutex::new(HashMap::new())),
             jellyfin_people_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            jellyfin_items_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            jellyfin_image_cache,
+            image_response_budget: ImageResponseBudget::new(),
+            image_blocking_budget,
             database,
         })
     }
@@ -685,6 +789,40 @@ impl AppState {
             people: people.clone(),
         });
         Ok(people)
+    }
+
+    async fn jellyfin_items(
+        &self,
+        client: &JellyfinClient,
+    ) -> Result<Arc<Vec<JellyfinItem>>, crate::jellyfin::Error> {
+        const ITEMS_CACHE_TTL: Duration = Duration::from_millis(250);
+        let fingerprint = *client.cache_fingerprint();
+        let mut cache = self.jellyfin_items_cache.lock().await;
+        if let Some(snapshot) = cache.as_ref() {
+            if snapshot.config_fingerprint == fingerprint
+                && snapshot.fetched_at.elapsed() < ITEMS_CACHE_TTL
+            {
+                return Ok(snapshot.items.clone());
+            }
+        }
+        let items = Arc::new(client.selected_items().await?);
+        *cache = Some(CachedJellyfinItems {
+            fetched_at: Instant::now(),
+            config_fingerprint: fingerprint,
+            items: items.clone(),
+        });
+        Ok(items)
+    }
+
+    async fn invalidate_jellyfin_items(&self, client: &JellyfinClient) {
+        let fingerprint = client.cache_fingerprint();
+        let mut cache = self.jellyfin_items_cache.lock().await;
+        if cache
+            .as_ref()
+            .is_some_and(|snapshot| &snapshot.config_fingerprint == fingerprint)
+        {
+            *cache = None;
+        }
     }
 }
 
@@ -1050,6 +1188,52 @@ struct AssetQueryParams {
     per_page: Option<usize>,
 }
 
+fn associated_primary_image(
+    path: &str,
+    jav_code: Option<&str>,
+    title: Option<&str>,
+    items: &[crate::jellyfin::JellyfinItem],
+) -> Option<JellyfinImageRef> {
+    let association = associate(path, jav_code, title, items)?;
+    if association.confidence != AssociationConfidence::CertainPath {
+        return None;
+    }
+    items
+        .iter()
+        .find(|item| item.id == association.item_id)?
+        .primary_image_ref()
+}
+
+async fn add_jellyfin_artwork_urls(
+    state: &AppState,
+    assets: &mut [crate::asset_index::MediaAsset],
+) {
+    if assets.iter().all(|asset| asset.artwork_url.is_some()) {
+        return;
+    }
+    let Ok(Some(client)) = jellyfin_client(state) else {
+        return;
+    };
+    let Ok(items) = state.jellyfin_items(&client).await else {
+        return;
+    };
+    for asset in assets
+        .iter_mut()
+        .filter(|asset| asset.artwork_url.is_none())
+    {
+        if associated_primary_image(
+            &asset.path,
+            asset.jav_code.as_deref(),
+            asset.title.as_deref(),
+            &items,
+        )
+        .is_some()
+        {
+            asset.artwork_url = Some(format!("/api/v1/assets/{}/artwork", asset.id));
+        }
+    }
+}
+
 async fn list_assets(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1077,7 +1261,10 @@ async fn list_assets(
         page: input.page.unwrap_or(1),
         per_page: input.per_page.unwrap_or(48),
     }) {
-        Ok(page) => Json(page).into_response(),
+        Ok(mut page) => {
+            add_jellyfin_artwork_urls(&state, &mut page.items).await;
+            Json(page).into_response()
+        }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -1184,21 +1371,94 @@ async fn indexed_artwork(
     if let Err(status) = authorized(&state, &headers) {
         return status.into_response();
     }
-    let Ok(_permit) = ARTWORK_READ_LIMIT.acquire().await else {
+    let Ok(_response_admission) = state.image_response_budget.admit().await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let assets = state.assets.clone();
-    let Ok(Ok(Some(artwork))) =
-        tokio::task::spawn_blocking(move || assets.read_indexed_artwork(&asset_id)).await
-    else {
+    let local = {
+        let Ok(_permit) = ARTWORK_READ_LIMIT.acquire().await else {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        };
+        let assets = state.assets.clone();
+        let local_asset_id = asset_id.clone();
+        state
+            .image_blocking_budget
+            .run(artwork_image::MAX_ARTWORK_BYTES as usize, move || {
+                assets.read_indexed_artwork(&local_asset_id)
+            })
+            .await
+    };
+    match local {
+        Ok(Ok(Some(artwork))) => {
+            return image_response(
+                &state.image_response_budget,
+                ImagePayload::Owned(artwork.bytes),
+                artwork.content_type,
+            )
+            .await;
+        }
+        Ok(Ok(None)) => {}
+        Ok(Err(_)) | Err(image_blocking::Error::Worker) => {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(image_blocking::Error::Busy) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+
+    let detail = match state.assets.detail(&asset_id) {
+        Ok(Some(detail)) => detail,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let client = match jellyfin_client(&state) {
+        Ok(Some(client)) => client,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(status) => return status.into_response(),
+    };
+    let items = match state.jellyfin_items(&client).await {
+        Ok(items) => items,
+        Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
+    };
+    let Some(image) = associated_primary_image(
+        &detail.path,
+        detail.jav_code.as_deref(),
+        detail.title.as_deref(),
+        &items,
+    ) else {
+        state.invalidate_jellyfin_items(&client).await;
         return StatusCode::NOT_FOUND.into_response();
+    };
+    let result = state.jellyfin_image_cache.get(&client, &image, 960).await;
+    state.invalidate_jellyfin_items(&client).await;
+    match result {
+        Ok(image) => {
+            let content_type = image.content_type;
+            image_response(
+                &state.image_response_budget,
+                ImagePayload::Cached(image),
+                content_type,
+            )
+            .await
+        }
+        Err(jellyfin_image_cache::Error::Upstream(_))
+        | Err(jellyfin_image_cache::Error::Invalid(_)) => StatusCode::BAD_GATEWAY.into_response(),
+        Err(jellyfin_image_cache::Error::Busy) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn image_response(
+    budget: &ImageResponseBudget,
+    payload: ImagePayload,
+    content_type: &'static str,
+) -> axum::response::Response {
+    let Ok(bytes) = budget.bytes(payload).await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, artwork.content_type)
-        .header(header::CACHE_CONTROL, "private, max-age=3600")
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "private, no-cache")
         .header("X-Content-Type-Options", "nosniff")
-        .body(Body::from(artwork.bytes))
+        .body(Body::from(bytes))
         .unwrap()
         .into_response()
 }
@@ -1516,7 +1776,21 @@ async fn asset_detail(
                             .map_or(serde_json::Value::Null, serde_json::Value::String);
                     }
                 }
-                if let Ok(items) = client.selected_items().await {
+                if let Ok(items) = state.jellyfin_items(&client).await {
+                    if detail.artwork_url.is_none()
+                        && associated_primary_image(
+                            &detail.path,
+                            detail.jav_code.as_deref(),
+                            detail.title.as_deref(),
+                            &items,
+                        )
+                        .is_some()
+                    {
+                        value["artwork_url"] = serde_json::Value::String(format!(
+                            "/api/v1/assets/{}/artwork",
+                            detail.id
+                        ));
+                    }
                     if let Some(association) = associate(
                         &detail.path,
                         detail.jav_code.as_deref(),
@@ -1658,7 +1932,8 @@ async fn actor_folder_confirmation(
                 _ => false,
             };
             match state.assets.assets_by_identities(&identities) {
-                Ok(assets) => {
+                Ok(mut assets) => {
+                    add_jellyfin_artwork_urls(&state, &mut assets).await;
                     Json(actor_response(detail.folder, assets, has_portrait)).into_response()
                 }
                 Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1677,6 +1952,9 @@ async fn actor_poster(
     if let Err(status) = authorized(&state, &headers) {
         return status.into_response();
     }
+    let Ok(_response_admission) = state.image_response_budget.admit().await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
     let Some(root) = state.config.actor_view_root.as_deref() else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -1692,56 +1970,31 @@ async fn actor_poster(
     let Some(person) = match_person(&folder.folder.name, &people) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Ok(image) = cached_person_image(&state, &client, person).await else {
-        return StatusCode::BAD_GATEWAY.into_response();
+    let Some(image_ref) = person.primary_image_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
     };
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, image.content_type)
-        .header(header::CACHE_CONTROL, "private, max-age=3600")
-        .header("X-Content-Type-Options", "nosniff")
-        .body(Body::from(image.bytes))
-        .unwrap()
-        .into_response()
-}
-
-async fn cached_person_image(
-    state: &AppState,
-    client: &JellyfinClient,
-    person: &JellyfinPerson,
-) -> Result<JellyfinImage, crate::jellyfin::Error> {
-    let cache_paths = state.config.artwork_cache_root.as_ref().map(|root| {
-        let mut hasher = Sha256::new();
-        hasher.update(person.id.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(person.primary_image_tag().unwrap_or_default().as_bytes());
-        hasher.update(b"\0width=320");
-        let key = format!("{:x}", hasher.finalize());
-        let directory = root.join("jellyfin-people");
-        (
-            directory.join(format!("{key}.image")),
-            directory.join(format!("{key}.type")),
-        )
-    });
-    if let Some((image_path, type_path)) = &cache_paths {
-        if let (Ok(bytes), Ok(content_type)) = (fs::read(image_path), fs::read_to_string(type_path))
-        {
-            return Ok(JellyfinImage {
-                bytes,
-                content_type,
-            });
+    let image = match state
+        .jellyfin_image_cache
+        .get(&client, &image_ref, 320)
+        .await
+    {
+        Ok(image) => image,
+        Err(jellyfin_image_cache::Error::Upstream(_))
+        | Err(jellyfin_image_cache::Error::Invalid(_)) => {
+            return StatusCode::BAD_GATEWAY.into_response()
         }
-    }
-    let image = client.primary_image(person, 320).await?;
-    if let Some((image_path, type_path)) = cache_paths {
-        if let Some(directory) = image_path.parent() {
-            if fs::create_dir_all(directory).is_ok() {
-                let _ = fs::write(image_path, &image.bytes);
-                let _ = fs::write(type_path, image.content_type.as_bytes());
-            }
+        Err(jellyfin_image_cache::Error::Busy) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response()
         }
-    }
-    Ok(image)
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let content_type = image.content_type;
+    image_response(
+        &state.image_response_budget,
+        ImagePayload::Cached(image),
+        content_type,
+    )
+    .await
 }
 
 async fn remove_actor_folder_task(
@@ -1991,6 +2244,7 @@ async fn put_jellyfin_config(
         }
     }
     *state.jellyfin_people_cache.lock().await = None;
+    *state.jellyfin_items_cache.lock().await = None;
     StatusCode::NO_CONTENT
 }
 
@@ -2700,7 +2954,7 @@ fn openapi_document() -> serde_json::Value {
             "/api/v1/assets/{asset_id}":{"get":{"summary":"Get parsed NFO and Actor information for a Media Asset","parameters":[{"name":"asset_id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Asset detail","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AssetDetail"}}}},"404":{"description":"Media Asset not found"}}}},
             "/api/v1/assets/health":{"get":{"summary":"Get Asset Index reconciliation health","responses":{"200":{"description":"Index health"}}}},
             "/api/v1/assets/scan":{"post":{"summary":"Run manual or incremental reconciliation","requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ScanAssetsRequest"}}}},"responses":{"200":{"description":"Reconciled"},"422":{"description":"Filesystem scan failed"}}}},
-            "/api/v1/assets/{asset_id}/artwork":{"get":{"summary":"Serve artwork belonging to an indexed Media Asset","parameters":[{"name":"asset_id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Indexed image","content":{"image/jpeg":{},"image/png":{},"image/webp":{}}},"404":{"description":"No indexed artwork"}}}},
+            "/api/v1/assets/{asset_id}/artwork":{"get":{"summary":"Serve validated local artwork or a certain Jellyfin Primary fallback","parameters":[{"name":"asset_id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Validated image served by rust-jav","content":{"image/jpeg":{},"image/png":{},"image/webp":{}}},"404":{"description":"No authorized artwork source"},"502":{"description":"Jellyfin image unavailable or invalid"}}}},
             "/api/v1/deletion-candidates":{"get":{"summary":"Browse Active Rule Set Deletion Candidates","responses":{"200":{"description":"Current candidates and sizes"}}}},
             "/api/v1/deletion-plans":{"post":{"summary":"Create a selected or unified permanent-deletion Operation Plan","responses":{"201":{"description":"Time-limited plan"}}}},
             "/api/v1/deletion-plans/{plan_id}/execute":{"post":{"summary":"Consume and execute an irreversibly confirmed Operation Plan","responses":{"202":{"description":"Persistent Management Task"},"409":{"description":"Expired or unconfirmed"}}}},
