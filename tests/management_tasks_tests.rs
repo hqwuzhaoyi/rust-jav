@@ -150,3 +150,49 @@ async fn previews_do_not_wait_for_a_media_root_mutation() {
         .await
         .expect("preview should remain available while a mutation runs");
 }
+
+#[test]
+fn permanent_deletion_intent_identity_and_token_are_durable_before_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("tasks.sqlite3");
+    let store = TaskStore::open(&database).unwrap();
+    assert!(store
+        .create_deletion_mutation("/media", 99, &serde_json::json!({"id":"incomplete"}))
+        .is_err());
+    let task = store
+        .create_deletion_mutation(
+            "/media",
+            100,
+            &serde_json::json!({
+                "id": "plan-1",
+                "created_at": 100,
+                "expires_at": 700,
+                "selection": "selected",
+                "hard_link_search_roots": ["/media"],
+                "paths": [{"path": "/media/movie.mp4"}],
+                "rule_set_version": 3,
+                "rules": ["delete-*"]
+            }),
+        )
+        .unwrap();
+    store.mark_running(&task.id, 101).unwrap();
+
+    let started = store
+        .start_deletion_item(&task.id, "/media/movie.mp4", 17, 42)
+        .unwrap();
+    assert_eq!(
+        started.quarantine_token,
+        format!(".rust-jav-quarantine-item-{}", started.id)
+    );
+    drop(store);
+
+    let reopened = TaskStore::open(&database).unwrap();
+    let item = &reopened.get(&task.id).unwrap().unwrap().items[0];
+    assert_eq!(item.status, "running");
+    assert_eq!(item.mutation_phase.as_deref(), Some("intent"));
+    assert_eq!(item.intent.as_deref(), Some("permanent_delete"));
+    assert_eq!(item.identity_device, Some(17));
+    assert_eq!(item.identity_inode, Some(42));
+    assert_eq!(item.source_path.as_deref(), Some("/media/movie.mp4"));
+    assert_eq!(item.quarantine_token, Some(started.quarantine_token));
+}

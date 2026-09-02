@@ -630,7 +630,10 @@ impl AppState {
           );").map_err(crate::asset_index::Error::from)?;
         let deletion_roots = deletion_search_roots(&config);
         for item in tasks.running_mutation_items()? {
-            let message = match (item.source_path.as_deref(), item.quarantine_token.as_deref()) {
+            let (recovery_status, message) = match (
+                item.source_path.as_deref(),
+                item.quarantine_token.as_deref(),
+            ) {
                 (Some(source), Some(token)) => {
                     let source = Path::new(source);
                     let recovery_root = if item.task_type == "permanent_deletion" {
@@ -643,18 +646,40 @@ impl AppState {
                         Some(Path::new(&item.media_root))
                     };
                     match recovery_root {
-                        Some(root) => crate::operations::recover_durable_quarantine(
-                            root, source, token,
+                        Some(root) if item.intent.as_deref() == Some("permanent_delete") => {
+                            let recovery = crate::operations::recover_durable_deletion(
+                                root,
+                                source,
+                                token,
+                                item.mutation_phase.as_deref(),
+                                item.identity_device,
+                                item.identity_inode,
+                            );
+                            (Some(recovery.status), recovery.message)
+                        }
+                        Some(root) => (
+                            None,
+                            crate::operations::recover_durable_quarantine(root, source, token),
                         ),
-                        None => format!(
-                            "interrupted permanent deletion: source {} is outside configured recovery roots; quarantine token {token} remains for manual inspection",
-                            source.display()
+                        None => (
+                            Some("interrupted"),
+                            format!(
+                                "interrupted permanent deletion: source {} is outside configured recovery roots; quarantine token {token} remains for manual inspection",
+                                source.display()
+                            ),
                         ),
                     }
                 }
-                _ => "interrupted mutation: running item has no durable quarantine locator; inspect its source and planned target manually".to_string(),
+                _ => (
+                    Some("interrupted"),
+                    "interrupted mutation: running item has no durable quarantine locator; inspect its source and planned target manually".to_string(),
+                ),
             };
-            tasks.interrupt_item(item.id, &message)?;
+            if let Some(status) = recovery_status {
+                tasks.recover_deletion_item(item.id, status, &message)?;
+            } else {
+                tasks.interrupt_item(item.id, &message)?;
+            }
         }
         // A missing or incorrectly-permissioned TrueNAS mount degrades the
         // rebuildable index; it must not prevent the diagnostic API starting.
@@ -1447,19 +1472,18 @@ async fn execute_deletion_plan(
     let Some(stored) = state.deletion_plans.lock().unwrap().remove(&plan_id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let task = match state.tasks.create(
-        NewTask::mutation(
-            "permanent_deletion",
-            stored
-                .plan
-                .hard_link_search_roots
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(","),
-        ),
-        state.now(),
-    ) {
+    let authority = plan_json(&plan_id, &stored);
+    let task_media_root = stored
+        .plan
+        .hard_link_search_roots
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let task = match state
+        .tasks
+        .create_deletion_mutation(&task_media_root, state.now(), &authority)
+    {
         Ok(task) => task,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -1468,42 +1492,11 @@ async fn execute_deletion_plan(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     let planner = PermanentDeletionPlanner::new(stored.plan.hard_link_search_roots.clone());
-    let starting_tasks = state.tasks.clone();
-    let finishing_tasks = state.tasks.clone();
-    let starting_task_id = task.id.clone();
-    let finishing_task_id = task.id.clone();
-    let result = match planner.execute_journaled(
+    let result = match planner.execute(
         &stored.plan,
         UNIX_EPOCH + Duration::from_secs(state.now()),
-        move |path| {
-            let source = path.path.to_str().ok_or_else(|| {
-                "approved path is not UTF-8 and cannot be durably journaled".to_string()
-            })?;
-            starting_tasks
-                .start_item(
-                    &starting_task_id,
-                    "permanent_deletion",
-                    Some(source),
-                    Some(source),
-                )
-                .map(|journal| (journal.id, journal.quarantine_token))
-                .map_err(|error| error.to_string())
-        },
-        move |item_id, outcome| {
-            let status = match outcome.status {
-                DeletionOutcomeStatus::Deleted => "deleted",
-                DeletionOutcomeStatus::Changed => "changed",
-                DeletionOutcomeStatus::Failed => "failed",
-            };
-            finishing_tasks
-                .complete_item(
-                    &finishing_task_id,
-                    item_id,
-                    status,
-                    outcome.message.as_deref(),
-                )
-                .map_err(|error| error.to_string())
-        },
+        &state.tasks,
+        &task.id,
     ) {
         Ok(result) => result,
         Err(PlanExecutionError::Expired) => {
@@ -1535,7 +1528,7 @@ async fn execute_deletion_plan(
     let audit = serde_json::json!({
         "administrator": "Administrator", "time": state.now(), "task_id": task.id,
         "active_rule_set": {"version": stored.rule_version, "rules": stored.rules},
-        "operation_plan": plan_json(&plan_id, &stored),
+        "operation_plan": authority,
         "outcomes": result.outcomes.iter().map(|outcome| serde_json::json!({"path":outcome.path,"status":format!("{:?}", outcome.status).to_ascii_lowercase(),"message":outcome.message})).collect::<Vec<_>>(),
         "partial": result.partial, "rolled_back": false
     });
@@ -2848,6 +2841,10 @@ fn openapi_document() -> serde_json::Value {
     let item_properties = &mut document["components"]["schemas"]["TaskItem"]["properties"];
     item_properties["source_path"] = serde_json::json!({"type":["string","null"]});
     item_properties["quarantine_token"] = serde_json::json!({"type":["string","null"]});
+    item_properties["intent"] = serde_json::json!({"type":["string","null"]});
+    item_properties["mutation_phase"] = serde_json::json!({"type":["string","null"],"enum":["intent","quarantined","restoring_replacement","restored","unlinking","unlinked","finished","recovered",null]});
+    item_properties["identity_device"] = serde_json::json!({"type":["integer","null"],"minimum":0});
+    item_properties["identity_inode"] = serde_json::json!({"type":["integer","null"],"minimum":0});
     document["paths"]["/api/v1/tasks"]["get"]["parameters"] = serde_json::json!([
         {"name":"limit","in":"query","schema":{"type":"integer","minimum":1,"maximum":200}},
         {"name":"offset","in":"query","schema":{"type":"integer","minimum":0}}
