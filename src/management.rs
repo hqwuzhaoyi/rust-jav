@@ -351,15 +351,7 @@ fn inspect_mount(path: &Path, role: MountRole) -> Result<MountReport, Error> {
         }
         Err(_) => false,
     };
-    if !readable || !writable {
-        return Err(Error::Deployment(format!(
-            "Host Path '{}' is not {} for container UID {} / GID {}; update its TrueNAS ACL",
-            path.display(),
-            if !readable { "readable" } else { "writable" },
-            unsafe { libc::geteuid() },
-            unsafe { libc::getegid() }
-        )));
-    }
+    validate_mount_access(path, role, readable, writable)?;
     Ok(MountReport {
         role,
         path: path.to_owned(),
@@ -368,6 +360,28 @@ fn inspect_mount(path: &Path, role: MountRole) -> Result<MountReport, Error> {
         device: metadata.dev(),
         same_filesystem_as_media: None,
     })
+}
+
+fn validate_mount_access(
+    path: &Path,
+    role: MountRole,
+    readable: bool,
+    writable: bool,
+) -> Result<(), Error> {
+    let startup_write_required = matches!(
+        role,
+        MountRole::Configuration | MountRole::Sqlite | MountRole::ArtworkCache
+    );
+    if !readable || (startup_write_required && !writable) {
+        return Err(Error::Deployment(format!(
+            "Host Path '{}' is not {} for container UID {} / GID {}; update its TrueNAS ACL",
+            path.display(),
+            if !readable { "readable" } else { "writable" },
+            unsafe { libc::geteuid() },
+            unsafe { libc::getegid() }
+        )));
+    }
+    Ok(())
 }
 
 fn mount_error(path: &Path, error: &std::io::Error) -> Error {
@@ -975,7 +989,18 @@ async fn health_ready(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn health_mounts(State(state): State<AppState>) -> impl IntoResponse {
     match state.config.validate_truenas_mounts() {
-        Ok(report) => Json(serde_json::json!({"ready":true,"report":report})).into_response(),
+        Ok(report) if report.mounts.iter().all(|mount| mount.writable) => {
+            Json(serde_json::json!({"ready":true,"report":report})).into_response()
+        }
+        Ok(report) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "ready": false,
+                "detail": "one or more data Host Paths are read-only or out of space",
+                "report": report
+            })),
+        )
+            .into_response(),
         Err(error) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({"ready":false,"detail":error.to_string()})),
@@ -3191,7 +3216,8 @@ pub async fn serve(config: ManagementConfig) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::actor_poster_url;
+    use super::{actor_poster_url, validate_mount_access, MountRole};
+    use std::path::Path;
 
     #[test]
     fn actor_poster_urls_encode_one_path_segment() {
@@ -3199,5 +3225,15 @@ mod tests {
             actor_poster_url("Alice #100%"),
             "/api/v1/actors/Alice%20%23100%25/poster"
         );
+    }
+
+    #[test]
+    fn full_data_mounts_degrade_without_blocking_container_startup() {
+        let path = Path::new("/media");
+        assert!(validate_mount_access(path, MountRole::MediaRoot, true, false).is_ok());
+        assert!(validate_mount_access(path, MountRole::ActorView, true, false).is_ok());
+        assert!(validate_mount_access(path, MountRole::MediaRoot, false, false).is_err());
+        assert!(validate_mount_access(path, MountRole::Sqlite, true, false).is_err());
+        assert!(validate_mount_access(path, MountRole::ArtworkCache, true, false).is_err());
     }
 }
