@@ -2867,7 +2867,10 @@ function ActorFolders({
           <ControlButton className="actor-folder-open" aria-label={`Open ${actor.name}`} onClick={() => inspect(actor)}>
             <div className="actor-folder-poster" style={{ aspectRatio: "2 / 3" }}>
               <ActorPortrait actor={actor} loading="lazy" />
-              <div><b>{actor.name}</b><p>{actor.movie_count} linked Media Assets</p></div>
+              <div>
+                <b>{actor.name}</b>
+                <p>{actor.movie_count} Media Assets · {formatBytes(actor.logical_size)}</p>
+              </div>
             </div>
           </ControlButton>
           <ControlButton density="compact" className="actor-remove" disabled={busy} onClick={() => void remove(actor)}>

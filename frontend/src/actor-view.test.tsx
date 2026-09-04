@@ -188,6 +188,7 @@ describe("Issue #40 Actor Folder prototype cards", () => {
     });
     expect(portrait).toHaveAttribute("src", posterUrl);
     expect(portrait).toHaveAttribute("loading", "lazy");
+    expect(within(portraitCard).getByText("2 Media Assets · 4.9 GiB")).toBeVisible();
     expect(
       getComputedStyle(portraitCard.querySelector(".actor-folder-poster") as HTMLElement)
         .aspectRatio,
@@ -196,6 +197,7 @@ describe("Issue #40 Actor Folder prototype cards", () => {
     const fallbackCard = screen.getByRole("button", {
       name: `Open ${longActorName}`,
     });
+    expect(within(fallbackCard).getByText("0 Media Assets · 0 B")).toBeVisible();
     expect(
       within(fallbackCard).getByRole("img", {
         name: `${longActorName} portrait unavailable`,
