@@ -12,7 +12,9 @@ import { createRoot } from "react-dom/client";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   Clock3,
   Film,
   Grid2X2,
@@ -220,6 +222,8 @@ type ActorFolder = {
   linked_assets?: Asset[];
 };
 type LoadState = "idle" | "loading" | "ready" | "error";
+type ActorSortKey = "name" | "count" | "size";
+type SortDirection = "asc" | "desc";
 type Task = {
   id: string;
   task_type: string;
@@ -2836,6 +2840,22 @@ function ActorFolders({
   remove: (actor: ActorFolder) => Promise<void>;
   retry: () => void;
 }) {
+  const [sortKey, setSortKey] = useState<ActorSortKey>("name");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const sortedActors = useMemo(() => {
+    const nameOrder = (left: ActorFolder, right: ActorFolder) =>
+      left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+    return [...actors].sort((left, right) => {
+      const order =
+        sortKey === "count"
+          ? left.movie_count - right.movie_count
+          : sortKey === "size"
+            ? left.logical_size - right.logical_size
+            : nameOrder(left, right);
+      if (order === 0) return nameOrder(left, right);
+      return sortDirection === "asc" ? order : -order;
+    });
+  }, [actors, sortDirection, sortKey]);
   if (state === "loading")
     return (
       <div className="actor-feedback" role="status" aria-label="Loading Actor Folders">
@@ -2861,8 +2881,35 @@ function ActorFolders({
       </div>
     );
   return (
-    <div className="actor-folder-grid">
-      {actors.map((actor) => (
+    <>
+      <div className="actor-sort-toolbar" aria-label="演员排序">
+        <label>
+          <span>排序</span>
+          <select
+            aria-label="演员排序字段"
+            value={sortKey}
+            onChange={(event) => {
+              const nextKey = event.target.value as ActorSortKey;
+              setSortKey(nextKey);
+              setSortDirection(nextKey === "name" ? "asc" : "desc");
+            }}
+          >
+            <option value="name">演员名</option>
+            <option value="count">资产数量</option>
+            <option value="size">Logical Size</option>
+          </select>
+        </label>
+        <ControlButton
+          className="actor-sort-direction"
+          aria-label={sortDirection === "asc" ? "切换为降序" : "切换为升序"}
+          onClick={() => setSortDirection((current) => current === "asc" ? "desc" : "asc")}
+        >
+          {sortDirection === "asc" ? <ArrowUp aria-hidden="true" /> : <ArrowDown aria-hidden="true" />}
+          {sortDirection === "asc" ? "升序" : "降序"}
+        </ControlButton>
+      </div>
+      <div className="actor-folder-grid">
+      {sortedActors.map((actor) => (
         <article className="actor-folder-card" key={actor.name}>
           <ControlButton className="actor-folder-open" aria-label={`Open ${actor.name}`} onClick={() => inspect(actor)}>
             <div className="actor-folder-poster" style={{ aspectRatio: "2 / 3" }}>
@@ -2878,7 +2925,8 @@ function ActorFolders({
           </ControlButton>
         </article>
       ))}
-    </div>
+      </div>
+    </>
   );
 }
 function ActorInspector({

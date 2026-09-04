@@ -219,6 +219,56 @@ describe("Issue #40 Actor Folder prototype cards", () => {
     await userEvent.keyboard("{Enter}");
     expect(await screen.findByRole("dialog", { name: longActorName })).toBeVisible();
   });
+
+  it("sorts Actor Folders by name, asset count, or Logical Size in either direction", async () => {
+    const largeActor = {
+      ...actor,
+      name: "Zeta",
+      movie_count: 1,
+      logical_size: 10 * 1024 ** 3,
+    };
+    const emptyActor = {
+      ...actor,
+      name: "Empty Actor",
+      movie_count: 0,
+      logical_size: 0,
+    };
+    stubActorApi({ actors: [emptyActor, largeActor, actor] });
+    render(<App />);
+    await openActors();
+
+    const actorOrder = () =>
+      screen
+        .getAllByRole("button", { name: /^Open / })
+        .map((button) => button.getAttribute("aria-label"));
+
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "演员排序字段" }),
+      "count",
+    );
+    expect(actorOrder()).toEqual([
+      `Open ${actorName}`,
+      "Open Zeta",
+      "Open Empty Actor",
+    ]);
+
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "演员排序字段" }),
+      "size",
+    );
+    expect(actorOrder()).toEqual([
+      "Open Zeta",
+      `Open ${actorName}`,
+      "Open Empty Actor",
+    ]);
+
+    await userEvent.click(screen.getByRole("button", { name: "切换为升序" }));
+    expect(actorOrder()).toEqual([
+      "Open Empty Actor",
+      `Open ${actorName}`,
+      "Open Zeta",
+    ]);
+  });
 });
 
 describe("Issue #40 responsive ActorInspector", () => {
