@@ -33,16 +33,17 @@ describe("Issue #47 explicit touch target contracts", () => {
 
   it("keeps intentional compact and 44px controls explicit after global coupling is removed", () => {
     const touchTarget = control("ui-touch-target");
-    const filter = control("", "filters");
-    const actorRemove = control("actor-remove");
+    const filter = control("ui-touch-target", "beui-tabs-list");
+    filter.parentElement?.setAttribute("data-variant", "segment");
+    const actorMenu = control("actor-action-menu-trigger ui-touch-target ui-icon-button");
     const pagination = control("", "pagination");
     const tabs = control("", "beui-tabs-list");
     tabs.parentElement?.setAttribute("data-variant", "underline");
     const bottomNav = control("ui-touch-target", "bottom-nav");
 
     expect(productionValue(touchTarget, "min-height")).toBe("44px");
-    expect(productionStyle(filter).minHeight).toBe("36px");
-    expect(productionStyle(actorRemove).minHeight).toBe("38px");
+    expect(productionStyle(filter).minHeight).toBe("38px");
+    expect(productionValue(actorMenu, "min-height")).toBe("44px");
     expect(productionStyle(pagination).minHeight).toBe("44px");
     expect(productionValue(tabs, "min-height")).toBe("44px");
     expect(productionValue(bottomNav, "min-height")).toBe("44px");

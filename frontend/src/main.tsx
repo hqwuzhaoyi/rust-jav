@@ -16,6 +16,7 @@ import {
   ArrowLeft,
   ArrowUp,
   Clock3,
+  Ellipsis,
   Film,
   Grid2X2,
   HardDrive,
@@ -248,12 +249,12 @@ type Task = {
 };
 type TaskDisplayStatus = Task["status"] | "blocked-for-confirmation";
 const taskStatusLabels: Record<TaskDisplayStatus, string> = {
-  queued: "Queued",
-  running: "Running",
-  "blocked-for-confirmation": "Blocked for confirmation",
-  completed: "Completed",
-  failed: "Failed",
-  interrupted: "Interrupted",
+  queued: "排队中",
+  running: "运行中",
+  "blocked-for-confirmation": "等待确认",
+  completed: "已完成",
+  failed: "失败",
+  interrupted: "已中断",
 };
 function taskDisplayStatus(task: Task): TaskDisplayStatus {
   if (
@@ -291,20 +292,100 @@ function isTaskStatus(status: unknown): status is Task["status"] {
   );
 }
 const operations = [
-  ["delete_ad_files", "Delete ad files"],
-  ["organize_by_code", "Organize by code"],
-  ["clean_empty_dirs", "Clean empty directories"],
-  ["standardize_names", "Standardize names"],
-  ["extract_codes", "Extract codes"],
-  ["categorize_files", "Categorize files"],
-  ["move_origin", "Move to ORIGIN"],
-  ["remove_duplicates", "Remove duplicates"],
+  ["delete_ad_files", "删除广告文件"],
+  ["organize_by_code", "按番号整理"],
+  ["clean_empty_dirs", "清理空目录"],
+  ["standardize_names", "规范文件名"],
+  ["extract_codes", "提取番号"],
+  ["categorize_files", "分类文件"],
+  ["move_origin", "移动到 ORIGIN"],
+  ["remove_duplicates", "移除重复文件"],
 ] as const;
+
+const taskKindLabels: Record<Task["kind"], string> = {
+  preview: "预览",
+  mutation: "执行",
+};
+
+const taskItemStatusLabels: Record<string, string> = {
+  queued: "排队中",
+  running: "运行中",
+  completed: "已完成",
+  applied: "已应用",
+  deleted: "已删除",
+  changed: "已变更",
+  failed: "失败",
+  planned: "已计划",
+  skipped: "已跳过",
+  interrupted: "已中断",
+  deleted_needs_audit: "已删除，待审计",
+};
+const kindLabels: Record<string, string> = {
+  file: "文件",
+  directory: "目录",
+  symlink: "符号链接",
+  other: "其他",
+  permanent_deletion: "永久删除",
+  remove_actor_folder: "移除演员目录",
+  operations: "整理操作",
+};
+function kindLabel(kind: string) {
+  return operations.find(([key]) => key === kind)?.[1] ?? kindLabels[kind] ?? kind;
+}
+function fileTypeLabel(kind: string) {
+  const labels: Record<string, string> = {
+    "regular file": "普通文件",
+    file: "文件",
+    directory: "目录",
+    symlink: "符号链接",
+    other: "其他",
+  };
+  return labels[kind] ?? kind;
+}
+function deletionWarningLabel(warning: string) {
+  return warning === "Video file: permanent deletion removes playable media."
+    ? "视频文件：永久删除会移除可播放媒体。"
+    : warning;
+}
+function jellyfinReasonLabel(reason: string) {
+  const normalized = reason.toLowerCase();
+  if (normalized.includes("normalized media asset path")) return "按规范化媒体资产路径关联";
+  if (normalized.includes("normalized relative path suffix")) return "按唯一规范化相对路径后缀关联";
+  if (normalized.includes("jav code") || normalized.includes("title metadata")) return "按番号或标题元数据关联";
+  return reason;
+}
 const labels: Record<AssetState, string> = {
   normal: "正常",
   synchronizing: "同步中",
   exception: "异常",
 };
+const artworkStatusLabels: Record<ArtworkProvenance["status"], string> = {
+  missing: "缺失",
+  valid: "有效",
+  empty: "空文件",
+  unrecognized: "无法识别",
+  animated: "动态图片",
+  truncated_or_corrupt: "截断或损坏",
+  too_large: "文件过大",
+  unreadable: "无法读取",
+};
+const jellyfinStatusLabels: Record<NonNullable<AssetDetail["jellyfin"]>["status"], string> = {
+  played: "已播放",
+  in_progress: "播放中",
+  unplayed: "未播放",
+  not_found: "未找到",
+  offline: "离线",
+  not_configured: "未配置",
+};
+function artworkStatusLabel(status: ArtworkProvenance["status"]) {
+  return artworkStatusLabels[status];
+}
+function jellyfinStatusLabel(status?: NonNullable<AssetDetail["jellyfin"]>["status"]) {
+  return status ? jellyfinStatusLabels[status] : "未配置";
+}
+function parseStatusLabel(status: AssetDetail["parse_status"]) {
+  return status === "valid" ? "有效" : status === "missing" ? "缺失" : "无效";
+}
 const assetStates = new Set<AssetState>(["normal", "synchronizing", "exception"]);
 function assetIdFromPath(pathname = location.pathname) {
   const match = pathname.match(/^\/assets\/([^/]+)$/);
@@ -513,7 +594,7 @@ export function App() {
         else {
           setView("login");
           if (r.status === 503)
-            setMessage("Run rust-jav administrator init locally first.");
+            setMessage("请先在服务器本地运行 rust-jav administrator init。");
         }
       });
   }, [token]);
@@ -619,7 +700,7 @@ export function App() {
         library_ids?: string[];
         api_key_configured?: boolean;
       } | null;
-      if (!config) throw new Error("Jellyfin configuration could not be loaded.");
+      if (!config) throw new Error("无法加载 Jellyfin 配置。");
       if (
         generation !== jellyfinLoadGeneration.current ||
         changeGeneration !== jellyfinChangeGeneration.current
@@ -642,7 +723,7 @@ export function App() {
       setJfError(
         error instanceof Error && error.message
           ? error.message
-          : "Jellyfin configuration could not be loaded.",
+          : "无法加载 Jellyfin 配置。",
       );
     }
   }
@@ -668,7 +749,7 @@ export function App() {
         }),
       });
       if (!response.ok) {
-        throw new Error((await response.text()) || "Jellyfin configuration could not be saved.");
+        throw new Error((await response.text()) || "无法保存 Jellyfin 配置。");
       }
       setJfBaseline({ url: snapshot.url, libraries: snapshot.libraries });
       setJfKeyConfigured(jfKeyConfigured || Boolean(snapshot.apiKey));
@@ -677,12 +758,12 @@ export function App() {
         setJfLibraries(snapshot.libraries);
         setJfKey("");
       }
-      setMessage("Jellyfin configuration saved.");
+      setMessage("Jellyfin 配置已保存。");
     } catch (error) {
       setJfError(
         error instanceof Error && error.message
           ? error.message
-          : "Jellyfin configuration could not be saved.",
+          : "无法保存 Jellyfin 配置。",
       );
     } finally {
       setJfSaving(false);
@@ -708,7 +789,7 @@ export function App() {
     });
     setMessage(
       response.ok
-        ? "Jellyfin library refresh completed."
+        ? "Jellyfin 媒体库刷新完成。"
         : await response.text(),
     );
   }
@@ -716,9 +797,9 @@ export function App() {
     setActorListState("loading");
     try {
       const response = await fetch("/api/v1/actors");
-      if (!response.ok) throw new Error("Actor Folders could not be loaded.");
+      if (!response.ok) throw new Error("无法加载演员目录。");
       const folders = (await response.json().catch(() => null)) as ActorFolder[] | null;
-      if (!Array.isArray(folders)) throw new Error("Actor Folders could not be loaded.");
+      if (!Array.isArray(folders)) throw new Error("无法加载演员目录。");
       setActors(folders);
       setActorListState("ready");
     } catch {
@@ -748,13 +829,13 @@ export function App() {
     try {
       const response = await fetch(`/api/v1/actors/${encodeURIComponent(name)}`);
       if (request !== actorRequest.current) return;
-      if (!response.ok) throw new Error("Actor Folder could not be loaded.");
+      if (!response.ok) throw new Error("无法加载演员目录。");
       const detail = (await response.json()) as ActorFolder;
       if (request !== actorRequest.current) return;
       setInspectedActor(detail);
     } catch {
       if (request === actorRequest.current)
-        setActorDetailError("Actor Folder could not be loaded.");
+        setActorDetailError("无法加载演员目录。");
     } finally {
       if (request === actorRequest.current) setActorDetailLoading(false);
     }
@@ -796,7 +877,7 @@ export function App() {
     if (response.ok) setConfirmActor((await response.json()) as ActorFolder);
     else
       setMessage(
-        (await response.text()) || "Actor Folder could not be revalidated.",
+        (await response.text()) || "无法重新验证演员目录。",
       );
     setActorBusy(false);
   }
@@ -811,7 +892,7 @@ export function App() {
     );
     if (!response.ok) {
       setMessage(
-        (await response.text()) || "Actor Folder removal was rejected.",
+        (await response.text()) || "移除演员目录的请求被拒绝。",
       );
       setActorBusy(false);
       return;
@@ -821,7 +902,7 @@ export function App() {
     actorRemovalTasksRef.current.set(task.id, actorName);
     watchTask(task.id);
     setConfirmActor(null);
-    setActorRemovalNotice("Actor Folder removal started as a Management Task.");
+    setActorRemovalNotice("已创建移除演员目录的管理任务。");
     setActorBusy(false);
   }
   async function loadCandidates() {
@@ -867,7 +948,7 @@ export function App() {
         if (!isTaskStatus(response.status)) {
           setConfirmText("");
           setDeletionPlanInvalid(true);
-          setDeletionError("The server did not return a durable deletion task status. Create a fresh Operation Plan before retrying.");
+          setDeletionError("服务器未返回持久化删除任务状态。请重新创建操作计划后再试。");
           return;
         }
         const task: DeletionExecutionTask = {
@@ -916,10 +997,10 @@ export function App() {
     setRulesError("");
     try {
       const response = await fetch("/api/v1/rules/active");
-      if (!response.ok) throw new Error("Active Rule Set could not be loaded.");
+      if (!response.ok) throw new Error("无法加载当前规则集。");
       const body = (await response.json().catch(() => null)) as { yaml?: string } | null;
       if (typeof body?.yaml !== "string")
-        throw new Error("Active Rule Set could not be loaded.");
+        throw new Error("无法加载当前规则集。");
       if (
         generation !== rulesLoadGeneration.current ||
         changeGeneration !== rulesChangeGeneration.current
@@ -929,7 +1010,7 @@ export function App() {
     } catch (error) {
       if (generation !== rulesLoadGeneration.current) return;
       setRulesError(
-        error instanceof Error ? error.message : "Active Rule Set could not be loaded.",
+        error instanceof Error ? error.message : "无法加载当前规则集。",
       );
     }
   }
@@ -944,7 +1025,7 @@ export function App() {
     if (rulesPending) return;
     setRulesPending("download");
     setRulesError("");
-    setRulesMessage("Downloading proposal…");
+    setRulesMessage("正在下载规则草案…");
     try {
       const response = await fetch("/api/v1/rules/download", {
         method: "POST",
@@ -956,14 +1037,14 @@ export function App() {
         error?: string;
       } | null;
       if (!response.ok || !body?.yaml) {
-        throw new Error(body?.error ?? "Download failed.");
+        throw new Error(body?.error ?? "下载失败。");
       }
       updateYaml(body.yaml);
       setEditing(true);
-      setRulesMessage("Proposal downloaded. Validate it before saving.");
+      setRulesMessage("规则草案已下载，请验证后再保存。");
     } catch (error) {
       setRulesMessage("");
-      setRulesError(error instanceof Error ? error.message : "Download failed.");
+      setRulesError(error instanceof Error ? error.message : "下载失败。");
     } finally {
       setRulesPending(null);
     }
@@ -974,7 +1055,7 @@ export function App() {
     const changeGeneration = rulesChangeGeneration.current;
     setRulesPending("validate");
     setRulesError("");
-    setRulesMessage("Validating…");
+    setRulesMessage("正在验证…");
     try {
       const response = await fetch("/api/v1/rules/validate", {
         method: "POST",
@@ -986,18 +1067,18 @@ export function App() {
         empty?: boolean;
         error?: string;
       } | null;
-      if (!response.ok || !body?.valid) throw new Error(body?.error ?? "Validation failed.");
+      if (!response.ok || !body?.valid) throw new Error(body?.error ?? "验证失败。");
       if (changeGeneration !== rulesChangeGeneration.current) return;
       setValidation({ valid: true, empty: Boolean(body.empty), yaml: candidate });
       setRulesMessage(
         body.empty
-          ? "Valid, but empty. A separate confirmation is required."
-          : "Valid proposal. Ready to save.",
+          ? "规则有效但为空，需要单独确认。"
+          : "规则草案有效，可以保存。",
       );
     } catch (error) {
       setValidation(null);
       setRulesMessage("");
-      setRulesError(error instanceof Error ? error.message : "Validation failed.");
+      setRulesError(error instanceof Error ? error.message : "验证失败。");
     } finally {
       setRulesPending(null);
     }
@@ -1021,7 +1102,7 @@ export function App() {
           error?: string;
         } | null;
         throw new Error(
-          body?.error ?? "Save failed; the previous Active Rule Set remains active.",
+          body?.error ?? "保存失败；原有当前规则集保持不变。",
         );
       }
       setActiveYaml(candidate.yaml);
@@ -1029,12 +1110,12 @@ export function App() {
       setValidation(null);
       focusRuleHeadingAfterActivationRef.current = true;
       setRuleActivation(null);
-      setRulesMessage("Active Rule Set saved atomically.");
+      setRulesMessage("当前规则集已原子保存。");
     } catch (error) {
       setRulesError(
         error instanceof Error && error.message
           ? error.message
-          : "Save failed; the previous Active Rule Set remains active.",
+          : "保存失败；原有当前规则集保持不变。",
       );
       setRuleActivation(null);
     } finally {
@@ -1055,9 +1136,9 @@ export function App() {
         fetch("/api/v1/media-roots/storage"),
       ]);
       if (request !== assetRequest.current) return;
-      if (!a.ok) throw new Error("asset request failed");
+      if (!a.ok) throw new Error("资产请求失败");
       const body = (await a.json().catch(() => null)) as Page | null;
-      if (!body) throw new Error("asset response was invalid");
+      if (!body) throw new Error("资产响应无效");
       setAssets(body);
       if (body.page !== page) {
         setPage(body.page);
@@ -1083,13 +1164,13 @@ export function App() {
     }
   }
   async function scan() {
-    setMessage("Reconciling filesystem…");
+    setMessage("正在核对文件系统…");
     const r = await fetch("/api/v1/assets/scan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "manual" }),
     });
-    setMessage(r.ok ? "Asset Index reconciled." : await r.text());
+    setMessage(r.ok ? "资产索引核对完成。" : await r.text());
     await loadAssets();
   }
   async function inspect(asset: Asset, navigate = true) {
@@ -1118,12 +1199,12 @@ export function App() {
     try {
       const response = await fetch(`/api/v1/assets/${encodeURIComponent(asset.id)}`);
       if (request !== detailRequest.current) return;
-      if (!response.ok) throw new Error("asset detail request failed");
+      if (!response.ok) throw new Error("资产详情请求失败");
       const detail = (await response.json()) as AssetDetail;
       if (request === detailRequest.current) setAssetDetail(detail);
     } catch {
       if (request === detailRequest.current)
-        setMessage("Asset details could not be loaded.");
+        setMessage("无法加载资产详情。");
     } finally {
       if (request === detailRequest.current) setDetailLoading(false);
     }
@@ -1135,7 +1216,7 @@ export function App() {
     try {
       const response = await fetch(`/api/v1/assets/${encodeURIComponent(id)}`);
       if (request !== detailRequest.current) return;
-      if (!response.ok) throw new Error("asset detail request failed");
+      if (!response.ok) throw new Error("资产详情请求失败");
       const detail = (await response.json()) as AssetDetail & Partial<Asset>;
       if (request !== detailRequest.current) return;
       setInspectedAsset({
@@ -1152,7 +1233,7 @@ export function App() {
     } catch {
       if (request === detailRequest.current) {
         setInspectedAsset(null);
-        setMessage("Asset details could not be loaded.");
+        setMessage("无法加载资产详情。");
       }
     } finally {
       if (request === detailRequest.current) setDetailLoading(false);
@@ -1207,25 +1288,25 @@ export function App() {
       if (init && r.status === 409) {
         history.replaceState({}, "", "/");
         setView("login");
-        setMessage("Administrator is already initialized. Sign in to continue.");
+        setMessage("管理员已初始化，请登录后继续。");
         return;
       }
       if (!r.ok) {
         setMessage(
           !init && r.status === 401
-            ? "Incorrect password."
+            ? "密码错误。"
             : init && r.status === 400
-              ? "Password must be at least 4 characters."
+              ? "密码至少需要 4 个字符。"
               : init && r.status === 403
-                ? "Initialization link is invalid or has expired. Create a new link locally."
-                : "The server could not complete the request. Try again.",
+                ? "初始化链接无效或已过期，请在服务器本地重新生成。"
+                : "服务器无法完成请求，请重试。",
         );
         return;
       }
       if (init) {
         history.replaceState({}, "", "/");
         setView("login");
-        setMessage("Administrator initialized. Sign in to continue.");
+        setMessage("管理员初始化完成，请登录后继续。");
       } else location.assign("/");
     } finally {
       submittingRef.current = false;
@@ -1303,12 +1384,12 @@ export function App() {
     notifiedTaskStatesRef.current.add(key);
     if (task.status === "completed") {
       setMessage(taskDisplayStatus(task) === "blocked-for-confirmation"
-        ? "Operation Plan is ready for confirmation."
-        : "Management Task completed.");
+        ? "操作计划已准备好，等待确认。"
+        : "管理任务已完成。");
     } else if (task.status === "failed") {
-      setMessage(task.error ?? "Management Task failed. Review its outcomes.");
+      setMessage(task.error ?? "管理任务失败，请检查执行结果。");
     } else if (task.status === "interrupted") {
-      setMessage(task.error ?? "Management Task was interrupted.");
+      setMessage(task.error ?? "管理任务已中断。");
     }
   }
   function watchTask(id: string) {
@@ -1333,7 +1414,7 @@ export function App() {
         if (actorName) {
           actorRemovalTasksRef.current.delete(task.id);
           if (task.status === "completed") {
-            setActorRemovalNotice("Actor Folder removal completed as a Management Task.");
+            setActorRemovalNotice("移除演员目录的管理任务已完成。");
             void loadActors().then(() => {
               if (inspectedActorRef.current?.name !== actorName) return;
               actorRequest.current += 1;
@@ -1345,7 +1426,7 @@ export function App() {
           } else {
             setActorRemovalNotice(null);
             setActorRemovalFailure(
-              `Actor Folder removal task ${task.status}. The Actor Folder was kept.`,
+              `移除演员目录的任务${task.status === "failed" ? "失败" : "已中断"}，演员目录已保留。`,
             );
           }
         }
@@ -1390,7 +1471,7 @@ export function App() {
       }),
     });
     if (!response.ok) {
-      setMessage((await response.text()) || "Task request rejected.");
+      setMessage((await response.text()) || "任务请求被拒绝。");
       return;
     }
     const task = (await response.json()) as Task;
@@ -1411,7 +1492,7 @@ export function App() {
       }),
     });
     if (!response.ok) {
-      setMessage((await response.text()) || "Confirmation rejected.");
+      setMessage((await response.text()) || "确认请求被拒绝。");
       return;
     }
     const task = (await response.json()) as Task;
@@ -1457,7 +1538,7 @@ export function App() {
     addEventListener("beforeunload", warnBeforeUnload);
     return () => removeEventListener("beforeunload", warnBeforeUnload);
   }, [settingsDirty]);
-  if (view === "loading") return <div className="auth ui-foundation">Checking session…</div>;
+  if (view === "loading") return <div className="auth ui-foundation">正在检查登录状态…</div>;
   if (view === "initialize" || view === "login")
     return (
       <motion.main
@@ -1469,10 +1550,10 @@ export function App() {
         <div className="brand-mark"><ImageIcon aria-hidden="true" /></div>
         <p className="eyebrow">RUST—JAV</p>
         <h1>
-          {view === "initialize" ? "Initialize Administrator" : "Welcome back"}
+          {view === "initialize" ? "初始化管理员" : "欢迎回来"}
         </h1>
         <form className="ui-panel" onSubmit={submit}>
-          <label htmlFor="password">Password</label>
+          <label htmlFor="password">密码</label>
           <input
             id="password"
             type="password"
@@ -1485,10 +1566,10 @@ export function App() {
           />
           <ControlButton className="ui-primary-button" type="submit" disabled={submitting}>
             {submitting
-              ? "Please wait…"
+              ? "请稍候…"
               : view === "initialize"
-                ? "Initialize"
-                : "Sign in"}
+                ? "初始化"
+                : "登录"}
           </ControlButton>
         </form>
         {message && <p role="status">{message}</p>}
@@ -1514,7 +1595,7 @@ export function App() {
           <p>图库</p>
           <ControlButton
             aria-label="所有资产"
-            title="All Assets"
+            title="所有资产"
             aria-current={nav === "assets" ? "page" : undefined}
             className={nav === "assets" ? "active" : ""}
             onClick={() => {
@@ -1529,7 +1610,7 @@ export function App() {
             <span><Grid2X2 aria-hidden="true" /></span> 所有资产 <em>{libraryTotal || assets.total}</em>
           </ControlButton>
           <ControlButton
-            aria-label="Recently Added"
+            aria-label="最近入库"
             aria-current={nav === "recent" ? "page" : undefined}
             className={nav === "recent" ? "active" : ""}
             onClick={() => {
@@ -1544,7 +1625,7 @@ export function App() {
             <span><Clock3 aria-hidden="true" /></span> 最近入库
           </ControlButton>
           <ControlButton
-            aria-label="Actors"
+            aria-label="演员"
             aria-current={nav === "actors" ? "page" : undefined}
             className={nav === "actors" ? "active" : ""}
             onClick={() => requestNavigation(showActorFolders)}
@@ -1553,7 +1634,7 @@ export function App() {
             <em>{actors.length}</em>
           </ControlButton>
           <ControlButton
-            aria-label="Deletion Candidates"
+            aria-label="删除候选"
             aria-current={nav === "deletion" ? "page" : undefined}
             className={nav === "deletion" ? "active" : ""}
             onClick={() => requestNavigation(() => setNav("deletion"))}
@@ -1562,7 +1643,7 @@ export function App() {
           </ControlButton>
           <p>管理</p>
           <ControlButton
-            aria-label="Management Tasks"
+            aria-label="整理任务"
             aria-current={nav === "tasks" ? "page" : undefined}
             className={nav === "tasks" ? "active" : ""}
             onClick={() => requestNavigation(() => setNav("tasks"))}
@@ -1570,7 +1651,7 @@ export function App() {
             <span><ListTodo aria-hidden="true" /></span> 整理任务
           </ControlButton>
           <ControlButton
-            aria-label="Exceptions"
+            aria-label="异常资产"
             aria-current={nav === "exceptions" ? "page" : undefined}
             className={nav === "exceptions" ? "active" : ""}
             onClick={() => {
@@ -1585,7 +1666,7 @@ export function App() {
             <span><AlertTriangle aria-hidden="true" /></span> 异常资产
           </ControlButton>
           <ControlButton
-            aria-label="Settings"
+            aria-label="设置"
             aria-current={nav === "settings" ? "page" : undefined}
             className={nav === "settings" ? "active" : ""}
             onClick={() => setNav("settings")}
@@ -1598,18 +1679,18 @@ export function App() {
           <small>资产索引</small>
           <b>
             <i className={`health-dot ${health?.state}`} />
-            {health?.state ?? "Loading"}
+            {health?.state === "healthy" ? "健康" : health?.state ? "异常" : "加载中"}
           </b>
           <span>
             {health?.mode
               ? `Last ${health.mode} scan`
-              : "Filesystem authoritative"}
+              : "以文件系统为准"}
           </span>
         </div>
         <ControlButton
           className="signout"
           onClick={() => requestNavigation(() => void logout())}
-          aria-label="Sign out"
+          aria-label="退出登录"
         >
           <LogOut aria-hidden="true" /> 退出登录
         </ControlButton>
@@ -1658,7 +1739,7 @@ export function App() {
             </ControlButton>
           )}
           {(nav === "assets" || nav === "recent" || nav === "exceptions") && (
-            <ControlButton className="scan" onClick={scan} aria-label="Reconcile">
+            <ControlButton className="scan" onClick={scan} aria-label="重新扫描">
               <RefreshCw aria-hidden="true" /> <span>重新扫描</span>
             </ControlButton>
           )}
@@ -1669,7 +1750,7 @@ export function App() {
               <label className="search">
                 <Search aria-hidden="true" />
                 <input
-                  aria-label="Search assets"
+                  aria-label="搜索资产"
                   placeholder="搜索番号、标题或路径"
                   value={query}
                   onChange={(e) => {
@@ -1684,38 +1765,25 @@ export function App() {
                   }}
                 />
               </label>
-              <div className="filters">
-                <ControlButton
-                  density="compact"
-                  className={!filter ? "selected" : ""}
-                  aria-pressed={!filter}
-                  onClick={() => {
-                    setFilter("");
-                    setPage(1);
-                    history.pushState({}, "", galleryUrl(query, "", 1, assetIdFromPath()));
-                  }}
-                >
-                  全部
-                </ControlButton>
-                {(["normal", "synchronizing", "exception"] as AssetState[]).map(
-                  (s) => (
-                    <ControlButton
-                      density="compact"
-                      key={s}
-                      className={filter === s ? "selected" : ""}
-                      aria-pressed={filter === s}
-                      title={s === "synchronizing" ? "Synchronizing" : undefined}
-                      onClick={() => {
-                        setFilter(s);
-                        setPage(1);
-                        history.pushState({}, "", galleryUrl(query, s, 1, assetIdFromPath()));
-                      }}
-                    >
-                      {s === "normal" ? "正常" : s === "synchronizing" ? "刷新中" : "异常"}
-                    </ControlButton>
-                  ),
-                )}
-              </div>
+              <BeUITabs
+                defaultValue="all"
+                value={filter || "all"}
+                onValueChange={(value) => {
+                  const next = value === "all" ? "" : value as AssetState;
+                  setFilter(next);
+                  setPage(1);
+                  history.pushState({}, "", galleryUrl(query, next, 1, assetIdFromPath()));
+                }}
+                variant="segment"
+                className="gallery-filter-tabs"
+              >
+                <BeUITabsList label="资产状态筛选">
+                  <BeUITab value="all">全部</BeUITab>
+                  <BeUITab value="normal">正常</BeUITab>
+                  <BeUITab value="synchronizing">刷新中</BeUITab>
+                  <BeUITab value="exception">异常</BeUITab>
+                </BeUITabsList>
+              </BeUITabs>
             </div>
             <div className="library" aria-busy={galleryLoading}>
               {galleryLoading ? (
@@ -1737,7 +1805,7 @@ export function App() {
                   <section className="date-group" key={group.date}>
                     <div className="date-heading">
                       <h2>{formatDate(group.date)}</h2>
-                      <span>{group.count} items</span>
+                      <span>{group.count} 项</span>
                     </div>
                     <div className="asset-grid">
                       {items.map((a) => (
@@ -1755,7 +1823,7 @@ export function App() {
                               <div className="asset-overlay">
                                 <Film aria-hidden="true" />
                                 <span>
-                                  <b>{a.jav_code ?? a.title ?? "Unidentified"}</b>
+                                  <b>{a.jav_code ?? a.title ?? "未识别"}</b>
                                   <small>{a.title ?? a.path.split("/").pop()}</small>
                                 </span>
                                 <em className={`state-label ${a.state}`}>{labels[a.state]}</em>
@@ -1779,7 +1847,7 @@ export function App() {
                     history.pushState({}, "", galleryUrl(query, filter, nextPage, assetIdFromPath()));
                   }}
                 >
-                  Previous
+                  上一页
                 </ControlButton>
                 <span>
                   {page} / {assets.total_pages}
@@ -1792,7 +1860,7 @@ export function App() {
                     history.pushState({}, "", galleryUrl(query, filter, nextPage, assetIdFromPath()));
                   }}
                 >
-                  Next
+                  下一页
                 </ControlButton>
               </div>
             )}
@@ -1818,9 +1886,7 @@ export function App() {
           <ActorFolders
             actors={actors}
             state={actorListState}
-            busy={actorBusy}
             inspect={(actor) => void openActor(actor)}
-            remove={requestActorRemoval}
             retry={() => void loadActors()}
           />
         )}
@@ -1828,18 +1894,17 @@ export function App() {
           <section className="deletion-browser">
             <div className="deletion-intro">
               <div>
-                <p className="eyebrow">ACTIVE RULE SET</p>
-                <h2>Review permanent deletion</h2>
+                <p className="eyebrow">当前规则集</p>
+                <h2>检查永久删除</h2>
                 <p>
-                  Sizes are current filesystem observations. Nothing is deleted
-                  until an Operation Plan is explicitly confirmed.
+                  大小来自当前文件系统观测。只有明确确认操作计划后才会删除文件。
                 </p>
               </div>
               <ControlButton
                 disabled={!selected.length}
                 onClick={() => void previewDeletion("selected")}
               >
-                Review {selected.length || "selected"}
+                检查 {selected.length || "已选择项"}
               </ControlButton>
             </div>
             <div className="candidate-list">
@@ -1847,7 +1912,7 @@ export function App() {
                 <label className="candidate" key={candidate.path}>
                   <input
                     type="checkbox"
-                    aria-label={`Select ${candidate.path}`}
+                    aria-label={`选择 ${candidate.path}`}
                     checked={selected.includes(candidate.path)}
                     onChange={(e) =>
                       setSelected((current) =>
@@ -1860,19 +1925,19 @@ export function App() {
                   <div>
                     <code title={candidate.path}>{candidate.path}</code>
                     <small>
-                      Rule: {candidate.matching_rule} · {candidate.type}
+                      规则：{candidate.matching_rule} · {fileTypeLabel(candidate.type)}
                     </small>
                     {candidate.video_warning && (
-                      <strong>{candidate.video_warning}</strong>
+                      <strong>{deletionWarningLabel(candidate.video_warning)}</strong>
                     )}
                   </div>
                   <dl>
                     <div>
-                      <dt>Logical Size</dt>
+                      <dt>逻辑大小</dt>
                       <dd>{formatBytes(candidate.logical_size)}</dd>
                     </div>
                     <div>
-                      <dt>Reclaimable Space</dt>
+                      <dt>可回收空间</dt>
                       <dd>{formatBytes(candidate.reclaimable_space)}</dd>
                     </div>
                   </dl>
@@ -1880,21 +1945,19 @@ export function App() {
               ))}
             </div>
             {!candidates.length && (
-              <p className="task-empty">No paths match the Active Rule Set.</p>
+              <p className="task-empty">没有路径命中当前规则集。</p>
             )}
           </section>
         )}
         {nav === "settings" && (
           <div className="settings-stack">
             <section className="rules-settings">
-              <p className="eyebrow">DELETION RULES</p>
-              <h2 ref={ruleHeadingRef} tabIndex={-1}>Active Rule Set</h2>
+              <p className="eyebrow">删除规则</p>
+              <h2 ref={ruleHeadingRef} tabIndex={-1}>当前规则集</h2>
               <p>
-                Remote YAML is only a proposal. The server validates and
-                atomically activates it; rules cannot select roots or authorize
-                deletion.
+                远程 YAML 只是规则草案。服务器验证后原子启用；规则不能选择根目录或授权删除。
               </p>
-              <label htmlFor="rule-source">Rule Source URL</label>
+              <label htmlFor="rule-source">规则来源 URL</label>
               <div className="rule-actions">
                 <input
                   id="rule-source"
@@ -1912,10 +1975,10 @@ export function App() {
                   disabled={!sourceUrl || rulesPending !== null}
                   onClick={downloadProposal}
                 >
-                  {rulesPending === "download" ? "Downloading proposal…" : "Download proposal"}
+                  {rulesPending === "download" ? "正在下载草案…" : "下载草案"}
                 </ControlButton>
               </div>
-              <label htmlFor="rules-yaml">Active Rule Set YAML</label>
+              <label htmlFor="rules-yaml">当前规则集 YAML</label>
               <textarea
                 id="rules-yaml"
                 rows={18}
@@ -1933,12 +1996,12 @@ export function App() {
                       setValidation(null);
                     }}
                   >
-                    Edit
+                    编辑
                   </ControlButton>
                 )}
                 {editing && (
                   <ControlButton type="button" disabled={rulesPending !== null} onClick={validateRules}>
-                    {rulesPending === "validate" ? "Validating…" : "Validate"}
+                    {rulesPending === "validate" ? "正在验证…" : "验证"}
                   </ControlButton>
                 )}
                 {editing && !validation?.empty && (
@@ -1947,7 +2010,7 @@ export function App() {
                     disabled={!validation || validation.yaml !== yaml}
                     onClick={reviewRuleActivation}
                   >
-                    Save Active Rule Set
+                    保存当前规则集
                   </ControlButton>
                 )}
                 {editing && validation?.empty && (
@@ -1957,7 +2020,7 @@ export function App() {
                     disabled={validation.yaml !== yaml}
                     onClick={reviewRuleActivation}
                   >
-                    Confirm empty and save
+                    确认空规则并保存
                   </ControlButton>
                 )}
               </div>
@@ -1976,15 +2039,14 @@ export function App() {
               className="task-create jellyfin-settings"
               aria-busy={jfLoadState === "loading" ? "true" : undefined}
             >
-              <p className="eyebrow">MEDIA SERVER</p>
+              <p className="eyebrow">媒体服务器</p>
               <h2>Jellyfin</h2>
               <p>
-                Connect one server and select multiple library IDs. The API key
-                stays on this server.
+                连接一个服务器并选择多个媒体库 ID。API 密钥只保存在本服务器。
               </p>
               <form className="task-form" onSubmit={saveJellyfin}>
-                {jfDirty && <p className="settings-dirty">Unsaved changes</p>}
-                <label htmlFor="jellyfin-url">Server URL</label>
+                {jfDirty && <p className="settings-dirty">有未保存的更改</p>}
+                <label htmlFor="jellyfin-url">服务器 URL</label>
                 <input
                   id="jellyfin-url"
                   type="url"
@@ -1998,7 +2060,7 @@ export function App() {
                   placeholder="http://jellyfin:8096"
                   required
                 />
-                <label htmlFor="jellyfin-libraries">Library IDs</label>
+                <label htmlFor="jellyfin-libraries">媒体库 ID</label>
                 <input
                   id="jellyfin-libraries"
                   value={jfLibraries}
@@ -2011,7 +2073,7 @@ export function App() {
                   placeholder="movies, jav"
                   required
                 />
-                <label htmlFor="jellyfin-key">Server API key</label>
+                <label htmlFor="jellyfin-key">服务器 API 密钥</label>
                 <input
                   id="jellyfin-key"
                   type="password"
@@ -2026,7 +2088,7 @@ export function App() {
                   required={!jfKeyConfigured}
                 />
                 <ControlButton type="submit" disabled={!jfDirty || jfSaving}>
-                  {jfSaving ? "Saving Jellyfin…" : "Save Jellyfin"}
+                  {jfSaving ? "正在保存 Jellyfin…" : "保存 Jellyfin"}
                 </ControlButton>
                 {jfError && (
                   <p role="alert" className="notice settings-error">
@@ -2035,16 +2097,16 @@ export function App() {
                 )}
                 {jfLoadState === "error" && (
                   <ControlButton type="button" className="settings-retry" onClick={() => void loadJellyfinConfig()}>
-                    Retry Jellyfin settings
+                    重新加载 Jellyfin 设置
                   </ControlButton>
                 )}
               </form>
               <div className="jellyfin-actions">
                 <ControlButton type="button" disabled={jfDirty || jfSaving} onClick={() => void testJellyfin()}>
-                  Test connection
+                  测试连接
                 </ControlButton>
                 <ControlButton type="button" disabled={jfDirty || jfSaving} onClick={() => void refreshJellyfin()}>
-                  Refresh Jellyfin
+                  刷新 Jellyfin
                 </ControlButton>
               </div>
             </section>
@@ -2057,7 +2119,7 @@ export function App() {
           detail={assetDetail}
           loading={detailLoading}
           close={closeInspector}
-          backLabel={assetBackActor ? `Back to ${assetBackActor.name}` : undefined}
+          backLabel={assetBackActor ? `返回 ${assetBackActor.name}` : undefined}
           tab={assetTab}
           onTabChange={changeAssetTab}
           restoreFocusRef={assetOpenerRef}
@@ -2108,11 +2170,11 @@ export function App() {
             className="confirm-dialog operation-plan-confirmation"
             role="dialog"
             aria-modal="true"
-            aria-label="Confirm Operation Plan"
+            aria-label="确认操作计划"
           >
-            <p className="eyebrow">OPERATION PLAN</p>
-            <h2>Confirm Operation Plan</h2>
-            <p>Plan <code>{planToConfirm.id}</code> will execute the reviewed snapshot.</p>
+            <p className="eyebrow">操作计划</p>
+            <h2>确认操作计划</h2>
+            <p>计划 <code>{planToConfirm.id}</code> 将执行已检查的快照。</p>
             {planToConfirm.operation_plan.warnings.map((warning) => (
               <p className="task-error" key={warning}>{warning}</p>
             ))}
@@ -2124,17 +2186,17 @@ export function App() {
             <div
               className="confirmation-action-review"
               tabIndex={0}
-              aria-label={`${planToConfirm.operation_plan.actions.length} stored actions to review`}
+              aria-label={`检查 ${planToConfirm.operation_plan.actions.length} 个已保存操作`}
             >
-              <p>{planToConfirm.operation_plan.actions.length} stored actions</p>
+              <p>{planToConfirm.operation_plan.actions.length} 个已保存操作</p>
               <ol>
                 {planToConfirm.operation_plan.actions.map((action, index) => (
                   <li className={action.destructive ? "destructive" : ""} key={`${action.kind}-${action.path}-${index}`}>
-                    <b>{action.kind}</b>
+                    <b>{kindLabel(action.kind)}</b>
                     {action.source !== undefined || action.target !== undefined ? (
                       <>
-                        <code>Source {action.source ?? "—"}</code>
-                        <code>Target {action.target ?? "—"}</code>
+                        <code>来源 {action.source ?? "—"}</code>
+                        <code>目标 {action.target ?? "—"}</code>
                       </>
                     ) : (
                       <code>{action.path ?? "—"}</code>
@@ -2145,9 +2207,9 @@ export function App() {
               </ol>
             </div>
             <div className="confirm-actions">
-              <ControlButton onClick={() => setPlanToConfirm(null)}>Cancel</ControlButton>
+              <ControlButton onClick={() => setPlanToConfirm(null)}>取消</ControlButton>
               <ControlButton className="danger" onClick={() => void confirmPlan(planToConfirm.id)}>
-                Apply confirmed plan
+                执行已确认计划
               </ControlButton>
             </div>
           </section>
@@ -2156,7 +2218,7 @@ export function App() {
       {actorRemovalNotice && (
         <div className="shell-notice" role="status">
           <p>{actorRemovalNotice}</p>
-          <ControlButton className="ui-icon-button" onClick={() => setActorRemovalNotice(null)} aria-label="Dismiss Actor removal notification">
+          <ControlButton className="ui-icon-button" onClick={() => setActorRemovalNotice(null)} aria-label="关闭演员目录移除通知">
             <X aria-hidden="true" />
           </ControlButton>
         </div>
@@ -2164,7 +2226,7 @@ export function App() {
       {actorRemovalFailure && (
         <div className="shell-notice actor-removal-failure" role="alert">
           <p>{actorRemovalFailure}</p>
-          <ControlButton className="ui-icon-button" onClick={() => setActorRemovalFailure(null)} aria-label="Dismiss Actor removal error">
+          <ControlButton className="ui-icon-button" onClick={() => setActorRemovalFailure(null)} aria-label="关闭演员目录移除错误">
             <X aria-hidden="true" />
           </ControlButton>
         </div>
@@ -2195,15 +2257,15 @@ export function App() {
             aria-describedby="rule-activation-description"
           >
             <p className="eyebrow">
-              {ruleActivation.empty ? "HIGH-RISK CHANGE" : "RULE PROPOSAL"}
+              {ruleActivation.empty ? "高风险变更" : "规则草案"}
             </p>
             <h2 id="rule-activation-title">
-              {ruleActivation.empty ? "Activate empty Rule Set" : "Activate Rule Set"}
+              {ruleActivation.empty ? "启用空规则集" : "启用规则集"}
             </h2>
             <p id="rule-activation-description">
               {ruleActivation.empty
-                ? "This Rule Set has no enabled rules. Deletion candidates will remain empty until another Rule Set is activated."
-                : "The validated proposal will replace the current Active Rule Set."}
+                ? "此规则集没有启用的规则。在启用其他规则集前，删除候选将保持为空。"
+                : "已验证的草案将替换当前规则集。"}
             </p>
             <pre className="rule-activation-preview">{ruleActivation.yaml}</pre>
             <div className="dialog-actions">
@@ -2212,7 +2274,7 @@ export function App() {
                 disabled={rulesPending === "activate"}
                 onClick={() => setRuleActivation(null)}
               >
-                Cancel
+                取消
               </ControlButton>
               <ControlButton
                 type="button"
@@ -2221,10 +2283,10 @@ export function App() {
                 onClick={() => void saveRules(ruleActivation)}
               >
                 {rulesPending === "activate"
-                  ? "Activating…"
+                  ? "正在启用…"
                   : ruleActivation.empty
-                    ? "Activate empty Rule Set"
-                    : "Activate Rule Set"}
+                    ? "启用空规则集"
+                    : "启用规则集"}
               </ControlButton>
             </div>
           </section>
@@ -2243,12 +2305,12 @@ export function App() {
             aria-modal="true"
             aria-labelledby="discard-settings-title"
           >
-            <p className="eyebrow">UNSAVED SETTINGS</p>
-            <h2 id="discard-settings-title">Discard unsaved changes?</h2>
-            <p>Your Rule and Jellyfin edits have not been saved.</p>
+            <p className="eyebrow">未保存的设置</p>
+            <h2 id="discard-settings-title">放弃未保存的更改？</h2>
+            <p>规则和 Jellyfin 的修改尚未保存。</p>
             <div className="dialog-actions">
               <ControlButton type="button" onClick={() => setPendingNavigation(null)}>
-                Keep editing
+                继续编辑
               </ControlButton>
               <ControlButton
                 type="button"
@@ -2259,7 +2321,7 @@ export function App() {
                   navigation();
                 }}
               >
-                Discard changes
+                放弃更改
               </ControlButton>
             </div>
           </section>
@@ -2307,7 +2369,7 @@ export function App() {
           <span><Grid2X2 aria-hidden="true" /></span>图库
         </ControlButton>
         <ControlButton
-          aria-label="Actors"
+          aria-label="演员"
           aria-current={nav === "actors" ? "page" : undefined}
           className={nav === "actors" ? "active" : ""}
           onClick={() => requestNavigation(showActorFolders)}
@@ -2315,7 +2377,7 @@ export function App() {
           <span><Users aria-hidden="true" /></span>演员
         </ControlButton>
         <ControlButton
-          aria-label="Delete"
+          aria-label="删除"
           aria-current={nav === "deletion" ? "page" : undefined}
           className={nav === "deletion" ? "active" : ""}
           onClick={() => requestNavigation(() => setNav("deletion"))}
@@ -2323,7 +2385,7 @@ export function App() {
           <span><Trash2 aria-hidden="true" /></span>删除
         </ControlButton>
         <ControlButton
-          aria-label="Tasks"
+          aria-label="任务"
           aria-current={nav === "tasks" ? "page" : undefined}
           className={nav === "tasks" ? "active" : ""}
           onClick={() => requestNavigation(() => setNav("tasks"))}
@@ -2331,7 +2393,7 @@ export function App() {
           <span><ListTodo aria-hidden="true" /></span>任务
         </ControlButton>
         <ControlButton
-          aria-label="Settings"
+          aria-label="设置"
           aria-current={nav === "settings" ? "page" : undefined}
           className={nav === "settings" ? "active" : ""}
           onClick={() => setNav("settings")}
@@ -2360,15 +2422,15 @@ export function App() {
             aria-modal="true"
             aria-labelledby="deletion-outcome-title"
           >
-            <p className="eyebrow">FILESYSTEM OUTCOME</p>
+            <p className="eyebrow">文件系统结果</p>
             <h2 id="deletion-outcome-title">
               {deletionOutcome.status === "failed"
-                ? "Permanent deletion completed with partial failures"
+                ? "永久删除已完成，但部分路径失败"
                 : deletionOutcome.status === "completed"
-                  ? "Permanent deletion completed"
+                  ? "永久删除已完成"
                   : deletionOutcome.status === "interrupted"
-                    ? "Permanent deletion interrupted"
-                    : `Permanent deletion ${deletionOutcome.status}`}
+                    ? "永久删除已中断"
+                    : `永久删除状态：${taskStatusLabels[deletionOutcome.status] ?? deletionOutcome.status}`}
             </h2>
             {deletionOutcome.error && <p className="deletion-inline-error">{deletionOutcome.error}</p>}
             <ol className="deletion-outcome-list">
@@ -2377,22 +2439,22 @@ export function App() {
                   <div>
                     <b>
                       {item.status === "deleted"
-                        ? "Deleted"
+                        ? "已删除"
                         : item.status === "changed"
-                          ? "Replaced after planning"
-                          : "Failed"}
+                          ? "计划后已被替换"
+                          : "失败"}
                     </b>
-                    <code style={{ overflowWrap: "anywhere" }}>{item.path ?? "Unknown path"}</code>
+                    <code style={{ overflowWrap: "anywhere" }}>{item.path ?? "未知路径"}</code>
                   </div>
                   {item.message && <p>{item.message}</p>}
                 </li>
               ))}
             </ol>
             {deletionOutcome.status !== "completed" && (
-              <p className="no-rollback">No rollback was attempted.</p>
+              <p className="no-rollback">未尝试回滚。</p>
             )}
             <div className="confirm-actions">
-              <ControlButton type="button" onClick={closeDeletionReview}>Close</ControlButton>
+              <ControlButton type="button" onClick={closeDeletionReview}>关闭</ControlButton>
             </div>
           </section>
         ) : plan ? (
@@ -2404,14 +2466,14 @@ export function App() {
             aria-labelledby="delete-title"
             aria-describedby="delete-authority"
           >
-            <p className="eyebrow">IRREVERSIBLE ACTION</p>
+            <p className="eyebrow">不可撤销操作</p>
             <h2 id="delete-title">
-              Permanently delete {plan.paths.length} paths?
+              永久删除 {plan.paths.length} 个路径？
             </h2>
             <p id="delete-authority" className="deletion-authority">
-              The server will revalidate every planned filesystem identity immediately before unlinking. Only this fresh Operation Plan authorizes mutation.
+              服务器会在解除链接前重新验证每个文件系统身份。只有这份最新操作计划能够授权变更。
             </p>
-            <div className="choice" aria-label="Deletion scope">
+            <div className="choice" aria-label="删除范围">
               <ControlButton
                 type="button"
                 aria-pressed={plan.selection === "selected"}
@@ -2419,7 +2481,7 @@ export function App() {
                 disabled={Boolean(deletionPending)}
                 onClick={() => void previewDeletion("selected")}
               >
-                Selected paths only
+                仅选择的路径
               </ControlButton>
               <ControlButton
                 type="button"
@@ -2428,44 +2490,44 @@ export function App() {
                 disabled={Boolean(deletionPending)}
                 onClick={() => void previewDeletion("unified")}
               >
-                All discovered hard links ({plan.discovered_hard_links.length})
+                所有已发现硬链接（{plan.discovered_hard_links.length}）
               </ControlButton>
             </div>
             <dl className="deletion-plan-metrics">
-              <div><dt>Logical Size</dt><dd>{formatBytes(plan.logical_size)}</dd></div>
-              <div><dt>Reclaimable Space</dt><dd>{formatBytes(plan.reclaimable_space)}</dd></div>
+              <div><dt>逻辑大小</dt><dd>{formatBytes(plan.logical_size)}</dd></div>
+              <div><dt>可回收空间</dt><dd>{formatBytes(plan.reclaimable_space)}</dd></div>
             </dl>
             <section className="deletion-scope" aria-labelledby="hard-link-roots-title">
-              <h3 id="hard-link-roots-title">Hard-Link Search Roots</h3>
+              <h3 id="hard-link-roots-title">硬链接搜索根目录</h3>
               <div className="deletion-root-list">
                 {(plan.hard_link_search_roots ?? []).map((root) => <code key={root}>{root}</code>)}
               </div>
             </section>
             {plan.paths.some((path) => path.video_warning) && (
               <p className="video-warning">
-                ⚠ This plan permanently removes video content.
+                ⚠ 此计划会永久删除视频内容。
               </p>
             )}
             <section className="deletion-scope" aria-labelledby="approved-paths-title">
-              <h3 id="approved-paths-title">Paths approved by this plan</h3>
+              <h3 id="approved-paths-title">此计划已批准的路径</h3>
               <div className="plan-paths">
                 {plan.paths.map((path) => (
                   <div className="deletion-path" key={path.path}>
                     <code style={{ overflowWrap: "anywhere" }}>{path.path}</code>
-                    <span>{path.type}</span>
-                    {path.video_warning && <small>{path.video_warning}</small>}
+                    <span>{fileTypeLabel(path.type)}</span>
+                    {path.video_warning && <small>{deletionWarningLabel(path.video_warning)}</small>}
                   </div>
                 ))}
               </div>
             </section>
             {plan.selection === "selected" && plan.discovered_hard_links.length > 0 && (
               <section className="deletion-scope" aria-labelledby="discovered-links-title">
-                <h3 id="discovered-links-title">Discovered hard links not approved</h3>
+                <h3 id="discovered-links-title">已发现但未批准的硬链接</h3>
                 <div className="plan-paths discovered-links">
                   {plan.discovered_hard_links.map((link) => (
                     <div className="deletion-path" key={link.path}>
                       <code style={{ overflowWrap: "anywhere" }}>{link.path}</code>
-                      <span>Discovered · {link.type ?? "file"}</span>
+                      <span>已发现 · {fileTypeLabel(link.type ?? "file")}</span>
                     </div>
                   ))}
                 </div>
@@ -2473,7 +2535,7 @@ export function App() {
             )}
             {plan.selection === "unified" && plan.discovered_hard_links.length > 0 && (
               <p className="unified-scope-note">
-                All {plan.discovered_hard_links.length} discovered hard links are included in the approved paths above.
+                已发现的 {plan.discovered_hard_links.length} 个硬链接全部包含在上述批准路径中。
               </p>
             )}
             {deletionError && <p className="deletion-inline-error" role="alert">{deletionError}</p>}
@@ -2484,11 +2546,11 @@ export function App() {
                 disabled={Boolean(deletionPending)}
                 onClick={() => void previewDeletion(plan.selection)}
               >
-                {deletionPending === "planning" ? "Creating fresh Operation Plan…" : "Create fresh Operation Plan"}
+                {deletionPending === "planning" ? "正在创建最新操作计划…" : "创建最新操作计划"}
               </ControlButton>
             )}
             <label htmlFor="confirm-delete">
-              Type <b>PERMANENTLY DELETE</b> to confirm
+              输入 <b>PERMANENTLY DELETE</b> 进行确认
             </label>
             <input
               id="confirm-delete"
@@ -2498,7 +2560,7 @@ export function App() {
               autoComplete="off"
             />
             <div className="confirm-actions">
-              <ControlButton type="button" disabled={Boolean(deletionPending)} onClick={closeDeletionReview}>Cancel</ControlButton>
+              <ControlButton type="button" disabled={Boolean(deletionPending)} onClick={closeDeletionReview}>取消</ControlButton>
               <ControlButton
                 type="button"
                 className="danger"
@@ -2509,7 +2571,7 @@ export function App() {
                 }
                 onClick={() => void executeDeletion()}
               >
-                {deletionPending === "executing" ? "Revalidating and deleting…" : "Permanently delete"}
+                {deletionPending === "executing" ? "正在重新验证并删除…" : "永久删除"}
               </ControlButton>
             </div>
           </section>
@@ -2623,7 +2685,7 @@ function AssetInspector({
         ref={closeButtonRef}
         className="inspector-close ui-icon-button"
         onClick={close}
-        aria-label="Close asset details"
+        aria-label="关闭资产详情"
       >
         <X aria-hidden="true" />
       </ControlButton>
@@ -2641,7 +2703,7 @@ function AssetInspector({
         />
         <div>
           <h2 id="asset-detail-title">
-            {asset.jav_code ?? "Media Asset"}
+            {asset.jav_code ?? "媒体资产"}
           </h2>
           <span>
             {detail?.title ?? asset.title ?? asset.path.split("/").pop()}
@@ -2649,126 +2711,126 @@ function AssetInspector({
         </div>
       </div>
       <BeUITabs defaultValue="overview" value={tab} onValueChange={(value) => onTabChange(value as AssetTab)} variant="underline" className="detail-tabs">
-        <BeUITabsList label="Asset details">
-          <BeUITab value="overview">Overview</BeUITab>
+        <BeUITabsList label="资产详情">
+          <BeUITab value="overview">概览</BeUITab>
           <BeUITab value="nfo">NFO</BeUITab>
         </BeUITabsList>
       {loading ? (
         <p className="detail-loading" role="status">
-          Loading asset details…
+          正在加载资产详情…
         </p>
       ) : detail && tab === "overview" ? (
         <BeUITabPanel value="overview">
-          <DetailSection title="Status">
+          <DetailSection title="状态">
             <div className="detail-status-list">
               <Status
-                name="Local asset"
+                name="本地资产"
                 label={labels[detail.state]}
                 tone={detail.state}
                 description={detail.exception ?? (detail.state === "synchronizing"
-                  ? "Automatic filesystem reconciliation is in progress."
-                  : "The local indexed asset remains authoritative.")}
+                  ? "正在自动核对文件系统。"
+                  : "本地索引资产仍为权威来源。")}
               />
               {detail.artwork && (
                 <Status
-                  name="Local artwork"
-                  label={detail.artwork.status.replaceAll("_", " ")}
+                  name="本地封面"
+                  label={artworkStatusLabel(detail.artwork.status)}
                   tone={detail.artwork.status === "valid"
                     ? "normal"
                     : detail.artwork.status === "missing"
                       ? "synchronizing"
                       : "exception"}
                   description={detail.artwork.error ?? (detail.artwork.status === "valid"
-                    ? "Validated local JPEG, PNG, or WebP artwork is authoritative."
-                    : "No local artwork candidate was discovered during reconciliation.")}
+                    ? "已验证的本地 JPEG、PNG 或 WebP 封面为权威来源。"
+                    : "核对时未发现本地封面候选。")}
                   action={<DataList items={[
-                    ["Artwork source", detail.artwork.source_path],
-                    ["Detected media type", detail.artwork.content_type],
+                    ["封面来源", detail.artwork.source_path],
+                    ["检测到的媒体类型", detail.artwork.content_type],
                   ]} />}
                 />
               )}
               <Status
                 name="Jellyfin"
-                label={detail.jellyfin?.status?.replaceAll("_", " ") ?? "not configured"}
+                label={jellyfinStatusLabel(detail.jellyfin?.status)}
                 tone={detail.jellyfin?.status === "offline" || detail.jellyfin?.status === "not_found"
                   ? "exception"
                   : detail.jellyfin?.status === "not_configured"
                     ? "synchronizing"
                     : "normal"}
-                description={detail.jellyfin?.reason ?? (detail.jellyfin?.status === "not_configured"
-                  ? "Jellyfin is not configured."
+                description={detail.jellyfin?.reason ? jellyfinReasonLabel(detail.jellyfin.reason) : (detail.jellyfin?.status === "not_configured"
+                  ? "尚未配置 Jellyfin。"
                   : detail.jellyfin?.status === "offline"
-                    ? "Jellyfin is currently unavailable."
+                    ? "Jellyfin 当前不可用。"
                     : detail.jellyfin?.status === "not_found"
-                      ? "No Jellyfin Association was found."
+                      ? "未找到 Jellyfin 关联。"
                       : detail.jellyfin?.confidence === "uncertain_metadata"
-                        ? "Uncertain metadata association; this never authorizes deletion."
-                        : "Read-only playback association; local files remain authoritative.")}
+                        ? "元数据关联不确定；此关联绝不会授权删除。"
+                        : "只读播放关联；本地文件仍为权威来源。")}
                 action={detail.jellyfin?.open_url ? (
                   <a href={detail.jellyfin.open_url} target="_blank" rel="noreferrer">
-                    Open in Jellyfin ↗
+                    在 Jellyfin 中打开 ↗
                   </a>
                 ) : undefined}
               />
               {detail.jellyfin && (
                 <DataList items={[
-                  ["Play count", detail.jellyfin.play_count === undefined
-                    ? null : `${detail.jellyfin.play_count} plays`],
-                  ["Playback position", detail.jellyfin.playback_position_ticks === undefined
-                    ? null : `${detail.jellyfin.playback_position_ticks} ticks`],
-                  ["Deletion authority", detail.jellyfin.may_authorize_deletion
-                    ? "Certain path association" : "Association cannot authorize deletion"],
+                  ["播放次数", detail.jellyfin.play_count === undefined
+                    ? null : `${detail.jellyfin.play_count} 次`],
+                  ["播放位置", detail.jellyfin.playback_position_ticks === undefined
+                    ? null : `${detail.jellyfin.playback_position_ticks} 刻度`],
+                  ["删除权限", detail.jellyfin.may_authorize_deletion
+                    ? "确定的路径关联" : "此关联不能授权删除"],
                 ]} />
               )}
             </div>
           </DetailSection>
-          <DetailSection title="Actors">
+          <DetailSection title="演员">
             {detail.actors.length ? (
               <div className="actor-grid">
                 {detail.actors.map((actor) =>
                   actor.actor_folder_url ? (
                     <a className="actor-poster" href={actor.actor_folder_url} key={actor.name}>
                       {actor.poster_url ? (
-                        <img src={actor.poster_url} alt={`${actor.name} poster`} />
+                        <img src={actor.poster_url} alt={`${actor.name} 海报`} />
                       ) : (
                         <span className="actor-silhouette"><UserRound aria-hidden="true" /></span>
                       )}
-                      <span><b>{actor.name}</b><small>Open derived Actor Folder →</small></span>
+                      <span><b>{actor.name}</b><small>打开派生演员目录 →</small></span>
                     </a>
                   ) : (
                     <div className="actor-poster" key={actor.name}>
                       <span className="actor-silhouette"><UserRound aria-hidden="true" /></span>
-                      <span><b>{actor.name}</b><small>Actor Folder unavailable</small></span>
+                      <span><b>{actor.name}</b><small>演员目录不可用</small></span>
                     </div>
                   ),
                 )}
               </div>
             ) : (
-              <p className="muted">No actors in this NFO.</p>
+              <p className="muted">此 NFO 中没有演员信息。</p>
             )}
           </DetailSection>
-          <DetailSection title="Asset details">
+          <DetailSection title="资产信息">
             <DataList items={[
-              ["Studio", detail.studio],
-              ["Release", detail.release_date],
-              ["Captured", detail.captured_date],
-              ["Source video", detail.path],
+              ["片商", detail.studio],
+              ["发行日期", detail.release_date],
+              ["收录日期", detail.captured_date],
+              ["源视频", detail.path],
             ]} />
           </DetailSection>
         </BeUITabPanel>
       ) : (
         detail && (
           <BeUITabPanel value="nfo">
-            <p className="plot">{detail.plot ?? "No plot in this NFO."}</p>
-            <DetailSection title="NFO metadata">
+            <p className="plot">{detail.plot ?? "此 NFO 中没有简介。"}</p>
+            <DetailSection title="NFO 元数据">
               <DataList items={[
-                ["Title", detail.title],
-                ["Studio", detail.studio],
-                ["Release date", detail.release_date],
-                ["Runtime", detail.runtime_minutes === null ? null : `${detail.runtime_minutes} minutes`],
-                ["Director", detail.director],
-                ["Parse status", detail.parse_status],
-                ["NFO path", detail.source_path],
+                ["标题", detail.title],
+                ["片商", detail.studio],
+                ["发行日期", detail.release_date],
+                ["时长", detail.runtime_minutes === null ? null : `${detail.runtime_minutes} 分钟`],
+                ["导演", detail.director],
+                ["解析状态", parseStatusLabel(detail.parse_status)],
+                ["NFO 路径", detail.source_path],
               ]} />
             </DetailSection>
             <div className="tags">
@@ -2797,7 +2859,7 @@ function DataList({ items }: { items: Array<readonly [string, ReactNode | null |
       {items.map(([label, value]) => (
         <div key={label}>
           <dt>{label}</dt>
-          <dd>{value ?? "Not provided"}</dd>
+          <dd>{value ?? "未提供"}</dd>
         </div>
       ))}
     </dl>
@@ -2825,21 +2887,17 @@ function Status({
   );
 }
 function Info({ k, v }: { k: string; v: ReactNode | null | undefined }) {
-  return <div><dt>{k}</dt><dd>{v ?? "Not provided"}</dd></div>;
+  return <div><dt>{k}</dt><dd>{v ?? "未提供"}</dd></div>;
 }
 function ActorFolders({
   actors,
   state,
-  busy,
   inspect,
-  remove,
   retry,
 }: {
   actors: ActorFolder[];
   state: LoadState;
-  busy: boolean;
   inspect: (actor: ActorFolder) => void;
-  remove: (actor: ActorFolder) => Promise<void>;
   retry: () => void;
 }) {
   const [sortKey, setSortKey] = useState<ActorSortKey>("name");
@@ -2860,26 +2918,26 @@ function ActorFolders({
   }, [actors, sortDirection, sortKey]);
   if (state === "loading")
     return (
-      <div className="actor-feedback" role="status" aria-label="Loading Actor Folders">
+      <div className="actor-feedback" role="status" aria-label="正在加载演员目录">
         <RefreshCw aria-hidden="true" />
-        <p>Loading Actor Folders…</p>
+        <p>正在加载演员目录…</p>
       </div>
     );
   if (state === "error")
     return (
       <div className="actor-feedback actor-error" role="alert">
         <AlertTriangle aria-hidden="true" />
-        <h2>Actor Folders could not be loaded</h2>
-        <p>The derived Actor View is temporarily unavailable.</p>
-        <ControlButton onClick={retry}>Retry</ControlButton>
+        <h2>无法加载演员目录</h2>
+        <p>派生演员视图暂时不可用。</p>
+        <ControlButton onClick={retry}>重试</ControlButton>
       </div>
     );
   if (state === "ready" && !actors.length)
     return (
       <div className="empty">
         <span><UserRound aria-hidden="true" /></span>
-        <h2>No Actor Folders</h2>
-        <p>Generate the derived Actor View from NFO metadata.</p>
+        <h2>暂无演员目录</h2>
+        <p>请根据 NFO 元数据生成派生演员视图。</p>
       </div>
     );
   return (
@@ -2898,7 +2956,7 @@ function ActorFolders({
           >
             <option value="name">演员名</option>
             <option value="count">资产数量</option>
-            <option value="size">Logical Size</option>
+            <option value="size">逻辑大小</option>
           </select>
         </label>
         <ControlButton
@@ -2913,17 +2971,14 @@ function ActorFolders({
       <div className="actor-folder-grid">
       {sortedActors.map((actor) => (
         <article className="actor-folder-card" key={actor.name}>
-          <ControlButton className="actor-folder-open" aria-label={`Open ${actor.name}`} onClick={() => inspect(actor)}>
+          <ControlButton className="actor-folder-open" aria-label={`打开演员 ${actor.name}`} onClick={() => inspect(actor)}>
             <div className="actor-folder-poster" style={{ aspectRatio: "2 / 3" }}>
               <ActorPortrait actor={actor} loading="lazy" />
               <div>
                 <b>{actor.name}</b>
-                <p>{actor.movie_count} Media Assets · {formatBytes(actor.logical_size)}</p>
+                <p>{actor.movie_count} 个媒体资产 · {formatBytes(actor.logical_size)}</p>
               </div>
             </div>
-          </ControlButton>
-          <ControlButton density="compact" className="actor-remove" disabled={busy} onClick={() => void remove(actor)}>
-            <Trash2 aria-hidden="true" /> Remove
           </ControlButton>
         </article>
       ))}
@@ -2956,8 +3011,13 @@ function ActorInspector({
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const actionMenuRef = useRef<HTMLDivElement>(null);
+  const actionMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const actionMenuOpenRef = useRef(false);
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const closeRef = useRef(close);
   closeRef.current = close;
+  actionMenuOpenRef.current = actionMenuOpen;
   const prefersReducedMotion = useReducedMotion();
   const reduce = prefersReducedMotion
     || (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
@@ -2988,6 +3048,11 @@ function ActorInspector({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
+        if (actionMenuOpenRef.current) {
+          setActionMenuOpen(false);
+          actionMenuButtonRef.current?.focus();
+          return;
+        }
         closeRef.current();
         return;
       }
@@ -3025,6 +3090,16 @@ function ActorInspector({
     };
   }, [mobile, restoreFocusRef, suspended]);
   useEffect(() => {
+    if (!actionMenuOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!actionMenuRef.current?.contains(event.target as Node)) {
+        setActionMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [actionMenuOpen]);
+  useEffect(() => {
     if (suspended || !actor || !linkedFocusRef.current || !dialogRef.current) return;
     const target = Array.from(
       dialogRef.current.querySelectorAll<HTMLElement>("[data-asset-id]"),
@@ -3042,50 +3117,76 @@ function ActorInspector({
       aria-modal={suspended ? undefined : "true"}
       inert={suspended || undefined}
       aria-labelledby={actor ? "actor-detail-title" : undefined}
-      aria-label={actor ? undefined : "Actor Folder detail"}
+      aria-label={actor ? undefined : "演员目录详情"}
       initial={reduce ? false : mobile ? { y: 28 } : { x: 40 }}
       animate={mobile ? { y: 0 } : { x: 0 }}
       exit={reduce ? undefined : mobile ? { y: 28 } : { x: 40 }}
       transition={reduce ? { duration: 0 } : undefined}
     >
       <div className="sheet-handle" aria-hidden="true" />
-      <ControlButton ref={closeButtonRef} className="inspector-close ui-icon-button" onClick={close} aria-label="Close actor details"><X aria-hidden="true" /></ControlButton>
-      {loading && !actor ? <p role="status">Loading Actor Folder…</p> : actor && (
+      <ControlButton ref={closeButtonRef} className="inspector-close ui-icon-button" onClick={close} aria-label="关闭演员详情"><X aria-hidden="true" /></ControlButton>
+      {actor && (
+        <div className="actor-action-menu" ref={actionMenuRef}>
+          <ControlButton
+            ref={actionMenuButtonRef}
+            className="actor-action-menu-trigger ui-icon-button"
+            aria-label="更多操作"
+            aria-haspopup="menu"
+            aria-expanded={actionMenuOpen}
+            onClick={() => setActionMenuOpen((open) => !open)}
+          >
+            <Ellipsis aria-hidden="true" />
+          </ControlButton>
+          {actionMenuOpen && (
+            <div className="actor-action-menu-popover" role="menu" aria-label="演员操作">
+              <ControlButton
+                role="menuitem"
+                onClick={() => {
+                  setActionMenuOpen(false);
+                  remove(actor);
+                }}
+              >
+                <Trash2 aria-hidden="true" /> 删除演员目录…
+              </ControlButton>
+            </div>
+          )}
+        </div>
+      )}
+      {loading && !actor ? <p role="status">正在加载演员目录…</p> : actor && (
         <>
           <div className="actor-detail-hero">
             <ActorPortrait actor={actor} />
-            <div><p className="eyebrow">ACTOR VIEW</p><h2 id="actor-detail-title">{actor.name}</h2></div>
+            <div><p className="eyebrow">演员视图</p><h2 id="actor-detail-title">{actor.name}</h2></div>
           </div>
           <dl className="actor-metrics">
-            <Info k="Derived paths" v={String(actor.derived_file_count ?? actor.hard_link_count)} />
-            <Info k="Unique files" v={String(actor.unique_inode_count ?? actor.movie_count)} />
-            <Info k="Logical Size" v={formatBytes(actor.logical_size)} />
-            <Info k="Reclaimable Space" v={formatBytes(actor.reclaimable_space)} />
+            <Info k="派生路径" v={String(actor.derived_file_count ?? actor.hard_link_count)} />
+            <Info k="去重文件" v={String(actor.unique_inode_count ?? actor.movie_count)} />
+            <Info k="逻辑大小" v={formatBytes(actor.logical_size)} />
+            <Info k="可回收空间" v={formatBytes(actor.reclaimable_space)} />
           </dl>
-          <span className="sr-only" aria-hidden="true">Referenced logical size</span>
-          <span className="sr-only" aria-hidden="true">Reclaimable if removed</span>
+          <span className="sr-only" aria-hidden="true">引用的逻辑大小</span>
+          <span className="sr-only" aria-hidden="true">移除后可回收空间</span>
           <section className="linked-assets">
-            <div className="section-title"><h3>Linked Media Assets</h3><span>{actor.linked_assets?.length ?? 0}</span></div>
+            <div className="section-title"><h3>关联媒体资产</h3><span>{actor.linked_assets?.length ?? 0}</span></div>
             {(actor.linked_assets ?? []).length ? (
               <div className="linked-asset-grid">
                 {(actor.linked_assets ?? []).map((asset) => (
-                  <ControlButton key={asset.id} data-asset-id={asset.id} aria-label={`Open ${asset.jav_code ?? asset.title ?? "Media Asset"}`} onClick={() => openAsset(asset)}>
+                  <ControlButton key={asset.id} data-asset-id={asset.id} aria-label={`打开资产 ${asset.jav_code ?? asset.title ?? "媒体资产"}`} onClick={() => openAsset(asset)}>
                     <LinkedAssetArtwork asset={asset} />
-                    <span><b>{asset.jav_code ?? "Media Asset"}</b><small>{asset.title ?? asset.path}</small></span>
+                    <span><b>{asset.jav_code ?? "媒体资产"}</b><small>{asset.title ?? asset.path}</small></span>
                   </ControlButton>
                 ))}
               </div>
-            ) : <p className="muted">No linked Media Assets.</p>}
+            ) : <p className="muted">暂无关联媒体资产。</p>}
           </section>
-          <ControlButton className="actor-detail-remove" onClick={() => remove(actor)}><Trash2 aria-hidden="true" /> Remove Actor Folder…</ControlButton>
         </>
       )}
       {!loading && error && (
         <div className="actor-feedback actor-detail-error" role="alert">
           <AlertTriangle aria-hidden="true" />
           <h2>{error}</h2>
-          <p>The Actor Folder still exists; retry its current filesystem view.</p>
-          <ControlButton onClick={retry}>Retry Actor Folder</ControlButton>
+          <p>演员目录仍然存在，请重新读取当前文件系统状态。</p>
+          <ControlButton onClick={retry}>重试演员目录</ControlButton>
         </div>
       )}
     </motion.aside>
@@ -3107,7 +3208,7 @@ function ActorPortrait({
   return (
     <img
       src={unavailable ? ACTOR_POSTER_FALLBACK : actor.poster_url ?? ACTOR_POSTER_FALLBACK}
-      alt={unavailable ? `${actor.name} portrait unavailable` : `${actor.name} portrait`}
+      alt={unavailable ? `${actor.name} 暂无头像` : `${actor.name} 头像`}
       loading={loading}
       onError={() => setFailed(true)}
     />
@@ -3131,49 +3232,46 @@ function ActorRemovalDialog({
       aria-modal="true"
       aria-labelledby="remove-actor-title"
     >
-        <p className="eyebrow">SAFE DERIVED-PATH REMOVAL</p>
-        <h2 id="remove-actor-title">Remove {actor.name}?</h2>
+        <p className="eyebrow">安全移除派生路径</p>
+        <h2 id="remove-actor-title">移除 {actor.name}？</h2>
         <p>
-          Only derived Actor View paths under this Actor Folder will be unlinked. Source Media
-          Assets, NFO metadata, and Jellyfin items will not be removed.
+          只会解除此演员目录下的派生演员视图路径。源媒体资产、NFO 元数据和 Jellyfin 项目都不会被删除。
         </p>
         <dl>
           <div>
-            <dt>Actor Folder</dt>
+            <dt>演员目录</dt>
             <dd>{actor.name}</dd>
           </div>
           <div>
-            <dt>Movies</dt>
+            <dt>影片</dt>
             <dd>{actor.movie_count}</dd>
           </div>
           <div>
-            <dt>Derived paths</dt>
+            <dt>派生路径</dt>
             <dd>{actor.derived_file_count ?? actor.hard_link_count}</dd>
           </div>
           <div>
-            <dt>Unique files</dt>
+            <dt>去重文件</dt>
             <dd>{actor.unique_inode_count ?? 0}</dd>
           </div>
           <div>
-            <dt>Referenced logical size</dt>
+            <dt>引用的逻辑大小</dt>
             <dd>{formatBytes(actor.logical_size)}</dd>
           </div>
           <div>
-            <dt>Reclaimable if removed</dt>
+            <dt>移除后可回收空间</dt>
             <dd>{formatBytes(actor.reclaimable_space)}</dd>
           </div>
         </dl>
         <p className="regenerate-note">
-          Regenerate later by running Actor Links from the source NFO metadata.
-          Hard links require the Actor View and Media Root to remain on the same
-          filesystem.
+          之后可根据源 NFO 元数据重新生成演员链接。硬链接要求演员视图和媒体根目录位于同一文件系统。
         </p>
         <div className="dialog-actions">
           <ControlButton disabled={busy} onClick={cancel}>
-            Cancel
+            取消
           </ControlButton>
           <ControlButton className="danger" disabled={busy} onClick={remove}>
-            Remove via Management Task
+            通过管理任务移除
           </ControlButton>
         </div>
     </section>
@@ -3317,9 +3415,9 @@ function TaskPanel({
   return (
     <div className="task-dashboard">
       <section className="task-create">
-        <h2>New Operation Plan</h2>
+        <h2>新建操作计划</h2>
         <form className="task-form" onSubmit={createTask}>
-          <label htmlFor="media-root">Media Root</label>
+          <label htmlFor="media-root">媒体根目录</label>
           <input
             id="media-root"
             value={mediaRoot}
@@ -3328,12 +3426,12 @@ function TaskPanel({
             required
           />
           <div className="operation-heading">
-            <label>Operations</label>
+            <label>操作</label>
             <ControlButton
               type="button"
               onClick={() => setSelectedOps(operations.map(([key]) => key))}
             >
-              Full pipeline
+              完整流程
             </ControlButton>
           </div>
           <div className="operation-list">
@@ -3349,23 +3447,23 @@ function TaskPanel({
             ))}
           </div>
           <ControlButton type="submit" disabled={!selectedOps.length}>
-            Preview 15-minute plan
+            预览 15 分钟有效的计划
           </ControlButton>
         </form>
       </section>
       <section className="task-history">
         <div className="task-title">
           <div>
-            <h2>Lifecycle</h2>
-            <p>Durable history, live progress, reports and verification</p>
-            <p className="task-count">{taskTotal} tasks</p>
+            <h2>任务生命周期</h2>
+            <p>持久化历史、实时进度、报告与验证</p>
+            <p className="task-count">{taskTotal} 个任务</p>
           </div>
           <ControlButton className="refresh" onClick={() => void refresh()}>
-            Refresh
+            刷新
           </ControlButton>
         </div>
         {tasks.length === 0 ? (
-          <p className="task-empty">No Management Tasks yet.</p>
+          <p className="task-empty">暂无管理任务。</p>
         ) : (
           <ol className="tasks">
             {tasks.map((task) => (
@@ -3374,18 +3472,17 @@ function TaskPanel({
                   <span className={`status status-${taskDisplayStatus(task)}`}>
                     {taskStatusLabels[taskDisplayStatus(task)]}
                   </span>
-                  <strong>{task.kind}</strong>
+                  <strong>{taskKindLabels[task.kind]}</strong>
                   <span className="task-root">{task.media_root}</span>
                 </div>
                 <small>
-                  {task.items.length} item outcome
-                  {task.items.length === 1 ? "" : "s"} · {task.id}
+                  {task.items.length} 个项目结果 · {task.id}
                 </small>
                 {(task.status === "queued" || task.status === "running") && (
                   <div
                     className="task-progress"
                     role="progressbar"
-                    aria-label="Task progress"
+                    aria-label="任务进度"
                     aria-valuemin={0}
                     aria-valuemax={100}
                     aria-valuenow={taskProgressPercent(task)}
@@ -3402,9 +3499,9 @@ function TaskPanel({
                 )}
                 {task.operation_plan && (
                   <div className="plan">
-                    <b>Review final paths</b>
+                    <b>检查最终路径</b>
                     <small>
-                      Expires{" "}
+                      到期时间{" "}
                       {new Date(
                         task.plan_expires_at! * 1000,
                       ).toLocaleTimeString()}
@@ -3421,14 +3518,14 @@ function TaskPanel({
                           key={index}
                         >
                           <span>
-                            {action.destructive ? "DESTRUCTIVE" : action.kind}
+                            {action.destructive ? "破坏性操作" : kindLabel(action.kind)}
                           </span>
                           <code>{action.path ?? "—"}</code>
                         </li>
                       ))}
                       {task.operation_plan.actions.length > 50 && (
                         <li className="task-truncated">
-                          {task.operation_plan.actions.length - 50} more planned actions in the final report
+                          最终报告中还有 {task.operation_plan.actions.length - 50} 个计划操作
                         </li>
                       )}
                     </ul>
@@ -3436,7 +3533,7 @@ function TaskPanel({
                       !task.plan_consumed_at &&
                       Date.now() / 1000 <= task.plan_expires_at! && (
                         <ControlButton onClick={() => requestPlanConfirmation(task)}>
-                          Confirm and execute
+                          确认并执行
                         </ControlButton>
                       )}
                   </div>
@@ -3445,18 +3542,18 @@ function TaskPanel({
                   <ul className="task-items">
                     {task.items.slice(0, 50).map((item) => (
                       <li key={item.id}>
-                        <span>{item.status}</span>
-                        <b>{item.kind}</b>
+                        <span>{taskItemStatusLabels[item.status] ?? item.status}</span>
+                        <b>{kindLabel(item.kind)}</b>
                         <span className="task-item-path">
                           <code>{item.path ?? "—"}</code>
                           {item.path && (
                             <ControlButton
                               type="button"
                               className="copy-path"
-                              aria-label={`Copy full path ${item.path}`}
+                              aria-label={`复制完整路径 ${item.path}`}
                               onClick={() => void navigator.clipboard?.writeText(item.path!)}
                             >
-                              Copy
+                              复制
                             </ControlButton>
                           )}
                         </span>
@@ -3465,14 +3562,14 @@ function TaskPanel({
                     ))}
                     {task.items.length > 50 && (
                       <li className="task-truncated">
-                        {task.items.length - 50} more item outcomes in the final report
+                        最终报告中还有 {task.items.length - 50} 个项目结果
                       </li>
                     )}
                   </ul>
                 )}
                 {task.report && (
                   <details>
-                    <summary>Final report and migration verification</summary>
+                    <summary>最终报告和迁移验证</summary>
                     <pre>{JSON.stringify(task.report, null, 2)}</pre>
                   </details>
                 )}
@@ -3487,7 +3584,7 @@ function TaskPanel({
             disabled={historyPageLoading}
             onClick={() => void loadMore()}
           >
-            {historyPageLoading ? "Loading tasks…" : "Load 20 more tasks"}
+            {historyPageLoading ? "正在加载任务…" : "再加载 20 个任务"}
           </ControlButton>
         )}
       </section>
@@ -3495,7 +3592,7 @@ function TaskPanel({
   );
 }
 function formatDate(v: string) {
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat("zh-CN", {
     month: "long",
     day: "numeric",
     year: "numeric",

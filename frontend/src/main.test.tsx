@@ -25,8 +25,8 @@ describe("Administrator initialization", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
-    const password = screen.getByLabelText("Password");
-    const submit = screen.getByRole("button", { name: "Initialize" });
+    const password = screen.getByLabelText("密码");
+    const submit = screen.getByRole("button", { name: "初始化" });
     expect(password).toHaveAttribute("autocomplete", "new-password");
 
     await userEvent.type(password, "4827");
@@ -36,7 +36,7 @@ describe("Administrator initialization", () => {
     expect(submit).toBeDisabled();
     resolveRequest?.(new Response(null, { status: 204 }));
     expect(
-      await screen.findByText("Administrator initialized. Sign in to continue."),
+      await screen.findByText("管理员初始化完成，请登录后继续。"),
     ).toBeInTheDocument();
   });
 
@@ -48,12 +48,12 @@ describe("Administrator initialization", () => {
     );
 
     render(<App />);
-    await userEvent.type(screen.getByLabelText("Password"), "4827");
-    await userEvent.click(screen.getByRole("button", { name: "Initialize" }));
+    await userEvent.type(screen.getByLabelText("密码"), "4827");
+    await userEvent.click(screen.getByRole("button", { name: "初始化" }));
 
     expect(
       await screen.findByText(
-        "Administrator is already initialized. Sign in to continue.",
+        "管理员已初始化，请登录后继续。",
       ),
     ).toBeInTheDocument();
   });
@@ -93,10 +93,10 @@ describe("Administrator 登录", () => {
 
     const firstVisit = render(<App />);
     await userEvent.type(
-      await screen.findByLabelText("Password"),
+      await screen.findByLabelText("密码"),
       "correct horse battery staple",
     );
-    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await userEvent.click(screen.getByRole("button", { name: "登录" }));
     await waitFor(() =>
       expect(requests).toContainEqual({
         url: "/api/v1/auth/login",
@@ -145,17 +145,17 @@ describe("Active Rule Set settings", () => {
 
     render(<App />);
     await userEvent.click(
-      (await screen.findAllByRole("button", { name: /Settings/ }))[0],
+      (await screen.findAllByRole("button", { name: /设置/ }))[0],
     );
     expect(
-      await screen.findByRole("heading", { name: "Active Rule Set" }),
+      await screen.findByRole("heading", { name: "当前规则集" }),
     ).toBeInTheDocument();
     await userEvent.type(
-      screen.getByLabelText("Rule Source URL"),
+      screen.getByLabelText("规则来源 URL"),
       "https://raw.githubusercontent.com/acme/rules/main/rules.yaml",
     );
     await userEvent.click(
-      screen.getByRole("button", { name: "Download proposal" }),
+      screen.getByRole("button", { name: "下载草案" }),
     );
     expect(await screen.findByDisplayValue(/\*\.ad/)).toBeInTheDocument();
     expect(
@@ -164,14 +164,14 @@ describe("Active Rule Set settings", () => {
           request.url === "/api/v1/rules/active" && request.method === "PUT",
       ),
     ).toBe(false);
-    await userEvent.click(screen.getByRole("button", { name: "Validate" }));
+    await userEvent.click(screen.getByRole("button", { name: "验证" }));
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Save Active Rule Set" }),
+        screen.getByRole("button", { name: "保存当前规则集" }),
       ).toBeEnabled(),
     );
     await userEvent.click(
-      screen.getByRole("button", { name: "Save Active Rule Set" }),
+      screen.getByRole("button", { name: "保存当前规则集" }),
     );
     expect(
       requests.some(
@@ -180,10 +180,10 @@ describe("Active Rule Set settings", () => {
       ),
     ).toBe(false);
     const dialog = await screen.findByRole("dialog", {
-      name: "Activate Rule Set",
+      name: "启用规则集",
     });
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Activate Rule Set" }),
+      within(dialog).getByRole("button", { name: "启用规则集" }),
     );
     expect(
       requests.some(
@@ -206,13 +206,13 @@ describe("permanent deletion", () => {
       return new Response(null,{status:204});
     }));
     render(<App/>);
-    await userEvent.click((await screen.findAllByRole("button",{name:/Deletion Candidates/}))[0]);
+    await userEvent.click((await screen.findAllByRole("button",{name:/删除候选/}))[0]);
     await userEvent.click(await screen.findByRole("checkbox",{name:/video.mp4/}));
-    await userEvent.click(screen.getByRole("button",{name:"Review 1"}));
-    expect(await screen.findByText("⚠ This plan permanently removes video content.")).toBeInTheDocument();
-    const deleteButton=screen.getByRole("button",{name:"Permanently delete"});
+    await userEvent.click(screen.getByRole("button",{name:"检查 1"}));
+    expect(await screen.findByText("⚠ 此计划会永久删除视频内容。")).toBeInTheDocument();
+    const deleteButton=screen.getByRole("button",{name:"永久删除"});
     expect(deleteButton).toBeDisabled();
-    await userEvent.type(screen.getByLabelText(/Type/),"PERMANENTLY DELETE");
+    await userEvent.type(screen.getByLabelText(/输入/),"PERMANENTLY DELETE");
     expect(deleteButton).toBeEnabled();
     await userEvent.click(deleteButton);
     expect(requests.some(request=>request.url.endsWith("/execute")&&request.body?.includes('"irreversible":true'))).toBe(true);
@@ -282,11 +282,12 @@ function stubActorApi() {
 }
 
 describe("Actor detail navigation", () => {
-  it("opens an actor card without invoking its separate Remove action", async () => {
+  it("opens an actor card and keeps removal inside the detail action menu", async () => {
     const requests = stubActorApi();
     render(<App />);
-    await userEvent.click((await screen.findAllByRole("button", { name: /Actors/ }))[0]);
-    await userEvent.click(await screen.findByRole("button", { name: "Open Alice Aoki" }));
+    await userEvent.click((await screen.findAllByRole("button", { name: /演员/ }))[0]);
+    expect(screen.queryByRole("button", { name: /删除演员目录/ })).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "打开演员 Alice Aoki" }));
 
     expect(await screen.findByRole("heading", { name: "Alice Aoki" })).toBeInTheDocument();
     expect(location.pathname).toBe("/actors/QWxpY2UgQW9raQ");
@@ -299,11 +300,12 @@ describe("Actor detail navigation", () => {
     stubActorApi();
     render(<App />);
 
-    expect(await screen.findByText("Derived paths")).toBeInTheDocument();
-    expect(screen.getByText("Unique files")).toBeInTheDocument();
-    expect(screen.getByText("Referenced logical size")).toBeInTheDocument();
-    expect(screen.getByText("Reclaimable if removed")).toBeInTheDocument();
-    const remove = screen.getByRole("button", { name: "Remove Actor Folder…" });
+    expect(await screen.findByText("派生路径")).toBeInTheDocument();
+    expect(screen.getByText("去重文件")).toBeInTheDocument();
+    expect(screen.getByText("引用的逻辑大小")).toBeInTheDocument();
+    expect(screen.getByText("移除后可回收空间")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "更多操作" }));
+    const remove = screen.getByRole("menuitem", { name: "删除演员目录…" });
     expect(remove).toHaveClass("ui-touch-target");
     expect(productionValue(remove, "min-height")).toBe("44px");
   });
@@ -313,13 +315,13 @@ describe("Actor detail navigation", () => {
     stubActorApi();
     render(<App />);
 
-    await userEvent.click(await screen.findByRole("button", { name: /Open ABC-123/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /打开资产 ABC-123/ }));
     expect(await screen.findByRole("heading", { name: "ABC-123" })).toBeInTheDocument();
-    const back = screen.getByRole("button", { name: "Back to Alice Aoki" });
+    const back = screen.getByRole("button", { name: "返回 Alice Aoki" });
     expect(back).toHaveClass("ui-touch-target");
     expect(productionValue(back, "min-height")).toBe("44px");
     await userEvent.click(back);
-    expect(await screen.findByText("Referenced logical size")).toBeInTheDocument();
+    expect(await screen.findByText("引用的逻辑大小")).toBeInTheDocument();
     expect(location.pathname).toBe("/actors/QWxpY2UgQW9raQ");
   });
 });
@@ -330,15 +332,15 @@ describe("BeUI Photos presentation", () => {
     render(<App />);
 
     await screen.findByText("所有资产", { selector: "h1" });
-    await userEvent.click(screen.getByRole("button", { name: "Recently Added" }));
+    await userEvent.click(screen.getByRole("button", { name: "最近入库" }));
     expect(screen.getByText("最近入库", { selector: "h1" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Exceptions" }));
+    await userEvent.click(screen.getByRole("button", { name: "异常资产" }));
     expect(screen.getByText("异常资产", { selector: "h1" })).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "Management Tasks" }));
-    expect(screen.getByLabelText("Media Root")).toHaveValue("/media");
-    await userEvent.click(screen.getAllByRole("button", { name: "Settings" })[0]);
-    expect(screen.getByLabelText("Rule Source URL")).toHaveValue(
+    await userEvent.click(screen.getByRole("button", { name: "整理任务" }));
+    expect(screen.getByLabelText("媒体根目录")).toHaveValue("/media");
+    await userEvent.click(screen.getAllByRole("button", { name: "设置" })[0]);
+    expect(screen.getByLabelText("规则来源 URL")).toHaveValue(
       "https://raw.githubusercontent.com/hqwuzhaoyi/rust-jav/feature/web-jellyfin-truenas/rules.yaml",
     );
   });
@@ -364,7 +366,7 @@ describe("BeUI Photos presentation", () => {
     expect(tile.querySelector(".asset-overlay")).toBeInTheDocument();
     expect(tile.querySelector("svg")).toBeInTheDocument();
     await userEvent.click(tile);
-    const overview = await screen.findByRole("tab", { name: "Overview" });
+    const overview = await screen.findByRole("tab", { name: "概览" });
     expect(overview).toHaveAttribute(
       "aria-controls",
     );

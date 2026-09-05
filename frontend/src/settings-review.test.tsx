@@ -25,7 +25,7 @@ function baseResponse(url: string, method: string) {
 
 async function enterSettings() {
   render(<App />);
-  const buttons = await screen.findAllByRole("button", { name: "Settings" });
+  const buttons = await screen.findAllByRole("button", { name: "设置" });
   await userEvent.click(buttons[0]);
   await screen.findByRole("heading", { name: "Jellyfin" });
 }
@@ -61,11 +61,11 @@ describe("Issue #42 P1 Settings review", () => {
     await enterSettings();
 
     const section = jellyfinSection();
-    await userEvent.type(within(section).getByLabelText("Server URL"), "http://draft:8096");
-    await userEvent.type(within(section).getByLabelText("Library IDs"), "draft-library");
-    await userEvent.type(within(section).getByLabelText("Server API key"), "draft-key");
-    expect(within(section).getByText("Unsaved changes")).toBeVisible();
-    expect(within(section).getByRole("button", { name: "Save Jellyfin" })).toBeEnabled();
+    await userEvent.type(within(section).getByLabelText("服务器 URL"), "http://draft:8096");
+    await userEvent.type(within(section).getByLabelText("媒体库 ID"), "draft-library");
+    await userEvent.type(within(section).getByLabelText("服务器 API 密钥"), "draft-key");
+    expect(within(section).getByText("有未保存的更改")).toBeVisible();
+    expect(within(section).getByRole("button", { name: "保存 Jellyfin" })).toBeEnabled();
 
     await act(async () => {
       resolveConfig(
@@ -78,11 +78,11 @@ describe("Issue #42 P1 Settings review", () => {
     });
 
     await waitFor(() =>
-      expect(within(section).getByLabelText("Server URL")).toHaveValue("http://draft:8096"),
+      expect(within(section).getByLabelText("服务器 URL")).toHaveValue("http://draft:8096"),
     );
-    expect(within(section).getByLabelText("Library IDs")).toHaveValue("draft-library");
-    expect(within(section).getByLabelText("Server API key")).toHaveValue("draft-key");
-    expect(within(section).getByRole("button", { name: "Save Jellyfin" })).toBeEnabled();
+    expect(within(section).getByLabelText("媒体库 ID")).toHaveValue("draft-library");
+    expect(within(section).getByLabelText("服务器 API 密钥")).toHaveValue("draft-key");
+    expect(within(section).getByRole("button", { name: "保存 Jellyfin" })).toBeEnabled();
   });
 
   it("allows edits after a failed Jellyfin load and retries without replacing the dirty draft", async () => {
@@ -111,24 +111,24 @@ describe("Issue #42 P1 Settings review", () => {
     expect(await within(section).findByRole("alert")).toHaveTextContent(
       "Jellyfin settings are unavailable.",
     );
-    const url = within(section).getByLabelText("Server URL");
+    const url = within(section).getByLabelText("服务器 URL");
     await userEvent.type(url, "http://draft-after-error:8096");
-    await userEvent.type(within(section).getByLabelText("Library IDs"), "draft-library");
-    await userEvent.type(within(section).getByLabelText("Server API key"), "draft-key");
-    expect(within(section).getByRole("button", { name: "Save Jellyfin" })).toBeEnabled();
+    await userEvent.type(within(section).getByLabelText("媒体库 ID"), "draft-library");
+    await userEvent.type(within(section).getByLabelText("服务器 API 密钥"), "draft-key");
+    expect(within(section).getByRole("button", { name: "保存 Jellyfin" })).toBeEnabled();
 
     await userEvent.click(
-      within(section).getByRole("button", { name: "Retry Jellyfin settings" }),
+      within(section).getByRole("button", { name: "重新加载 Jellyfin 设置" }),
     );
     await waitFor(() =>
       expect(
-        within(section).queryByRole("button", { name: "Retry Jellyfin settings" }),
+        within(section).queryByRole("button", { name: "重新加载 Jellyfin 设置" }),
       ).not.toBeInTheDocument(),
     );
     expect(url).toHaveValue("http://draft-after-error:8096");
-    expect(within(section).getByLabelText("Library IDs")).toHaveValue("draft-library");
-    expect(within(section).getByLabelText("Server API key")).toHaveValue("draft-key");
-    expect(within(section).getByText("Unsaved changes")).toBeVisible();
+    expect(within(section).getByLabelText("媒体库 ID")).toHaveValue("draft-library");
+    expect(within(section).getByLabelText("服务器 API 密钥")).toHaveValue("draft-key");
+    expect(within(section).getByText("有未保存的更改")).toBeVisible();
   });
 
   it("restores a dirty Settings history pop until discard is confirmed", async () => {
@@ -153,27 +153,27 @@ describe("Issue #42 P1 Settings review", () => {
     await enterSettings();
     const section = jellyfinSection();
     await waitFor(() =>
-      expect(within(section).getByLabelText("Server URL")).toHaveValue("http://jellyfin:8096"),
+      expect(within(section).getByLabelText("服务器 URL")).toHaveValue("http://jellyfin:8096"),
     );
-    await userEvent.clear(within(section).getByLabelText("Server URL"));
-    await userEvent.type(within(section).getByLabelText("Server URL"), "http://draft:8096");
+    await userEvent.clear(within(section).getByLabelText("服务器 URL"));
+    await userEvent.type(within(section).getByLabelText("服务器 URL"), "http://draft:8096");
 
     history.replaceState({ page: "previous" }, "", previousUrl);
     dispatchEvent(new PopStateEvent("popstate", { state: { page: "previous" } }));
     const firstDialog = await screen.findByRole("dialog", {
-      name: "Discard unsaved changes?",
+      name: "放弃未保存的更改？",
     });
     expect(forward).toHaveBeenCalledTimes(1);
-    await userEvent.click(within(firstDialog).getByRole("button", { name: "Keep editing" }));
+    await userEvent.click(within(firstDialog).getByRole("button", { name: "继续编辑" }));
     expect(location.pathname + location.search).toBe(settingsUrl);
-    expect(within(section).getByLabelText("Server URL")).toHaveValue("http://draft:8096");
+    expect(within(section).getByLabelText("服务器 URL")).toHaveValue("http://draft:8096");
 
     history.replaceState({ page: "previous" }, "", previousUrl);
     dispatchEvent(new PopStateEvent("popstate", { state: { page: "previous" } }));
     const secondDialog = await screen.findByRole("dialog", {
-      name: "Discard unsaved changes?",
+      name: "放弃未保存的更改？",
     });
-    await userEvent.click(within(secondDialog).getByRole("button", { name: "Discard changes" }));
+    await userEvent.click(within(secondDialog).getByRole("button", { name: "放弃更改" }));
     expect(back).toHaveBeenCalledTimes(1);
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Jellyfin" })).not.toBeInTheDocument(),
@@ -193,22 +193,22 @@ describe("Issue #42 P1 Settings review", () => {
       }),
     );
     await enterSettings();
-    const heading = screen.getByRole("heading", { name: "Active Rule Set" });
-    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
-    fireEvent.change(screen.getByLabelText("Active Rule Set YAML"), {
+    const heading = screen.getByRole("heading", { name: "当前规则集" });
+    await userEvent.click(screen.getByRole("button", { name: "编辑" }));
+    fireEvent.change(screen.getByLabelText("当前规则集 YAML"), {
       target: { value: "version: 1\nrules:\n  - pattern: '*.review'\n" },
     });
-    await userEvent.click(screen.getByRole("button", { name: "Validate" }));
+    await userEvent.click(screen.getByRole("button", { name: "验证" }));
     await userEvent.click(
-      await screen.findByRole("button", { name: "Save Active Rule Set" }),
+      await screen.findByRole("button", { name: "保存当前规则集" }),
     );
-    const dialog = await screen.findByRole("dialog", { name: "Activate Rule Set" });
+    const dialog = await screen.findByRole("dialog", { name: "启用规则集" });
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Activate Rule Set" }),
+      within(dialog).getByRole("button", { name: "启用规则集" }),
     );
 
     await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: "Activate Rule Set" })).not.toBeInTheDocument(),
+      expect(screen.queryByRole("dialog", { name: "启用规则集" })).not.toBeInTheDocument(),
     );
     await waitFor(() => expect(heading).toHaveFocus());
   });

@@ -1369,18 +1369,18 @@ async fn embedded_management_interface_exposes_task_creation_and_live_lifecycle(
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let javascript = std::str::from_utf8(&body).unwrap();
-    assert!(javascript.contains("Management Tasks"));
+    assert!(javascript.contains("整理任务"));
     assert!(javascript.contains("/api/v1/tasks"));
     assert!(javascript.contains("EventSource"));
-    assert!(javascript.contains("Media Root"));
-    assert!(javascript.contains("Operation"));
-    assert!(javascript.contains("Preview"));
-    assert!(javascript.contains("Confirm and execute"));
-    assert!(javascript.contains("Preview 15-minute plan"));
-    assert!(javascript.contains("Lifecycle"));
-    assert!(javascript.contains("Refresh"));
-    assert!(javascript.contains("item outcome"));
-    assert!(javascript.contains("All Assets"));
+    assert!(javascript.contains("媒体根目录"));
+    assert!(javascript.contains("操作"));
+    assert!(javascript.contains("预览"));
+    assert!(javascript.contains("确认并执行"));
+    assert!(javascript.contains("15 分钟有效的计划"));
+    assert!(javascript.contains("任务生命周期"));
+    assert!(javascript.contains("刷新"));
+    assert!(javascript.contains("项目结果"));
+    assert!(javascript.contains("所有资产"));
     assert!(javascript.contains("搜索番号、标题或路径"));
     assert!(javascript.contains("/api/v1/assets"));
 }
@@ -1400,16 +1400,16 @@ async fn embedded_browser_shell_has_asset_search_state_filters_and_responsive_na
         .unwrap();
     let javascript = to_bytes(javascript.into_body(), usize::MAX).await.unwrap();
     let javascript = std::str::from_utf8(&javascript).unwrap();
-    assert!(javascript.contains("All Assets"));
+    assert!(javascript.contains("所有资产"));
     assert!(javascript.contains("/api/v1/assets"));
-    assert!(javascript.contains("Synchronizing"));
-    assert!(javascript.contains("Overview"));
+    assert!(javascript.contains("同步中"));
+    assert!(javascript.contains("概览"));
     assert!(javascript.contains("NFO"));
-    assert!(javascript.contains("Actor Folder"));
+    assert!(javascript.contains("演员目录"));
     assert!(javascript.contains("/api/v1/actors"));
-    assert!(javascript.contains("Logical Size"));
-    assert!(javascript.contains("Reclaimable Space"));
-    assert!(javascript.contains("Remove via Management Task"));
+    assert!(javascript.contains("逻辑大小"));
+    assert!(javascript.contains("可回收空间"));
+    assert!(javascript.contains("通过管理任务移除"));
     assert!(javascript.contains("/api/v1/assets/"));
     assert!(javascript.contains("dialog"));
     let css = app(state)
@@ -1429,8 +1429,9 @@ async fn embedded_browser_shell_has_asset_search_state_filters_and_responsive_na
     assert!(css.contains("asset-inspector"));
     assert!(css.contains("aspect-ratio:2/3"));
     assert!(css.contains("actor-folder-grid"));
-    assert!(css.contains("grid-template-columns:repeat(3"));
-    assert!(css.contains("grid-template-columns:repeat(4"));
+    assert!(
+        css.contains("actor-folder-grid{grid-template-columns:repeat(auto-fill,minmax(180px,1fr))")
+    );
     assert!(css.contains("max-height:86vh"));
     assert!(css.contains("width:360px"));
 }
@@ -1450,20 +1451,20 @@ async fn management_ui_exposes_every_operation_full_pipeline_and_plan_confirmati
     let javascript = to_bytes(javascript.into_body(), usize::MAX).await.unwrap();
     let javascript = std::str::from_utf8(&javascript).unwrap();
     for label in [
-        "Delete ad files",
-        "Organize by code",
-        "Clean empty directories",
-        "Standardize names",
-        "Extract codes",
-        "Categorize files",
-        "Move to ORIGIN",
-        "Remove duplicates",
-        "Full pipeline",
+        "删除广告文件",
+        "按番号整理",
+        "清理空目录",
+        "规范文件名",
+        "提取番号",
+        "分类文件",
+        "移动到 ORIGIN",
+        "移除重复文件",
+        "完整流程",
     ] {
         assert!(javascript.contains(label), "missing {label}");
     }
-    assert!(javascript.contains("Review final paths"));
-    assert!(javascript.contains("Confirm and execute"));
+    assert!(javascript.contains("检查最终路径"));
+    assert!(javascript.contains("确认并执行"));
     assert!(javascript.contains("plan_id"));
     assert!(javascript.contains("confirmed"));
 }
@@ -3368,6 +3369,147 @@ async fn jellyfin_configuration_connection_association_and_manual_refresh_are_se
 }
 
 #[tokio::test]
+async fn certain_jellyfin_people_fill_empty_asset_actors_and_filter_stale_actor_links() {
+    use axum::{routing::get, Json, Router};
+
+    let jellyfin = Router::new()
+        .route(
+            "/Items",
+            get(|| async {
+                Json(serde_json::json!({"Items":[{
+                    "Id":"ofje-550",
+                    "Name":"OFJE-550",
+                    "Path":"/media/jav/ORIGIN/ofje-550/ofje-550-1.mp4",
+                    "ProviderIds":{},
+                    "UserData":{},
+                    "ImageTags":{},
+                    "People":[
+                        {"Name":"架乃ゆら","Type":"Actor"},
+                        {"Name":"三上悠亜","Type":"Actor"},
+                        {"Name":"作品导演","Type":"Director"}
+                    ]
+                }] }))
+            }),
+        )
+        .route(
+            "/Persons",
+            get(|| async {
+                Json(serde_json::json!({"Items":[
+                    {"Id":"yura","Name":"架乃ゆら","ImageTags":{}},
+                    {"Id":"yua","Name":"三上悠亜","ImageTags":{}}
+                ]}))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let jellyfin_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, jellyfin).await.unwrap() });
+
+    let (dir, mut config) = fixture();
+    let media = dir.path().join("media/ORIGIN/ofje-550");
+    let actors = dir.path().join("actors");
+    std::fs::create_dir_all(&media).unwrap();
+    std::fs::write(media.join("ofje-550-1.mp4"), b"video").unwrap();
+    std::fs::write(media.join("movie.nfo"), b"").unwrap();
+    for actor in ["架乃ゆら", "错误演员"] {
+        let folder = actors.join(actor).join("ofje-550");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::hard_link(media.join("ofje-550-1.mp4"), folder.join("ofje-550-1.mp4")).unwrap();
+    }
+    config.media_roots.push(dir.path().join("media"));
+    config.actor_view_root = Some(actors);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let login = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/auth/login",
+        r#"{"password":"a strong password"}"#,
+        None,
+    )
+    .await;
+    let cookie = login.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let configured = json_request(
+        app(state.clone()),
+        "PUT",
+        "/api/v1/jellyfin/config",
+        &serde_json::json!({
+            "url": jellyfin_url,
+            "library_ids": ["jav"],
+            "api_key": "server-only-secret"
+        })
+        .to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(configured.status(), StatusCode::NO_CONTENT);
+
+    let assets = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/assets?q=OFJE-550&page=1&per_page=10",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let assets: serde_json::Value =
+        serde_json::from_slice(&to_bytes(assets.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let id = assets["items"][0]["id"].as_str().unwrap();
+    let detail = json_request(
+        app(state.clone()),
+        "GET",
+        &format!("/api/v1/assets/{id}"),
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let detail: serde_json::Value =
+        serde_json::from_slice(&to_bytes(detail.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(
+        detail["actors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|actor| actor["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["架乃ゆら", "三上悠亜"]
+    );
+
+    for (actor, expected_assets) in [("架乃ゆら", 1), ("错误演员", 0)] {
+        let mut actor_url = url::Url::parse("http://localhost/api/v1/actors/").unwrap();
+        actor_url
+            .path_segments_mut()
+            .unwrap()
+            .pop_if_empty()
+            .push(actor);
+        let response = json_request(
+            app(state.clone()),
+            "GET",
+            actor_url.path(),
+            "",
+            Some(&cookie),
+        )
+        .await;
+        let response: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(
+            response["linked_assets"].as_array().unwrap().len(),
+            expected_assets
+        );
+    }
+}
+
+#[tokio::test]
 async fn jellyfin_configuration_rejects_url_userinfo_and_get_exposes_only_safe_fields() {
     let (_dir, config) = fixture();
     password_secrets(
@@ -3514,14 +3656,14 @@ async fn embedded_ui_preserves_library_and_tasks_while_adding_jellyfin_controls(
     let javascript = to_bytes(javascript.into_body(), usize::MAX).await.unwrap();
     let javascript = std::str::from_utf8(&javascript).unwrap();
     for text in [
-        "All Assets",
-        "Management Tasks",
-        "Overview",
+        "所有资产",
+        "整理任务",
+        "概览",
         "NFO",
         "Jellyfin",
-        "Open in Jellyfin",
-        "Test connection",
-        "Refresh Jellyfin",
+        "在 Jellyfin 中打开",
+        "测试连接",
+        "刷新 Jellyfin",
     ] {
         assert!(
             javascript.contains(text),

@@ -101,6 +101,16 @@ pub struct JellyfinItem {
     pub user_data: JellyfinUserData,
     #[serde(default)]
     pub image_tags: BTreeMap<String, String>,
+    #[serde(default)]
+    pub people: Vec<JellyfinItemPerson>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub struct JellyfinItemPerson {
+    pub name: String,
+    #[serde(rename = "Type", default)]
+    pub person_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -155,7 +165,21 @@ impl JellyfinItem {
             provider_ids,
             user_data: JellyfinUserData::default(),
             image_tags: BTreeMap::new(),
+            people: Vec::new(),
         }
+    }
+
+    pub fn actor_names(&self) -> impl Iterator<Item = &str> {
+        self.people
+            .iter()
+            .filter(|person| person.person_type.eq_ignore_ascii_case("actor"))
+            .map(|person| person.name.as_str())
+    }
+
+    pub fn has_actor(&self, name: &str) -> bool {
+        let wanted = normalize_person_name(name);
+        self.actor_names()
+            .any(|actor| normalize_person_name(actor) == wanted)
     }
 
     pub fn primary_image_ref(&self) -> Option<JellyfinImageRef> {
@@ -326,7 +350,7 @@ impl JellyfinClient {
                     self.get("Items")?.query(&[
                         ("parentId", library_id.as_str()),
                         ("recursive", "true"),
-                        ("fields", "Path,ProviderIds,UserData,ImageTags"),
+                        ("fields", "Path,ProviderIds,UserData,ImageTags,People"),
                     ]),
                     remaining,
                 )
@@ -611,6 +635,10 @@ pub fn match_person<'a>(name: &str, people: &'a [JellyfinPerson]) -> Option<&'a 
         .filter(|person| normalize_person_name(&person.name) == wanted);
     let matched = matches.next()?;
     (matches.next().is_none() && matched.primary_image_tag().is_some()).then_some(matched)
+}
+
+pub fn person_names_equal(left: &str, right: &str) -> bool {
+    normalize_person_name(left) == normalize_person_name(right)
 }
 
 fn normalize_person_name(value: &str) -> String {

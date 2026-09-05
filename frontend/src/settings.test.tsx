@@ -92,21 +92,21 @@ async function openSettings(options: { mobile?: boolean } = {}) {
   }
   render(<App />);
   const settingsButtons = await screen.findAllByRole("button", {
-    name: "Settings",
+    name: "设置",
   });
   await userEvent.click(
     options.mobile ? settingsButtons.at(-1)! : settingsButtons[0],
   );
-  await screen.findByRole("heading", { name: "Active Rule Set" });
+  await screen.findByRole("heading", { name: "当前规则集" });
   await waitFor(() =>
-    expect(screen.getByLabelText("Server URL")).toHaveValue(
+    expect(screen.getByLabelText("服务器 URL")).toHaveValue(
       "http://jellyfin:8096",
     ),
   );
   return settingsButtons;
 }
 
-function settingsSection(name: "Active Rule Set" | "Jellyfin") {
+function settingsSection(name: "当前规则集" | "Jellyfin") {
   const section = screen.getByRole("heading", { name }).closest("section");
   if (!section) throw new Error(`${name} section is missing`);
   return section;
@@ -128,13 +128,13 @@ describe("Issue #42 Rule proposal activation", () => {
     const requests = stubSettingsApi();
     await openSettings();
 
-    await userEvent.clear(screen.getByLabelText("Rule Source URL"));
+    await userEvent.clear(screen.getByLabelText("规则来源 URL"));
     await userEvent.type(
-      screen.getByLabelText("Rule Source URL"),
+      screen.getByLabelText("规则来源 URL"),
       "https://raw.githubusercontent.com/acme/rules/main/rules.yaml",
     );
     await userEvent.click(
-      screen.getByRole("button", { name: "Download proposal" }),
+      screen.getByRole("button", { name: "下载草案" }),
     );
     expect(await screen.findByDisplayValue("*.proposal", { exact: false })).toBeVisible();
     expect(
@@ -144,9 +144,9 @@ describe("Issue #42 Rule proposal activation", () => {
       ),
     ).toHaveLength(0);
 
-    await userEvent.click(screen.getByRole("button", { name: "Validate" }));
+    await userEvent.click(screen.getByRole("button", { name: "验证" }));
     const activate = await screen.findByRole("button", {
-      name: "Save Active Rule Set",
+      name: "保存当前规则集",
     });
     await userEvent.click(activate);
 
@@ -157,7 +157,7 @@ describe("Issue #42 Rule proposal activation", () => {
       ),
     ).toHaveLength(0);
     let dialog = await screen.findByRole("dialog", {
-      name: "Activate Rule Set",
+      name: "启用规则集",
     });
     expect(dialog).toHaveTextContent("*.proposal");
     expect(dialog).toContainElement(document.activeElement as HTMLElement);
@@ -165,15 +165,15 @@ describe("Issue #42 Rule proposal activation", () => {
     await userEvent.keyboard("{Escape}");
     await waitFor(() =>
       expect(
-        screen.queryByRole("dialog", { name: "Activate Rule Set" }),
+        screen.queryByRole("dialog", { name: "启用规则集" }),
       ).not.toBeInTheDocument(),
     );
     expect(activate).toHaveFocus();
 
     await userEvent.keyboard("{Enter}");
-    dialog = await screen.findByRole("dialog", { name: "Activate Rule Set" });
+    dialog = await screen.findByRole("dialog", { name: "启用规则集" });
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Activate Rule Set" }),
+      within(dialog).getByRole("button", { name: "启用规则集" }),
     );
     expect(
       requests.find(
@@ -187,13 +187,13 @@ describe("Issue #42 Rule proposal activation", () => {
     const requests = stubSettingsApi();
     await openSettings();
 
-    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
-    fireEvent.change(screen.getByLabelText("Active Rule Set YAML"), {
+    await userEvent.click(screen.getByRole("button", { name: "编辑" }));
+    fireEvent.change(screen.getByLabelText("当前规则集 YAML"), {
       target: { value: emptyYaml },
     });
-    await userEvent.click(screen.getByRole("button", { name: "Validate" }));
+    await userEvent.click(screen.getByRole("button", { name: "验证" }));
     const reviewEmpty = await screen.findByRole("button", {
-      name: "Confirm empty and save",
+      name: "确认空规则并保存",
     });
     await userEvent.click(reviewEmpty);
 
@@ -204,12 +204,12 @@ describe("Issue #42 Rule proposal activation", () => {
       ),
     ).toHaveLength(0);
     const dialog = await screen.findByRole("dialog", {
-      name: "Activate empty Rule Set",
+      name: "启用空规则集",
     });
-    expect(dialog).toHaveTextContent(/no enabled rules/i);
+    expect(dialog).toHaveTextContent("没有启用的规则");
     await userEvent.click(
       within(dialog).getByRole("button", {
-        name: "Activate empty Rule Set",
+        name: "启用空规则集",
       }),
     );
     expect(
@@ -231,13 +231,13 @@ describe("Issue #42 Rule proposal activation", () => {
     await openSettings();
 
     await userEvent.click(
-      screen.getByRole("button", { name: "Download proposal" }),
+      screen.getByRole("button", { name: "下载草案" }),
     );
 
     expect(
-      await within(settingsSection("Active Rule Set")).findByRole("alert"),
+      await within(settingsSection("当前规则集")).findByRole("alert"),
     ).toHaveTextContent("Rule source host is not allowed.");
-    expect(screen.getByLabelText("Active Rule Set YAML")).toHaveValue(activeYaml);
+    expect(screen.getByLabelText("当前规则集 YAML")).toHaveValue(activeYaml);
   });
 });
 
@@ -247,19 +247,19 @@ describe("Issue #42 Jellyfin Settings state and security", () => {
     await openSettings();
 
     const section = settingsSection("Jellyfin");
-    const save = within(section).getByRole("button", { name: "Save Jellyfin" });
+    const save = within(section).getByRole("button", { name: "保存 Jellyfin" });
     expect(save).toBeDisabled();
-    expect(within(section).queryByText("Unsaved changes")).not.toBeInTheDocument();
+    expect(within(section).queryByText("有未保存的更改")).not.toBeInTheDocument();
 
-    const url = within(section).getByLabelText("Server URL");
+    const url = within(section).getByLabelText("服务器 URL");
     await userEvent.clear(url);
     await userEvent.type(url, "http://jellyfin-new:8096");
     expect(save).toBeEnabled();
-    expect(within(section).getByText("Unsaved changes")).toBeVisible();
+    expect(within(section).getByText("有未保存的更改")).toBeVisible();
 
     await userEvent.click(save);
     await waitFor(() => expect(save).toBeDisabled());
-    expect(within(section).queryByText("Unsaved changes")).not.toBeInTheDocument();
+    expect(within(section).queryByText("有未保存的更改")).not.toBeInTheDocument();
   });
 
   it("disables a pending Jellyfin save and reports failure inline without losing edits", async () => {
@@ -277,15 +277,15 @@ describe("Issue #42 Jellyfin Settings state and security", () => {
     await openSettings();
 
     const section = settingsSection("Jellyfin");
-    const url = within(section).getByLabelText("Server URL");
+    const url = within(section).getByLabelText("服务器 URL");
     await userEvent.clear(url);
     await userEvent.type(url, "http://offline-jellyfin:8096");
     await userEvent.click(
-      within(section).getByRole("button", { name: "Save Jellyfin" }),
+      within(section).getByRole("button", { name: "保存 Jellyfin" }),
     );
 
     expect(
-      within(section).getByRole("button", { name: "Saving Jellyfin…" }),
+      within(section).getByRole("button", { name: "正在保存 Jellyfin…" }),
     ).toBeDisabled();
     expect(url).toBeDisabled();
 
@@ -316,14 +316,14 @@ describe("Issue #42 Jellyfin Settings state and security", () => {
     await openSettings();
 
     const section = settingsSection("Jellyfin");
-    expect(within(section).getByLabelText("Server API key")).toHaveValue("");
+    expect(within(section).getByLabelText("服务器 API 密钥")).toHaveValue("");
     expect(document.body).not.toHaveTextContent("must-never-reach-the-browser");
     expect(document.body).not.toHaveTextContent("also-server-only");
 
-    await userEvent.clear(within(section).getByLabelText("Library IDs"));
-    await userEvent.type(within(section).getByLabelText("Library IDs"), "movies, tv");
+    await userEvent.clear(within(section).getByLabelText("媒体库 ID"));
+    await userEvent.type(within(section).getByLabelText("媒体库 ID"), "movies, tv");
     await userEvent.click(
-      within(section).getByRole("button", { name: "Save Jellyfin" }),
+      within(section).getByRole("button", { name: "保存 Jellyfin" }),
     );
     expect(
       requests.find(
@@ -344,16 +344,16 @@ describe("Issue #42 mobile Settings", () => {
     const settingsButtons = await openSettings({ mobile: true });
 
     expect(settingsButtons.at(-1)).toHaveAttribute("aria-current", "page");
-    expect(screen.getByLabelText("Rule Source URL")).toBeVisible();
-    expect(screen.getByLabelText("Active Rule Set YAML")).toBeVisible();
-    expect(screen.getByLabelText("Server URL")).toBeVisible();
-    expect(screen.getByLabelText("Library IDs")).toBeVisible();
-    expect(screen.getByLabelText("Server API key")).toBeVisible();
+    expect(screen.getByLabelText("规则来源 URL")).toBeVisible();
+    expect(screen.getByLabelText("当前规则集 YAML")).toBeVisible();
+    expect(screen.getByLabelText("服务器 URL")).toBeVisible();
+    expect(screen.getByLabelText("媒体库 ID")).toBeVisible();
+    expect(screen.getByLabelText("服务器 API 密钥")).toBeVisible();
 
-    screen.getByLabelText("Rule Source URL").focus();
+    screen.getByLabelText("规则来源 URL").focus();
     await userEvent.tab();
     expect(
-      screen.getByRole("button", { name: "Download proposal" }),
+      screen.getByRole("button", { name: "下载草案" }),
     ).toHaveFocus();
   });
 });

@@ -17,12 +17,12 @@ describe("生产 motion Tabs", () => {
   function renderTabs() {
     render(
       <BeUITabs defaultValue="overview">
-        <BeUITabsList label="Asset sections">
-          <BeUITab value="overview">Overview</BeUITab>
-          <BeUITab value="metadata">Metadata</BeUITab>
+        <BeUITabsList label="资产分区">
+          <BeUITab value="overview">概览</BeUITab>
+          <BeUITab value="metadata">元数据</BeUITab>
         </BeUITabsList>
-        <BeUITabPanel value="overview">Overview panel</BeUITabPanel>
-        <BeUITabPanel value="metadata">Metadata panel</BeUITabPanel>
+        <BeUITabPanel value="overview">概览面板</BeUITabPanel>
+        <BeUITabPanel value="metadata">元数据面板</BeUITabPanel>
       </BeUITabs>,
     );
   }
@@ -30,8 +30,8 @@ describe("生产 motion Tabs", () => {
   it("当键盘移动标签时，应同步选择并聚焦对应标签", async () => {
     renderTabs();
     const user = userEvent.setup();
-    const overview = screen.getByRole("tab", { name: "Overview" });
-    const metadata = screen.getByRole("tab", { name: "Metadata" });
+    const overview = screen.getByRole("tab", { name: "概览" });
+    const metadata = screen.getByRole("tab", { name: "元数据" });
 
     overview.focus();
     await user.keyboard("{ArrowRight}");
@@ -43,9 +43,9 @@ describe("生产 motion Tabs", () => {
 
   it("当标签控制面板时，应通过 ARIA 双向关联标签与面板", () => {
     renderTabs();
-    const tablist = screen.getByRole("tablist", { name: "Asset sections" });
-    const overview = within(tablist).getByRole("tab", { name: "Overview" });
-    const panel = screen.getByRole("tabpanel", { name: "Overview" });
+    const tablist = screen.getByRole("tablist", { name: "资产分区" });
+    const overview = within(tablist).getByRole("tab", { name: "概览" });
+    const panel = screen.getByRole("tabpanel", { name: "概览" });
 
     expect(overview).toHaveAttribute("aria-controls", panel.id);
     expect(panel).toHaveAttribute("aria-labelledby", overview.id);
@@ -94,7 +94,7 @@ describe("生产 toast foundation", () => {
     expect(liveRegion).toHaveAttribute("aria-atomic", "false");
     expect(screen.getByText("Settings saved")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "Dismiss toast" }));
+    await userEvent.click(screen.getByRole("button", { name: "关闭通知" }));
 
     expect(screen.queryByText("Settings saved")).not.toBeInTheDocument();
   });
@@ -123,7 +123,7 @@ describe("生产 toast foundation", () => {
 
     const actionButton = screen.getByRole("button", { name: "Undo" });
     const actionVisual = actionButton.querySelector(".ui-compact-surface");
-    const close = screen.getByRole("button", { name: "Dismiss toast" });
+    const close = screen.getByRole("button", { name: "关闭通知" });
     expect(actionButton.classList.contains("ui-compact-touch-target")).toBe(true);
     expect(actionVisual).not.toBeNull();
     expect([

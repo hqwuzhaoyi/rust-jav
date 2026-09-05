@@ -124,7 +124,7 @@ describe("Issue #39 AssetInspector 直达路由与历史", () => {
     history.back();
     await popped;
     await waitFor(() =>
-      expect(within(dialog).getByRole("tab", { name: "Overview" }).getAttribute("aria-selected")).toBe("true"),
+      expect(within(dialog).getByRole("tab", { name: "概览" }).getAttribute("aria-selected")).toBe("true"),
     );
     expect(location.pathname).toBe(`/assets/${asset.id}`);
   });
@@ -136,7 +136,7 @@ describe("Issue #39 AssetInspector 直达路由与历史", () => {
     render(<App />);
     const { dialog } = await openFromGallery();
 
-    await userEvent.click(within(dialog).getByRole("button", { name: "Close asset details" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "关闭资产详情" }));
     await waitFor(() => expect(location.pathname).toBe("/"));
     history.forward();
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -166,7 +166,7 @@ describe("Issue #39 AssetInspector 模态可访问性", () => {
     render(<App />);
     const { dialog } = await openFromGallery();
 
-    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Close asset details" }));
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "关闭资产详情" }));
   });
 
   it("当打开模态 Inspector 时，应让 sidebar、main、bottom-nav 全部 inert", async () => {
@@ -195,7 +195,7 @@ describe("Issue #39 AssetInspector 模态可访问性", () => {
     render(<App />);
     const { dialog } = await openFromGallery();
 
-    const close = within(dialog).getByRole("button", { name: "Close asset details" });
+    const close = within(dialog).getByRole("button", { name: "关闭资产详情" });
     expect(close.classList.contains("inspector-close")).toBe(true);
     const closeStyle = productionStyle(close);
     expect([
@@ -218,7 +218,7 @@ describe("Issue #39 AssetInspector 模态可访问性", () => {
     const { container } = render(<App />);
     const { trigger } = await openFromGallery();
 
-    screen.getByRole("button", { name: "Close asset details" }).focus();
+    screen.getByRole("button", { name: "关闭资产详情" }).focus();
     await userEvent.keyboard("{Escape}");
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "ABC-123" })).toBeNull());
@@ -233,7 +233,7 @@ describe("Issue #39 AssetInspector 模态可访问性", () => {
     render(<App />);
     const { trigger, dialog } = await openFromGallery();
 
-    await userEvent.click(within(dialog).getByRole("button", { name: "Close asset details" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "关闭资产详情" }));
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "ABC-123" })).toBeNull());
     expect(document.activeElement).toBe(trigger);
@@ -251,7 +251,7 @@ describe("Issue #39 AssetInspector 模态可访问性", () => {
     expect(document.body.classList.contains("asset-inspector-open")).toBe(true);
     expect(document.body.style.getPropertyValue("--asset-inspector-scroll-y")).toBe("640px");
 
-    await userEvent.click(within(dialog).getByRole("button", { name: "Close asset details" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "关闭资产详情" }));
     await waitFor(() => expect(document.body.classList.contains("asset-inspector-open")).toBe(false));
     expect(scrollTo).toHaveBeenCalledWith(0, 640);
   });
@@ -285,18 +285,18 @@ describe("Issue #39 AssetInspector prototype 内容结构", () => {
     );
     expect(overviewSections.length).toBeGreaterThanOrEqual(2);
     expect(within(dialog).getByText(asset.path)).not.toBeNull();
-    expect(within(dialog).getByRole("link", { name: /miru.*Actor Folder/ }).getAttribute("href")).toBe("/actors/bWlydQ");
-    expect(within(dialog).getByText("played")).not.toBeNull();
-    expect(within(dialog).getByText("Matched by normalized Media Asset path")).not.toBeNull();
-    expect(within(dialog).getByText("2 plays")).not.toBeNull();
-    expect(within(dialog).getByText("120000000 ticks")).not.toBeNull();
-    expect(within(dialog).getByText("Certain path association")).not.toBeNull();
+    expect(within(dialog).getByRole("link", { name: /miru.*演员目录/ }).getAttribute("href")).toBe("/actors/bWlydQ");
+    expect(within(dialog).getByText("已播放")).not.toBeNull();
+    expect(within(dialog).getByText("按规范化媒体资产路径关联")).not.toBeNull();
+    expect(within(dialog).getByText("2 次")).not.toBeNull();
+    expect(within(dialog).getByText("120000000 刻度")).not.toBeNull();
+    expect(within(dialog).getByText("确定的路径关联")).not.toBeNull();
 
     await userEvent.click(within(dialog).getByRole("tab", { name: "NFO" }));
     const nfoPanel = within(dialog).getByRole("tabpanel");
     expect(nfoPanel.querySelector("section.detail-section dl.detail-list")).not.toBeNull();
     expect(within(nfoPanel).getByText(detail.source_path)).not.toBeNull();
-    expect(within(nfoPanel).getAllByText("Not provided")).toHaveLength(3);
+    expect(within(nfoPanel).getAllByText("未提供")).toHaveLength(3);
     for (const tag of detail.tags) expect(within(nfoPanel).getByText(tag)).not.toBeNull();
   });
 });
@@ -345,7 +345,7 @@ describe("Issue #39 AssetInspector 请求竞态", () => {
     const { dialog } = await openFromGallery();
     rejectDetail?.(new Error("network down"));
 
-    expect(await screen.findByText("Asset details could not be loaded.")).not.toBeNull();
+    expect(await screen.findByText("无法加载资产详情。")).not.toBeNull();
     expect(within(dialog).queryByRole("status")).toBeNull();
   });
 });

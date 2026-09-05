@@ -51,8 +51,9 @@ use crate::{
     },
     image_blocking::{self, ImageBlockingBudget},
     jellyfin::{
-        associate, match_person, AssociationConfidence, JellyfinClient, JellyfinConfig,
-        JellyfinImageRef, JellyfinItem, JellyfinPerson, RefreshOutcome, RetryPolicy,
+        associate, match_person, person_names_equal, AssociationConfidence, JellyfinClient,
+        JellyfinConfig, JellyfinImageRef, JellyfinItem, JellyfinPerson, RefreshOutcome,
+        RetryPolicy,
     },
     jellyfin_image_cache::{self, JellyfinImageCache},
     management_tasks::{NewTask, TaskCoordinator, TaskKind, TaskStore},
@@ -1879,23 +1880,59 @@ async fn asset_detail(
     match state.assets.detail(&asset_id) {
         Ok(Some(detail)) => {
             let mut value = serde_json::to_value(&detail).unwrap_or_default();
-            for (index, actor) in detail.actors.iter().enumerate() {
-                value["actors"][index]["poster_url"] = serde_json::Value::Null;
-                value["actors"][index]["actor_folder_url"] = canonical_actor_folder_url(
-                    state.config.actor_view_root.as_deref(),
-                    &actor.name,
-                )
-                .map_or(serde_json::Value::Null, serde_json::Value::String);
-            }
+            let mut actor_names = detail
+                .actors
+                .iter()
+                .map(|actor| actor.name.clone())
+                .collect::<Vec<_>>();
+            value["actors"] =
+                actor_summaries(&actor_names, state.config.actor_view_root.as_deref());
             if let Ok(Some(client)) = jellyfin_client(&state) {
+                let items = state.jellyfin_items(&client).await;
+                let association = items.as_ref().ok().and_then(|items| {
+                    associate(
+                        &detail.path,
+                        detail.jav_code.as_deref(),
+                        detail.title.as_deref(),
+                        items,
+                    )
+                });
+                if actor_names.is_empty() {
+                    if let (Ok(items), Some(association)) = (&items, &association) {
+                        if association.confidence == AssociationConfidence::CertainPath {
+                            if let Some(item) =
+                                items.iter().find(|item| item.id == association.item_id)
+                            {
+                                let discovered = item
+                                    .actor_names()
+                                    .filter(|name| !name.trim().is_empty())
+                                    .map(str::to_owned)
+                                    .collect::<Vec<_>>();
+                                actor_names.clear();
+                                for name in discovered {
+                                    if !actor_names
+                                        .iter()
+                                        .any(|existing| person_names_equal(existing, &name))
+                                    {
+                                        actor_names.push(name);
+                                    }
+                                }
+                                value["actors"] = actor_summaries(
+                                    &actor_names,
+                                    state.config.actor_view_root.as_deref(),
+                                );
+                            }
+                        }
+                    }
+                }
                 if let Ok(people) = state.jellyfin_people(&client).await {
-                    for (index, actor) in detail.actors.iter().enumerate() {
-                        value["actors"][index]["poster_url"] = match_person(&actor.name, &people)
-                            .map(|_| actor_poster_url(&actor.name))
+                    for (index, actor_name) in actor_names.iter().enumerate() {
+                        value["actors"][index]["poster_url"] = match_person(actor_name, &people)
+                            .map(|_| actor_poster_url(actor_name))
                             .map_or(serde_json::Value::Null, serde_json::Value::String);
                     }
                 }
-                if let Ok(items) = state.jellyfin_items(&client).await {
+                if let Ok(items) = items {
                     if detail.artwork_url.is_none()
                         && associated_primary_image(
                             &detail.path,
@@ -1910,12 +1947,7 @@ async fn asset_detail(
                             detail.id
                         ));
                     }
-                    if let Some(association) = associate(
-                        &detail.path,
-                        detail.jav_code.as_deref(),
-                        detail.title.as_deref(),
-                        &items,
-                    ) {
+                    if let Some(association) = association {
                         let status = if association.played {
                             "played"
                         } else if association.playback_position_ticks > 0 {
@@ -1946,6 +1978,21 @@ async fn asset_detail(
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+fn actor_summaries(names: &[String], root: Option<&Path>) -> serde_json::Value {
+    serde_json::Value::Array(
+        names
+            .iter()
+            .map(|name| {
+                serde_json::json!({
+                    "name": name,
+                    "poster_url": null,
+                    "actor_folder_url": canonical_actor_folder_url(root, name)
+                })
+            })
+            .collect(),
+    )
 }
 
 fn canonical_actor_folder_url(root: Option<&Path>, actor_name: &str) -> Option<String> {
@@ -2052,6 +2099,18 @@ async fn actor_folder_confirmation(
             };
             match state.assets.assets_by_identities(&identities) {
                 Ok(mut assets) => {
+                    let jellyfin_items = match jellyfin_client(&state) {
+                        Ok(Some(client)) => state.jellyfin_items(&client).await.ok(),
+                        _ => None,
+                    };
+                    assets.retain(|asset| {
+                        actor_asset_membership_is_current(
+                            &state,
+                            &actor_name,
+                            asset,
+                            jellyfin_items.as_ref().map(|items| items.as_slice()),
+                        )
+                    });
                     add_jellyfin_artwork_urls(&state, &mut assets).await;
                     Json(actor_response(detail.folder, assets, has_portrait)).into_response()
                 }
@@ -2061,6 +2120,46 @@ async fn actor_folder_confirmation(
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(error) => (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response(),
     }
+}
+
+fn actor_asset_membership_is_current(
+    state: &AppState,
+    actor_name: &str,
+    asset: &crate::asset_index::MediaAsset,
+    jellyfin_items: Option<&[JellyfinItem]>,
+) -> bool {
+    if state
+        .assets
+        .detail(&asset.id)
+        .ok()
+        .flatten()
+        .is_some_and(|detail| {
+            detail
+                .actors
+                .iter()
+                .any(|actor| person_names_equal(&actor.name, actor_name))
+        })
+    {
+        return true;
+    }
+    let Some(items) = jellyfin_items else {
+        return false;
+    };
+    let Some(association) = associate(
+        &asset.path,
+        asset.jav_code.as_deref(),
+        asset.title.as_deref(),
+        items,
+    ) else {
+        return false;
+    };
+    if association.confidence != AssociationConfidence::CertainPath {
+        return false;
+    }
+    items
+        .iter()
+        .find(|item| item.id == association.item_id)
+        .is_some_and(|item| item.has_actor(actor_name))
 }
 
 async fn actor_poster(

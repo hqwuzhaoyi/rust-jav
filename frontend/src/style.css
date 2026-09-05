@@ -1028,23 +1028,6 @@ textarea:focus-visible {
 }
 .actor-folder-poster b { display: block; margin: 0; }
 .actor-folder-poster p { display: block; margin: 0; margin-top: 4px; color: rgba(255,255,255,.7); font-size: 11px; }
-.actor-remove {
-  position: absolute;
-  top: 9px;
-  right: 9px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 38px;
-  flex: 0 0 auto;
-  padding: 7px 10px;
-  border: 0;
-  border-radius: 999px;
-  color: white;
-  background: rgba(0,0,0,.45);
-  backdrop-filter: blur(12px);
-}
-.actor-remove svg { width: 14px; height: 14px; }
 .actor-detail-hero { position: relative; overflow: hidden; height: 300px; margin: 34px -22px 0; background: #e1e1e5; }
 .actor-detail-hero > img { width: 100%; height: 100%; object-fit: cover; }
 .actor-detail-hero > svg { width: 100%; height: 100%; padding: 90px; color: #999; }
@@ -1189,7 +1172,7 @@ textarea:focus-visible {
 }
 .actor-folder-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 24px 18px;
 }
 .actor-sort-toolbar {
@@ -1336,11 +1319,6 @@ textarea:focus-visible {
 }
 .dialog-actions button:disabled {
   opacity: 0.55;
-}
-@media (max-width: 1100px) {
-  .actor-folder-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 .operation-heading {
   display: flex;
@@ -1834,17 +1812,22 @@ body {
   outline: none;
 }
 
-.filters {
+.gallery-filter-tabs {
+  flex: none;
+}
+.beui-tabs-list[data-variant="segment"] {
   display: flex;
   min-height: var(--ds-control);
-  align-items: center;
-  gap: 0;
+  align-items: stretch;
+  gap: 2px;
   padding: 3px;
   border-radius: var(--ds-radius-md);
   background: var(--ds-muted);
 }
-.filters button {
-  min-height: 36px;
+.beui-tabs-list[data-variant="segment"] > button {
+  position: relative;
+  isolation: isolate;
+  min-height: 38px;
   padding: 6px 14px;
   border: 0;
   border-radius: var(--ds-radius-sm);
@@ -1854,9 +1837,16 @@ body {
   font-size: 11px;
   cursor: pointer;
 }
-.filters button:hover { color: var(--ds-text); }
-.filters button.selected {
+.beui-tabs-list[data-variant="segment"] > button:hover { color: var(--ds-text); }
+.beui-tabs-list[data-variant="segment"] > button[aria-selected="true"] {
   color: var(--ds-text);
+  font-weight: 680;
+}
+.beui-tabs-list[data-variant="segment"] .beui-tab-indicator {
+  inset: 0;
+  z-index: -1;
+  height: auto;
+  border-radius: var(--ds-radius-sm);
   background: var(--ds-surface-solid);
   box-shadow: 0 1px 4px rgba(0, 0, 0, .12);
 }
@@ -2110,7 +2100,43 @@ body {
 .task-form > button[type="submit"]:active { transform: scale(.985); }
 .rule-actions button:active { transform: scale(.985); }
 .danger { color: var(--ds-danger); background: var(--ds-danger-soft); }
-.actor-detail-remove { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; margin-top: 22px; border: 0; border-radius: 11px; color: #b52f29; background: #fee9e7; color: var(--ds-danger); background: var(--ds-danger-soft); }
+.actor-action-menu {
+  position: absolute;
+  top: 15px;
+  right: 67px;
+  z-index: 4;
+}
+.actor-action-menu-trigger {
+  border: 0;
+  color: var(--ds-text);
+  background: color-mix(in srgb, var(--ds-surface-solid) 82%, transparent);
+  backdrop-filter: blur(16px);
+}
+.actor-action-menu-popover {
+  position: absolute;
+  top: 48px;
+  right: 0;
+  min-width: 172px;
+  padding: 6px;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface-solid);
+  box-shadow: var(--ds-shadow-sheet);
+}
+.actor-action-menu-popover button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--ds-radius-sm);
+  color: var(--ds-danger);
+  background: transparent;
+  white-space: nowrap;
+}
+.actor-action-menu-popover button:hover { background: var(--ds-danger-soft); }
+.actor-action-menu-popover svg { width: 16px; height: 16px; }
 
 @media (max-width: 760px) {
   .mobile-storage-entry {
@@ -2192,6 +2218,9 @@ body {
   .toolbar {
     display: block;
     padding: 9px 0; top: 70px; }
+  .gallery-filter-tabs { margin-top: 8px; }
+  .beui-tabs-list[data-variant="segment"] { width: 100%; }
+  .beui-tabs-list[data-variant="segment"] > button { flex: 1; padding-inline: 6px; }
   .asset-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 20px 9px; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }

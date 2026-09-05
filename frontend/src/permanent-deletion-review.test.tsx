@@ -125,21 +125,21 @@ function stubDeletionApi(options: DeletionApiOptions = {}) {
 async function openDeletionReview() {
   render(<App />);
   const navigation = await screen.findAllByRole("button", {
-    name: "Deletion Candidates",
+    name: "删除候选",
   });
   await userEvent.click(navigation[0]);
-  await screen.findByRole("heading", { name: "Review permanent deletion" });
+  await screen.findByRole("heading", { name: "检查永久删除" });
 }
 
 async function selectAndReview() {
   const checkbox = await screen.findByRole("checkbox", {
-    name: `Select ${selectedPath}`,
+    name: `选择 ${selectedPath}`,
   });
   await userEvent.click(checkbox);
-  const opener = screen.getByRole("button", { name: "Review 1" });
+  const opener = screen.getByRole("button", { name: "检查 1" });
   await userEvent.click(opener);
   const dialog = await screen.findByRole("dialog", {
-    name: "Permanently delete 1 paths?",
+    name: "永久删除 1 个路径？",
   });
   return { dialog, opener };
 }
@@ -161,21 +161,21 @@ describe("Issue #43 permanent-deletion review", () => {
     await openDeletionReview();
 
     const checkbox = await screen.findByRole("checkbox", {
-      name: `Select ${selectedPath}`,
+      name: `选择 ${selectedPath}`,
     });
     const row = checkbox.closest("label");
     expect(row).not.toBeNull();
     expect(within(row as HTMLElement).getByText(selectedPath)).toBeVisible();
-    expect(within(row as HTMLElement).getByText(/regular file/)).toBeVisible();
+    expect(within(row as HTMLElement).getByText(/普通文件/)).toBeVisible();
     expect(
       within(row as HTMLElement).getByText(
-        "Video file: permanent deletion removes playable media.",
+        "视频文件：永久删除会移除可播放媒体。",
       ),
     ).toBeVisible();
-    expect(within(row as HTMLElement).getByText("Logical Size")).toBeVisible();
+    expect(within(row as HTMLElement).getByText("逻辑大小")).toBeVisible();
     expect(within(row as HTMLElement).getByText("1.5 KiB")).toBeVisible();
     expect(
-      within(row as HTMLElement).getByText("Reclaimable Space"),
+      within(row as HTMLElement).getByText("可回收空间"),
     ).toBeVisible();
     expect(within(row as HTMLElement).getByText("4.0 KiB")).toBeVisible();
   });
@@ -186,25 +186,25 @@ describe("Issue #43 permanent-deletion review", () => {
     const { dialog } = await selectAndReview();
 
     expect(
-      within(dialog).getByRole("button", { name: "Selected paths only" }),
+      within(dialog).getByRole("button", { name: "仅选择的路径" }),
     ).toHaveAttribute("aria-pressed", "true");
     expect(within(dialog).getByText(selectedPath)).toBeVisible();
-    expect(within(dialog).getByText("regular file")).toBeVisible();
+    expect(within(dialog).getByText("普通文件")).toBeVisible();
     expect(within(dialog).getByText("/media/JAV/ORIGIN")).toBeVisible();
     expect(within(dialog).getByText("/actors")).toBeVisible();
     expect(within(dialog).getByText(hardLinkPath)).toBeVisible();
 
     await userEvent.click(
       within(dialog).getByRole("button", {
-        name: "All discovered hard links (1)",
+        name: "所有已发现硬链接（1）",
       }),
     );
     const unifiedDialog = await screen.findByRole("dialog", {
-      name: "Permanently delete 2 paths?",
+      name: "永久删除 2 个路径？",
     });
     expect(
       within(unifiedDialog).getByRole("button", {
-        name: "All discovered hard links (1)",
+        name: "所有已发现硬链接（1）",
       }),
     ).toHaveAttribute("aria-pressed", "true");
     expect(within(unifiedDialog).getByText(hardLinkPath)).toBeVisible();
@@ -231,7 +231,7 @@ describe("Issue #43 permanent-deletion review", () => {
     const { dialog } = await selectAndReview();
     const phrase = within(dialog).getByLabelText(/PERMANENTLY DELETE/);
     const execute = within(dialog).getByRole("button", {
-      name: "Permanently delete",
+      name: "永久删除",
     });
 
     await userEvent.type(phrase, "PERMANENTLY DELETE");
@@ -246,7 +246,7 @@ describe("Issue #43 permanent-deletion review", () => {
     expect(execute).toBeDisabled();
     expect(
       within(dialog).getByRole("button", {
-        name: "Create fresh Operation Plan",
+        name: "创建最新操作计划",
       }),
     ).toHaveClass("ui-touch-target");
     expect(
@@ -291,25 +291,25 @@ describe("Issue #43 permanent-deletion review", () => {
       "PERMANENTLY DELETE",
     );
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Permanently delete" }),
+      within(dialog).getByRole("button", { name: "永久删除" }),
     );
 
     const outcome = await screen.findByRole("dialog", {
-      name: "Permanent deletion completed with partial failures",
+      name: "永久删除已完成，但部分路径失败",
     });
     expect(within(outcome).getByText(selectedPath)).toBeVisible();
-    expect(within(outcome).getByText("Deleted")).toBeVisible();
+    expect(within(outcome).getByText("已删除")).toBeVisible();
     expect(within(outcome).getByText(hardLinkPath)).toBeVisible();
-    expect(within(outcome).getByText("Replaced after planning")).toBeVisible();
+    expect(within(outcome).getByText("计划后已被替换")).toBeVisible();
     expect(
       within(outcome).getByText(
         "File was replaced after the Operation Plan was created",
       ),
     ).toBeVisible();
     expect(within(outcome).getByText("Permission denied")).toBeVisible();
-    expect(within(outcome).getByText("No rollback was attempted.")).toBeVisible();
+    expect(within(outcome).getByText("未尝试回滚。")).toBeVisible();
     expect(within(outcome).queryByText(/rolled back successfully/i)).toBeNull();
-    expect(within(outcome).getByRole("button", { name: "Close" }))
+    expect(within(outcome).getByRole("button", { name: "关闭" }))
       .toHaveClass("ui-touch-target");
   });
 
@@ -340,11 +340,11 @@ describe("Issue #43 permanent-deletion review", () => {
       "PERMANENTLY DELETE",
     );
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Permanently delete" }),
+      within(dialog).getByRole("button", { name: "永久删除" }),
     );
 
     const outcome = await screen.findByRole("dialog", {
-      name: "Permanent deletion interrupted",
+      name: "永久删除已中断",
     });
     expect(within(outcome).getByText("outcome persistence was interrupted"))
       .toBeVisible();
@@ -363,11 +363,11 @@ describe("Issue #43 permanent-deletion review", () => {
 
     expect(within(dialog).getByText(selectedPath)).toBeVisible();
     expect(
-      within(dialog).getByRole("button", { name: "Selected paths only" }),
+      within(dialog).getByRole("button", { name: "仅选择的路径" }),
     ).toBeVisible();
     expect(
       within(dialog).getByRole("button", {
-        name: "All discovered hard links (1)",
+        name: "所有已发现硬链接（1）",
       }),
     ).toBeVisible();
     expect(getComputedStyle(dialog).maxWidth).toBe("100%");
@@ -380,7 +380,7 @@ describe("Issue #43 permanent-deletion review", () => {
     await openDeletionReview();
     const { dialog, opener } = await selectAndReview();
 
-    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    const cancel = within(dialog).getByRole("button", { name: "取消" });
     expect(dialog).toContainElement(document.activeElement as HTMLElement);
     cancel.focus();
     await userEvent.keyboard("{Tab}");
@@ -389,7 +389,7 @@ describe("Issue #43 permanent-deletion review", () => {
 
     await waitFor(() =>
       expect(
-        screen.queryByRole("dialog", { name: "Permanently delete 1 paths?" }),
+        screen.queryByRole("dialog", { name: "永久删除 1 个路径？" }),
       ).not.toBeInTheDocument(),
     );
     expect(opener).toHaveFocus();

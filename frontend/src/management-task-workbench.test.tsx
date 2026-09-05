@@ -218,9 +218,9 @@ function stubTaskApi(options: {
 async function openTasks() {
   render(<App />);
   await userEvent.click(
-    await screen.findByRole("button", { name: "Management Tasks" }),
+    await screen.findByRole("button", { name: "整理任务" }),
   );
-  await screen.findByRole("heading", { name: "New Operation Plan" });
+  await screen.findByRole("heading", { name: "新建操作计划" });
 }
 
 afterEach(() => {
@@ -240,18 +240,18 @@ describe("Issue #41 Management Task 创建与确认", () => {
     const { requests } = stubTaskApi();
     await openTasks();
 
-    const fullPipeline = screen.getByRole("button", { name: "Full pipeline" });
+    const fullPipeline = screen.getByRole("button", { name: "完整流程" });
     expect(fullPipeline).toHaveClass("ui-touch-target");
     expect(productionValue(fullPipeline, "min-height")).toBe("44px");
 
     for (const checkbox of screen.getAllByRole("checkbox")) {
       await userEvent.click(checkbox);
     }
-    await userEvent.click(screen.getByLabelText("Remove duplicates"));
-    await userEvent.click(screen.getByLabelText("Categorize files"));
-    await userEvent.click(screen.getByLabelText("Delete ad files"));
+    await userEvent.click(screen.getByLabelText("移除重复文件"));
+    await userEvent.click(screen.getByLabelText("分类文件"));
+    await userEvent.click(screen.getByLabelText("删除广告文件"));
     await userEvent.click(
-      screen.getByRole("button", { name: "Preview 15-minute plan" }),
+      screen.getByRole("button", { name: "预览 15 分钟有效的计划" }),
     );
 
     const preview = requests.find(
@@ -278,7 +278,7 @@ describe("Issue #41 Management Task 创建与确认", () => {
     await openTasks();
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "Confirm and execute" }),
+      await screen.findByRole("button", { name: "确认并执行" }),
     );
 
     expect(
@@ -288,19 +288,19 @@ describe("Issue #41 Management Task 创建与确认", () => {
       ),
     ).toHaveLength(0);
     const confirmation = await screen.findByRole("dialog", {
-      name: "Confirm Operation Plan",
+      name: "确认操作计划",
     });
     expect(confirmation).toHaveTextContent("plan-41");
     expect(confirmation).toHaveTextContent("Review destructive paths");
-    expect(confirmation).toHaveTextContent("delete_ad_files");
+    expect(confirmation).toHaveTextContent("删除广告文件");
     expect(confirmation).toHaveTextContent("/media/library/ABC-001/ad.txt");
     expect(confirmation).toHaveTextContent("This file will be removed");
     expect(confirmation).toHaveTextContent("/media/library/ABC-001/ABC-001.mp4");
-    expect(confirmation).toHaveTextContent("Source /media/library/incoming/ABC-001.mp4");
-    expect(confirmation).toHaveTextContent("Target /media/library/ABC-001/ABC-001.mp4");
+    expect(confirmation).toHaveTextContent("来源 /media/library/incoming/ABC-001.mp4");
+    expect(confirmation).toHaveTextContent("目标 /media/library/ABC-001/ABC-001.mp4");
 
     await userEvent.click(
-      within(confirmation).getByRole("button", { name: "Apply confirmed plan" }),
+      within(confirmation).getByRole("button", { name: "执行已确认计划" }),
     );
     expect(
       requests.find(
@@ -335,14 +335,14 @@ describe("Issue #41 Management Task 统一生命周期", () => {
     await openTasks();
 
     for (const label of [
-      "Queued",
-      "Running",
-      "Blocked for confirmation",
-      "Completed",
-      "Failed",
-      "Interrupted",
+      "排队中",
+      "运行中",
+      "等待确认",
+      "已完成",
+      "失败",
+      "已中断",
     ]) {
-      expect(screen.getByText(label, { exact: true })).toBeVisible();
+      expect(screen.getAllByText(label, { exact: true })[0]).toBeVisible();
     }
   });
 
@@ -353,12 +353,12 @@ describe("Issue #41 Management Task 统一生命周期", () => {
     });
     stubTaskApi({ createdTask: created });
     await openTasks();
-    await screen.findByText("No Management Tasks yet.");
+    await screen.findByText("暂无管理任务。");
 
-    await userEvent.clear(screen.getByLabelText("Media Root"));
-    await userEvent.type(screen.getByLabelText("Media Root"), "/media/new-library");
+    await userEvent.clear(screen.getByLabelText("媒体根目录"));
+    await userEvent.type(screen.getByLabelText("媒体根目录"), "/media/new-library");
     await userEvent.click(
-      screen.getByRole("button", { name: "Preview 15-minute plan" }),
+      screen.getByRole("button", { name: "预览 15 分钟有效的计划" }),
     );
 
     expect(await screen.findByText(/preview-created-41/)).toBeVisible();
@@ -392,9 +392,9 @@ describe("Issue #41 Management Task 统一生命周期", () => {
 
     act(() => ControlledEventSource.instances[0].emitTask(running));
 
-    expect(await screen.findByText("Running", { exact: true })).toBeVisible();
+    expect((await screen.findAllByText("运行中", { exact: true }))[0]).toBeVisible();
     expect(
-      screen.getByRole("progressbar", { name: "Task progress" }),
+      screen.getByRole("progressbar", { name: "任务进度" }),
     ).toHaveAttribute("aria-valuenow", "50");
     expect(screen.getByText("/media/one/ad.txt")).toBeVisible();
     expect(screen.getByText("/media/two/movie.mp4")).toBeVisible();
@@ -408,7 +408,7 @@ describe("Issue #41 Management Task 统一生命周期", () => {
     stubTaskApi({ tasks: [task("running-denominator-41", "queued", { planned_item_count: 4 })] });
     await openTasks();
     act(() => ControlledEventSource.instances[0].emitTask(running));
-    expect(screen.getByRole("progressbar", { name: "Task progress" })).toHaveAttribute("aria-valuenow", "25");
+    expect(screen.getByRole("progressbar", { name: "任务进度" })).toHaveAttribute("aria-valuenow", "25");
   });
 
   it("当任务部分失败时，应同时保留成功与失败 outcome 并给出明确失败反馈", async () => {
@@ -476,7 +476,7 @@ describe("Issue #41 SSE 恢复与跨导航持久结果", () => {
       }),
     );
     expect(await screen.findByText("Recovered after reconnect")).toBeVisible();
-    expect(screen.getByText("Completed", { exact: true })).toBeVisible();
+    expect(screen.getAllByText("已完成", { exact: true })[0]).toBeVisible();
   });
 
   it("迟到的 REST recovery 不得覆盖期间到达的 SSE completed", async () => {
@@ -492,7 +492,7 @@ describe("Issue #41 SSE 恢复与跨导航持久结果", () => {
     act(() => source.emitTask(completed));
     expect(await screen.findByText("SSE final")).toBeVisible();
     await act(async () => resolveRecovery(task("monotonic-41", "running")));
-    expect(screen.getByText("Completed", { exact: true })).toBeVisible();
+    expect(screen.getByText("已完成", { exact: true })).toBeVisible();
     expect(screen.getByText("SSE final")).toBeVisible();
   });
 
@@ -513,7 +513,7 @@ describe("Issue #41 SSE 恢复与跨导航持久结果", () => {
     })));
     expect(await screen.findByText("newer recovery")).toBeVisible();
     await act(async () => resolveFirst(task("recovery-sequence-41", "running")));
-    expect(screen.getByText("Completed", { exact: true })).toBeVisible();
+    expect(screen.getByText("已完成", { exact: true })).toBeVisible();
     expect(screen.getByText("newer recovery")).toBeVisible();
   });
 
@@ -535,7 +535,7 @@ describe("Issue #41 SSE 恢复与跨导航持久结果", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "所有资产" }));
     api.replaceTasks([completed]);
-    await userEvent.click(screen.getByRole("button", { name: "Management Tasks" }));
+    await userEvent.click(screen.getByRole("button", { name: "整理任务" }));
 
     expect(await screen.findByText("Persisted outcome")).toBeVisible();
     expect(
@@ -555,7 +555,7 @@ describe("Issue #41 SSE 恢复与跨导航持久结果", () => {
     expect(ControlledEventSource.instances.map((source) => source.url)).toContain(
       "/api/v1/tasks/active-outside-page-41/events",
     );
-    await userEvent.click(screen.getByRole("button", { name: "Load 20 more tasks" }));
+    await userEvent.click(screen.getByRole("button", { name: "再加载 20 个任务" }));
     expect(await screen.findByText(/completed-20/)).toBeVisible();
     expect(api.requests.some((request) => request.url === "/api/v1/tasks?limit=20&offset=20")).toBe(true);
   });
@@ -568,7 +568,7 @@ describe("Issue #41 响应式极端数据", () => {
     const history = Array.from({ length: 25 }, (_, index) => task(`single-flight-${index}`, "completed"));
     const api = stubTaskApi({ tasks: history, loadMoreGate: gate });
     await openTasks();
-    const button = screen.getByRole("button", { name: "Load 20 more tasks" });
+    const button = screen.getByRole("button", { name: "再加载 20 个任务" });
     await Promise.all([userEvent.click(button), userEvent.click(button)]);
     expect(api.requests.filter((request) => request.url === "/api/v1/tasks?limit=20&offset=20")).toHaveLength(1);
     expect(button).toBeDisabled();
@@ -602,16 +602,16 @@ describe("Issue #41 响应式极端数据", () => {
       const api = stubTaskApi({ tasks: largeHistory });
       await openTasks();
 
-      expect(screen.getByText("75 tasks", { exact: true })).toBeVisible();
+      expect(screen.getByText("75 个任务", { exact: true })).toBeVisible();
       expect(screen.getByText("Completed with partial failures")).toBeVisible();
       expect(screen.getByText("Destination is read-only")).toBeVisible();
       const copyPath = screen.getByRole("button", {
-        name: `Copy full path ${longPath}`,
+        name: `复制完整路径 ${longPath}`,
       });
       expect(copyPath).toBeVisible();
       expect(copyPath).toHaveClass("ui-touch-target");
       expect(productionValue(copyPath, "min-height")).toBe("44px");
-      await userEvent.click(screen.getByRole("button", { name: "Load 20 more tasks" }));
+      await userEvent.click(screen.getByRole("button", { name: "再加载 20 个任务" }));
       expect(await screen.findByText(/history-021/)).toBeVisible();
       expect(api.requests.some((request) => request.url === "/api/v1/tasks?limit=20&offset=20")).toBe(true);
     },

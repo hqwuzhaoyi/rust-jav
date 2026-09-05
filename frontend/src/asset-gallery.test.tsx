@@ -130,7 +130,7 @@ describe("Issue #38 媒体资产图库 URL 契约", () => {
     render(<App />);
 
     expect(await screen.findByLabelText(/^(?:Search assets|搜索资产)$/)).toHaveValue("ABC-123");
-    expect(screen.getByRole("button", { name: "异常" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("tab", { name: "异常" })).toHaveAttribute("aria-selected", "true");
     expect(await screen.findByText("3 / 4")).toBeInTheDocument();
     const request = galleryRequests(requests).at(-1);
     expect(Object.fromEntries(request?.searchParams ?? [])).toEqual({
@@ -147,7 +147,7 @@ describe("Issue #38 媒体资产图库 URL 契约", () => {
     const search = await screen.findByLabelText(/^(?:Search assets|搜索资产)$/);
 
     await userEvent.type(search, "XYZ-789");
-    await userEvent.click(screen.getByRole("button", { name: /^(?:刷新中|同步中)$/ }));
+    await userEvent.click(screen.getByRole("tab", { name: /^(?:刷新中|同步中)$/ }));
     await userEvent.click(await screen.findByRole("button", { name: /^(?:Next|下一页)$/ }));
 
     await waitFor(() => expect(new URLSearchParams(location.search).get("page")).toBe("2"));
@@ -170,7 +170,7 @@ describe("Issue #38 媒体资产图库 URL 契约", () => {
     await waitFor(() =>
       expect(screen.getByLabelText(/^(?:Search assets|搜索资产)$/)).toHaveValue("second"),
     );
-    expect(screen.getByRole("button", { name: "异常" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("tab", { name: "异常" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("3 / 4")).toBeInTheDocument();
     expect(Object.fromEntries(galleryRequests(requests).at(-1)?.searchParams ?? [])).toMatchObject({
       q: "second",
@@ -238,7 +238,7 @@ describe("Issue #38 真实 Asset Index 卡片", () => {
     stubGalleryApi();
     render(<App />);
     await userEvent.click((await screen.findAllByRole("button", { name: /^(?:Inspect|查看资产)/ }))[0]);
-    await userEvent.click(await screen.findByRole("button", { name: "Close asset details" }));
+    await userEvent.click(await screen.findByRole("button", { name: "关闭资产详情" }));
     await waitFor(() => expect(location.pathname).toBe("/"));
 
     const popped = new Promise<void>((resolve) =>
@@ -247,14 +247,14 @@ describe("Issue #38 真实 Asset Index 卡片", () => {
     history.back();
     await popped;
     expect(location.pathname).toBe("/");
-    expect(screen.queryByRole("button", { name: "Close asset details" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "关闭资产详情" })).not.toBeInTheDocument();
     const previous = new Promise<void>((resolve) =>
       addEventListener("popstate", () => resolve(), { once: true }),
     );
     history.back();
     await previous;
     expect(location.pathname).toBe("/before-gallery");
-    expect(screen.queryByRole("button", { name: "Close asset details" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "关闭资产详情" })).not.toBeInTheDocument();
   });
 
   it("当较早的详情请求最后返回时，应保持最新资产的 URL 与详情", async () => {

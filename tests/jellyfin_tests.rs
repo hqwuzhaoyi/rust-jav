@@ -48,7 +48,7 @@ async fn mock_server(refresh_failures: usize) -> (String, MockState) {
     ) -> Json<Value> {
         state.0.lock().unwrap().item_queries.push(query);
         Json(json!({"Items":[
-            {"Id":"exact","Name":"Blue Room","Path":"/media/jav/ABC-123.mp4","ProviderIds":{"Jav":"ABC-123"},"UserData":{"Played":true,"PlayCount":2,"PlaybackPositionTicks":0}},
+            {"Id":"exact","Name":"Blue Room","Path":"/media/jav/ABC-123.mp4","ProviderIds":{"Jav":"ABC-123"},"UserData":{"Played":true,"PlayCount":2,"PlaybackPositionTicks":0},"People":[{"Name":"架乃ゆら","Type":"Actor"},{"Name":"导演","Type":"Director"}]},
             {"Id":"fallback","Name":"XYZ-999","Path":"/other/XYZ-999.mkv","ProviderIds":{},"UserData":{"Played":false,"PlayCount":0,"PlaybackPositionTicks":42}}
         ],"TotalRecordCount":2}))
     }
@@ -182,6 +182,9 @@ async fn item_discovery_is_scoped_to_each_selected_library_and_requests_associat
     assert!(queries[0]["fields"].contains("Path"));
     assert!(queries[0]["fields"].contains("ProviderIds"));
     assert!(queries[0]["fields"].contains("UserData"));
+    assert!(queries[0]["fields"].contains("People"));
+    assert!(items[0].has_actor("架乃ゆら"));
+    assert!(!items[0].has_actor("导演"));
 }
 
 #[test]

@@ -149,18 +149,27 @@ function setReducedMotion(reduce: boolean) {
 
 async function openActors() {
   await userEvent.click(
-    (await screen.findAllByRole("button", { name: /Actors/ }))[0],
+    (await screen.findAllByRole("button", { name: /演员/ }))[0],
   );
 }
 
 async function openActorFromCard() {
   await openActors();
-  const trigger = await screen.findByRole("button", { name: `Open ${actorName}` });
+  const trigger = await screen.findByRole("button", { name: `打开演员 ${actorName}` });
   await userEvent.click(trigger);
   return {
     trigger,
     dialog: await screen.findByRole("dialog", { name: actorName }),
   };
+}
+
+async function openActorRemoval(dialog: HTMLElement) {
+  await userEvent.click(within(dialog).getByRole("button", { name: "更多操作" }));
+  const menu = within(dialog).getByRole("menu", { name: "演员操作" });
+  await userEvent.click(
+    within(menu).getByRole("menuitem", { name: "删除演员目录…" }),
+  );
+  return screen.findByRole("dialog", { name: `移除 ${actorName}？` });
 }
 
 afterEach(() => {
@@ -181,26 +190,26 @@ describe("Issue #40 Actor Folder prototype cards", () => {
     await openActors();
 
     const portraitCard = await screen.findByRole("button", {
-      name: `Open ${actorName}`,
+      name: `打开演员 ${actorName}`,
     });
     const portrait = within(portraitCard).getByRole("img", {
-      name: `${actorName} portrait`,
+      name: `${actorName} 头像`,
     });
     expect(portrait).toHaveAttribute("src", posterUrl);
     expect(portrait).toHaveAttribute("loading", "lazy");
-    expect(within(portraitCard).getByText("2 Media Assets · 4.9 GiB")).toBeVisible();
+    expect(within(portraitCard).getByText("2 个媒体资产 · 4.9 GiB")).toBeVisible();
     expect(
       getComputedStyle(portraitCard.querySelector(".actor-folder-poster") as HTMLElement)
         .aspectRatio,
     ).toBe("2 / 3");
 
     const fallbackCard = screen.getByRole("button", {
-      name: `Open ${longActorName}`,
+      name: `打开演员 ${longActorName}`,
     });
-    expect(within(fallbackCard).getByText("0 Media Assets · 0 B")).toBeVisible();
+    expect(within(fallbackCard).getByText("0 个媒体资产 · 0 B")).toBeVisible();
     expect(
       within(fallbackCard).getByRole("img", {
-        name: `${longActorName} portrait unavailable`,
+        name: `${longActorName} 暂无头像`,
       }),
     ).toBeVisible();
   });
@@ -212,7 +221,7 @@ describe("Issue #40 Actor Folder prototype cards", () => {
     await openActors();
 
     const card = await screen.findByRole("button", {
-      name: `Open ${longActorName}`,
+      name: `打开演员 ${longActorName}`,
     });
     card.focus();
     expect(within(card).getByText(longActorName)).toBeVisible();
@@ -239,7 +248,7 @@ describe("Issue #40 Actor Folder prototype cards", () => {
 
     const actorOrder = () =>
       screen
-        .getAllByRole("button", { name: /^Open / })
+        .getAllByRole("button", { name: /^打开演员 / })
         .map((button) => button.getAttribute("aria-label"));
 
     await userEvent.selectOptions(
@@ -247,9 +256,9 @@ describe("Issue #40 Actor Folder prototype cards", () => {
       "count",
     );
     expect(actorOrder()).toEqual([
-      `Open ${actorName}`,
-      "Open Zeta",
-      "Open Empty Actor",
+      `打开演员 ${actorName}`,
+      "打开演员 Zeta",
+      "打开演员 Empty Actor",
     ]);
 
     await userEvent.selectOptions(
@@ -257,16 +266,16 @@ describe("Issue #40 Actor Folder prototype cards", () => {
       "size",
     );
     expect(actorOrder()).toEqual([
-      "Open Zeta",
-      `Open ${actorName}`,
-      "Open Empty Actor",
+      "打开演员 Zeta",
+      `打开演员 ${actorName}`,
+      "打开演员 Empty Actor",
     ]);
 
     await userEvent.click(screen.getByRole("button", { name: "切换为升序" }));
     expect(actorOrder()).toEqual([
-      "Open Empty Actor",
-      `Open ${actorName}`,
-      "Open Zeta",
+      "打开演员 Empty Actor",
+      `打开演员 ${actorName}`,
+      "打开演员 Zeta",
     ]);
   });
 });
@@ -276,9 +285,9 @@ describe("Issue #40 responsive ActorInspector", () => {
     stubActorApi({ actorDetailResponse: new Promise<Response>(() => undefined) });
     render(<App />);
     await openActors();
-    const trigger = await screen.findByRole("button", { name: `Open ${actorName}` });
+    const trigger = await screen.findByRole("button", { name: `打开演员 ${actorName}` });
     await userEvent.click(trigger);
-    const dialog = await screen.findByRole("dialog", { name: "Actor Folder detail" });
+    const dialog = await screen.findByRole("dialog", { name: "演员目录详情" });
 
     await userEvent.keyboard("{Escape}");
 
@@ -297,7 +306,7 @@ describe("Issue #40 responsive ActorInspector", () => {
 
       expect(dialog).toHaveAttribute("aria-modal", "true");
       expect(document.activeElement).toBe(
-        within(dialog).getByRole("button", { name: "Close actor details" }),
+        within(dialog).getByRole("button", { name: "关闭演员详情" }),
       );
 
       await userEvent.keyboard("{Escape}");
@@ -311,7 +320,7 @@ describe("Issue #40 responsive ActorInspector", () => {
     render(<App />);
     const { dialog } = await openActorFromCard();
 
-    const close = within(dialog).getByRole("button", { name: "Close actor details" });
+    const close = within(dialog).getByRole("button", { name: "关闭演员详情" });
     expect(close).toHaveClass("inspector-close", "ui-touch-target", "ui-icon-button");
     const closeStyle = productionStyle(close);
     expect([
@@ -336,7 +345,7 @@ describe("Issue #40 responsive ActorInspector", () => {
     const { trigger, dialog } = await openActorFromCard();
 
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Close actor details" }),
+      within(dialog).getByRole("button", { name: "关闭演员详情" }),
     );
 
     await waitFor(() =>
@@ -392,7 +401,7 @@ describe("Issue #40 Actor Folder routes and linked Asset history", () => {
     const { dialog } = await openActorFromCard();
 
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Close actor details" }),
+      within(dialog).getByRole("button", { name: "关闭演员详情" }),
     );
     await waitFor(() => expect(location.pathname).toBe("/actors"));
     await waitFor(() =>
@@ -408,7 +417,7 @@ describe("Issue #40 Actor Folder routes and linked Asset history", () => {
     const dialog = await screen.findByRole("dialog", { name: actorName });
 
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Close actor details" }),
+      within(dialog).getByRole("button", { name: "关闭演员详情" }),
     );
     expect(location.pathname).toBe("/actors");
     expect(history.length).toBe(historyLength);
@@ -435,19 +444,19 @@ describe("Issue #40 Actor Folder routes and linked Asset history", () => {
     render(<App />);
     const actorDialog = await screen.findByRole("dialog", { name: actorName });
     const linkedCard = within(actorDialog).getByRole("button", {
-      name: "Open ABC-123",
+      name: "打开资产 ABC-123",
     });
 
     await userEvent.click(linkedCard);
     const assetDialog = await screen.findByRole("dialog", { name: "ABC-123" });
     await userEvent.click(
-      within(assetDialog).getByRole("button", { name: "Close asset details" }),
+      within(assetDialog).getByRole("button", { name: "关闭资产详情" }),
     );
 
     const restoredActor = await screen.findByRole("dialog", { name: actorName });
     expect(location.pathname).toBe(`/actors/${actorSlug}`);
     expect(document.activeElement).toBe(
-      within(restoredActor).getByRole("button", { name: "Open ABC-123" }),
+      within(restoredActor).getByRole("button", { name: "打开资产 ABC-123" }),
     );
   });
 
@@ -458,13 +467,13 @@ describe("Issue #40 Actor Folder routes and linked Asset history", () => {
     await userEvent.click(
       within(await screen.findByRole("dialog", { name: actorName })).getByRole(
         "button",
-        { name: "Open ABC-123" },
+        { name: "打开资产 ABC-123" },
       ),
     );
     await userEvent.click(
       within(await screen.findByRole("dialog", { name: "ABC-123" })).getByRole(
         "button",
-        { name: "Close asset details" },
+        { name: "关闭资产详情" },
       ),
     );
     await screen.findByRole("dialog", { name: actorName });
@@ -490,10 +499,10 @@ describe("Issue #40 Actor Folder storage semantics", () => {
       (row) => [row.querySelector("dt")?.textContent, row.querySelector("dd")?.textContent],
     );
     expect(metrics).toEqual([
-      ["Derived paths", "13"],
-      ["Unique files", "7"],
-      ["Logical Size", "4.9 GiB"],
-      ["Reclaimable Space", "0 B"],
+      ["派生路径", "13"],
+      ["去重文件", "7"],
+      ["逻辑大小", "4.9 GiB"],
+      ["可回收空间", "0 B"],
     ]);
   });
 });
@@ -503,13 +512,7 @@ describe("Issue #40 safe Actor Folder removal", () => {
     stubActorApi();
     render(<App />);
     const { dialog: actorDialog } = await openActorFromCard();
-    await userEvent.click(
-      within(actorDialog).getByRole("button", { name: "Remove Actor Folder…" }),
-    );
-
-    const confirmation = await screen.findByRole("dialog", {
-      name: `Remove ${actorName}?`,
-    });
+    const confirmation = await openActorRemoval(actorDialog);
     expect(document.querySelectorAll('[role="dialog"][aria-modal="true"]')).toHaveLength(1);
     expect(actorDialog).toHaveAttribute("inert");
     expect(document.activeElement && confirmation.contains(document.activeElement)).toBe(true);
@@ -532,20 +535,14 @@ describe("Issue #40 safe Actor Folder removal", () => {
     const requests = stubActorApi();
     render(<App />);
     const { dialog } = await openActorFromCard();
-    await userEvent.click(
-      within(dialog).getByRole("button", { name: "Remove Actor Folder…" }),
-    );
-
-    const confirmation = await screen.findByRole("dialog", {
-      name: `Remove ${actorName}?`,
-    });
-    expect(confirmation).toHaveTextContent("Only derived Actor View paths");
-    expect(confirmation).toHaveTextContent("Source Media Assets");
-    expect(confirmation).toHaveTextContent("NFO metadata");
-    expect(confirmation).toHaveTextContent("Jellyfin items");
+    const confirmation = await openActorRemoval(dialog);
+    expect(confirmation).toHaveTextContent("只会解除此演员目录下的派生演员视图路径");
+    expect(confirmation).toHaveTextContent("源媒体资产");
+    expect(confirmation).toHaveTextContent("NFO 元数据");
+    expect(confirmation).toHaveTextContent("Jellyfin 项目");
     await userEvent.click(
       within(confirmation).getByRole("button", {
-        name: "Remove via Management Task",
+        name: "通过管理任务移除",
       }),
     );
 
@@ -557,7 +554,7 @@ describe("Issue #40 safe Actor Folder removal", () => {
       "/api/v1/tasks/task-actor-remove-1/events",
     ]);
     expect(
-      await screen.findByText("Actor Folder removal started as a Management Task."),
+      await screen.findByText("已创建移除演员目录的管理任务。"),
     ).toBeVisible();
   });
 
@@ -570,17 +567,15 @@ describe("Issue #40 safe Actor Folder removal", () => {
     stubActorApi();
     render(<App />);
     const { dialog } = await openActorFromCard();
+    await openActorRemoval(dialog);
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Remove Actor Folder…" }),
-    );
-    await userEvent.click(
-      within(await screen.findByRole("dialog", { name: `Remove ${actorName}?` }))
-        .getByRole("button", { name: "Remove via Management Task" }),
+      within(await screen.findByRole("dialog", { name: `移除 ${actorName}？` }))
+        .getByRole("button", { name: "通过管理任务移除" }),
     );
 
     const notice = await screen.findByRole("status");
     const close = within(notice).getByRole("button", {
-      name: "Dismiss Actor removal notification",
+      name: "关闭演员目录移除通知",
     });
     const closeStyle = productionStyle(close);
     expect([
@@ -615,12 +610,10 @@ describe("Issue #40 safe Actor Folder removal", () => {
     const requests = stubActorApi();
     render(<App />);
     const { dialog } = await openActorFromCard();
+    await openActorRemoval(dialog);
     await userEvent.click(
-      within(dialog).getByRole("button", { name: "Remove Actor Folder…" }),
-    );
-    await userEvent.click(
-      within(await screen.findByRole("dialog", { name: `Remove ${actorName}?` }))
-        .getByRole("button", { name: "Remove via Management Task" }),
+      within(await screen.findByRole("dialog", { name: `移除 ${actorName}？` }))
+        .getByRole("button", { name: "通过管理任务移除" }),
     );
 
     expect(requests.filter(({ url }) => url === "/api/v1/actors")).toHaveLength(1);
@@ -653,12 +646,10 @@ describe("Issue #40 safe Actor Folder removal", () => {
       stubActorApi();
       render(<App />);
       const { dialog } = await openActorFromCard();
+      await openActorRemoval(dialog);
       await userEvent.click(
-        within(dialog).getByRole("button", { name: "Remove Actor Folder…" }),
-      );
-      await userEvent.click(
-        within(await screen.findByRole("dialog", { name: `Remove ${actorName}?` }))
-          .getByRole("button", { name: "Remove via Management Task" }),
+        within(await screen.findByRole("dialog", { name: `移除 ${actorName}？` }))
+          .getByRole("button", { name: "通过管理任务移除" }),
       );
 
       await act(async () => {
@@ -669,7 +660,9 @@ describe("Issue #40 safe Actor Folder removal", () => {
 
       expect(screen.getByRole("dialog", { name: actorName })).toBeVisible();
       expect(location.pathname).toBe(`/actors/${actorSlug}`);
-      expect(await screen.findByRole("alert")).toHaveTextContent(status);
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        status === "failed" ? "失败" : "已中断",
+      );
     },
   );
 });
@@ -685,10 +678,10 @@ describe("Issue #40 Actor Folder feedback states", () => {
     await openActors();
 
     expect(
-      await screen.findByRole("status", { name: "Loading Actor Folders" }),
+      await screen.findByRole("status", { name: "正在加载演员目录" }),
     ).toBeVisible();
     expect(
-      screen.queryByRole("heading", { name: "No Actor Folders" }),
+      screen.queryByRole("heading", { name: "暂无演员目录" }),
     ).not.toBeInTheDocument();
     resolveActors?.(Response.json([actor]));
   });
@@ -699,7 +692,7 @@ describe("Issue #40 Actor Folder feedback states", () => {
     await openActors();
 
     expect(
-      await screen.findByRole("heading", { name: "No Actor Folders" }),
+      await screen.findByRole("heading", { name: "暂无演员目录" }),
     ).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
@@ -712,11 +705,11 @@ describe("Issue #40 Actor Folder feedback states", () => {
     await openActors();
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Actor Folders could not be loaded",
+      "无法加载演员目录",
     );
-    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "重试" })).toBeVisible();
     expect(
-      screen.queryByRole("heading", { name: "No Actor Folders" }),
+      screen.queryByRole("heading", { name: "暂无演员目录" }),
     ).not.toBeInTheDocument();
   });
 
@@ -728,11 +721,11 @@ describe("Issue #40 Actor Folder feedback states", () => {
     render(<App />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Actor Folder could not be loaded",
+      "无法加载演员目录",
     );
-    expect(screen.queryByText("Loading Actor Folder…")).not.toBeInTheDocument();
+    expect(screen.queryByText("正在加载演员目录…")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Retry Actor Folder" }),
+      screen.getByRole("button", { name: "重试演员目录" }),
     ).toBeVisible();
   });
 });
