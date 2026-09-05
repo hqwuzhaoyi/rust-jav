@@ -354,6 +354,32 @@ function jellyfinReasonLabel(reason: string) {
   if (normalized.includes("jav code") || normalized.includes("title metadata")) return "按番号或标题元数据关联";
   return reason;
 }
+function assetExceptionLabel(message: string) {
+  const localizedReason = message.replace(
+    "the document does not have a root node",
+    "文档缺少根节点",
+  );
+  if (localizedReason.startsWith("NFO metadata is missing.")) {
+    return "NFO 元数据缺失。请添加同目录 .nfo 文件并重新核对资产索引。";
+  }
+  if (localizedReason.startsWith("NFO metadata file is empty. Regenerate it and reconcile the Asset Index:")) {
+    return localizedReason
+      .replace("NFO metadata file is empty. Regenerate it and reconcile the Asset Index:", "NFO 元数据文件为空，请重新生成并重新核对资产索引：")
+      .replace(/ is empty$/, " 为空");
+  }
+  if (localizedReason.startsWith("NFO metadata file is empty. Regenerate it:")) {
+    return localizedReason
+      .replace("NFO metadata file is empty. Regenerate it:", "NFO 元数据文件为空，请重新生成：")
+      .replace(/ is empty$/, " 为空");
+  }
+  if (localizedReason.startsWith("Fix invalid NFO metadata and reconcile the Asset Index:")) {
+    return localizedReason.replace("Fix invalid NFO metadata and reconcile the Asset Index:", "NFO 元数据无效，请修复后重新核对资产索引：");
+  }
+  if (localizedReason.startsWith("NFO metadata is no longer safe or valid:")) {
+    return localizedReason.replace("NFO metadata is no longer safe or valid:", "NFO 元数据已不安全或无效：");
+  }
+  return localizedReason;
+}
 const labels: Record<AssetState, string> = {
   normal: "正常",
   synchronizing: "同步中",
@@ -2727,7 +2753,7 @@ function AssetInspector({
                 name="本地资产"
                 label={labels[detail.state]}
                 tone={detail.state}
-                description={detail.exception ?? (detail.state === "synchronizing"
+                description={detail.exception ? assetExceptionLabel(detail.exception) : (detail.state === "synchronizing"
                   ? "正在自动核对文件系统。"
                   : "本地索引资产仍为权威来源。")}
               />
