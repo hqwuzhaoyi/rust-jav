@@ -762,6 +762,7 @@ export function App() {
   function showActorFolders() {
     actorRequest.current += 1;
     detailRequest.current += 1;
+    setActorDetailLoading(false);
     setInspectedActor(null);
     setActorDetailError(null);
     setInspectedAsset(null);
@@ -771,6 +772,7 @@ export function App() {
   }
   function closeActor() {
     actorRequest.current += 1;
+    setActorDetailLoading(false);
     setInspectedActor(null);
     setActorDetailError(null);
     setNav("actors");

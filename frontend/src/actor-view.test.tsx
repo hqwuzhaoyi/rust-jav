@@ -272,6 +272,21 @@ describe("Issue #40 Actor Folder prototype cards", () => {
 });
 
 describe("Issue #40 responsive ActorInspector", () => {
+  it("closes a still-loading Actor detail with Escape", async () => {
+    stubActorApi({ actorDetailResponse: new Promise<Response>(() => undefined) });
+    render(<App />);
+    await openActors();
+    const trigger = await screen.findByRole("button", { name: `Open ${actorName}` });
+    await userEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Actor Folder detail" });
+
+    await userEvent.keyboard("{Escape}");
+
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(location.pathname).toBe("/actors");
+    expect(trigger).toHaveFocus();
+  });
+
   it.each([1280, 390])(
     "moves focus into a modal Actor detail at %ipx",
     async (width) => {
