@@ -777,7 +777,7 @@ export function App() {
     });
     setMessage(
       response.ok
-        ? `Connected to ${((await response.json()) as { server_name: string }).server_name}.`
+        ? `已连接到 ${((await response.json()) as { server_name: string }).server_name}。`
         : await response.text(),
     );
   }
@@ -1683,7 +1683,7 @@ export function App() {
           </b>
           <span>
             {health?.mode
-              ? `Last ${health.mode} scan`
+              ? `最近一次${health.mode === "startup" ? "启动" : health.mode === "manual" ? "手动" : "增量"}扫描`
               : "以文件系统为准"}
           </span>
         </div>
