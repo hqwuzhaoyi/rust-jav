@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "source_digest": "86bc87f3388787d009686fbe8f5028fde46fc851531dd8c17ae0a1e04e7b5ffe",
+  "source_digest": "77d901708cf936b0d41fc9c7d26c52dec40072dcaeac0d407e449edbf74b6901",
   "index": {
     "path": "/index.html",
-    "normalized_sha256": "5b1cbf76d9df19f34d2c13a8fc8236b13d7324deb80e87d6381ed8af77bbaeef"
+    "normalized_sha256": "fa7de887bbc5fbbe7655ee4703d6007223e047c0f8b33e0385b664bae7a65d71"
   },
   "assets": {
     "javascript": {
