@@ -31,15 +31,15 @@ Cross-filesystem tests may skip when the runner has no second device. Record tha
 
 | Environment | Status in this worktree | Evidence |
 | --- | --- | --- |
-| macOS native | locally automatable subset recorded in final handoff | command output and Rust/frontend suites |
-| Linux native | not available from this macOS worktree | run the same commit in Linux CI/host |
-| TrueNAS SCALE | not available from this worktree | execute `docs/truenas-scale.md` checklist |
+| macOS native | passed on macOS 26.5.2 | 275 Rust tests, 119 frontend tests, TypeScript, production build, rustfmt, and strict Clippy |
+| Linux native | production image build passed on TrueNAS Linux 6.6.44 x86_64 | locked release build and embedded-asset provenance gate in Docker |
+| TrueNAS SCALE | smoke passed on 24.10.2.2 at commit `dd59410` | image `sha256:d2dd628211eb41b23f38716aab27745f55b9cd81b784829ffd4a8a2012609a4a`; app RUNNING and process/SQLite ready |
 
 ## Phone, tablet, desktop browser matrix
 
 Test at minimum 390×844, 768×1024, and 1440×900. At each size verify login/logout; Media Root capacity; asset search/filter/pagination and detail; local artwork validation plus Jellyfin artwork fallback; Actor View; Management Tasks; Settings; permanent-deletion review; exception text; Rule edit/validation/failure; task progress/reconnect; and audit history. Exercise long paths/titles and empty results. Verify keyboard order, visible focus, focus trap/restore and Escape on desktop; reduced-motion behavior; close-control geometry; safe-area padding; touch targets; and no horizontal overflow on phone/tablet.
 
-Automated jsdom tests prove interactions and semantic labels but not real layout, touch behavior, or browser rendering. Those three viewport passes therefore remain external until screenshots and browser/version metadata are attached by the parent verifier.
+Automated jsdom tests prove interactions and semantic labels but not real layout, touch behavior, or browser rendering. A production browser pass on 2026-09-05 used Chromium 150 at 390×844, 768×1024, and 1440×900. All three viewports had no horizontal overflow. Actor Folder cards rendered per-folder Media Asset counts and Logical Size; name/count/size ordering and direction changes produced the expected first rows. The 390px sort controls remained 44px tall, the Actor Inspector close control rendered 44×44px with a 50% radius, focus entered/restored correctly, and Escape closed both loaded and still-loading detail. The permanent-deletion review showed fresh-plan authority, selected/unified hard-link scope, complete paths, metrics, required phrase, and a disabled destructive action without executing deletion. DASS-591 loaded its authenticated Jellyfin fallback at 358×538, and Overview/NFO tabs, Tasks, Settings, and Deletion Candidates completed smoke checks without alerts.
 
 ## TrueNAS SCALE acceptance matrix
 
@@ -61,15 +61,15 @@ Execute the detailed steps in [TrueNAS SCALE deployment](truenas-scale.md) and r
 
 The authoritative procedure is [Jellyfin integration acceptance](jellyfin-acceptance.md). A real pass requires a reachable Jellyfin server with a disposable library and dedicated API key; mock-server tests are not a substitute.
 
-Status for this worktree: **not executed — no real Jellyfin or TrueNAS endpoint was supplied**. Parent verification must record server version, rust-jav commit/image digest, selected disposable library IDs, timestamp, step results 1–8, and redacted logs/screenshots. Do not paste the API key or session cookie.
+Status for this worktree: **live integration smoke passed; full disposable-library procedure not executed**. Jellyfin 10.11.8 was reachable from TrueNAS with four configured library IDs and a server-side API key. The production browser verified a certain Association-backed DASS-591 Primary image fallback without exposing the key or a direct Jellyfin image URL. Destructive/disposable-library steps were skipped because the real Media Root was not disposable and was at 100% capacity. Do not paste the API key or session cookie.
 
 ## Sign-off
 
-- Commit/image digest:
-- TrueNAS SCALE version:
-- Native Linux distribution/kernel:
-- macOS version:
-- Browser/device matrix:
-- Real Jellyfin version and pass timestamp:
-- Failed/skipped scenarios and reason:
-- Verifier:
+- Commit/image digest: `dd59410`; `sha256:d2dd628211eb41b23f38716aab27745f55b9cd81b784829ffd4a8a2012609a4a`
+- TrueNAS SCALE version: 24.10.2.2
+- Native Linux distribution/kernel: TrueNAS Linux 6.6.44-production+truenas x86_64
+- macOS version: 26.5.2 (25F84)
+- Browser/device matrix: Chromium 150; 390×844, 768×1024, 1440×900; passed 2026-09-05
+- Real Jellyfin version and pass timestamp: 10.11.8; live fallback/configuration smoke passed 2026-09-05
+- Failed/skipped scenarios and reason: physical deletion, mutation, and disposable-library Jellyfin steps skipped on the real Media Root; it is non-disposable and currently 100% full. Mount health truthfully reports degraded while the management service remains available.
+- Verifier: Codex production browser and NAS smoke
