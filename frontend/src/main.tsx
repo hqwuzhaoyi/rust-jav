@@ -44,6 +44,10 @@ import {
   type DeletionExecutionTask,
   type DeletionPlan,
 } from "./features/permanent-deletion";
+import { SettingsPage } from "./features/settings/SettingsPage";
+import { DiscardSettingsDialog, RuleActivationDialog } from "./features/settings/SettingsDialogs";
+import { OperationPlanDialog } from "./features/tasks/OperationPlanDialog";
+import { TaskPanel } from "./features/tasks/TaskPanel";
 import { EASE_OUT } from "./lib/ease";
 import "./design-system.css";
 import "./style.css";
@@ -521,6 +525,7 @@ export function App() {
   const [jfLoadState, setJfLoadState] = useState<JellyfinLoadState>("idle");
   const [jfSaving, setJfSaving] = useState(false);
   const [jfError, setJfError] = useState("");
+  const [jellyfinAction, setJellyfinAction] = useState<"test" | "refresh" | null>(null);
   const [pendingNavigation, setPendingNavigation] = useState<{
     run: () => void;
   } | null>(null);
@@ -762,28 +767,40 @@ export function App() {
     }
   }
   async function testJellyfin() {
-    const response = await fetch("/api/v1/jellyfin/test", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
-    setMessage(
-      response.ok
-        ? `已连接到 ${((await response.json()) as { server_name: string }).server_name}。`
-        : await response.text(),
-    );
+    if (jellyfinAction || jfSaving) return;
+    setJellyfinAction("test");
+    setJfError("");
+    try {
+      const response = await fetch("/api/v1/jellyfin/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!response.ok) throw new Error(await response.text());
+      setMessage(`已连接到 ${((await response.json()) as { server_name: string }).server_name}。`);
+    } catch (error) {
+      setJfError(error instanceof Error && error.message ? error.message : "无法测试 Jellyfin 连接。");
+    } finally {
+      setJellyfinAction(null);
+    }
   }
   async function refreshJellyfin() {
-    const response = await fetch("/api/v1/jellyfin/refresh", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
-    setMessage(
-      response.ok
-        ? "Jellyfin 媒体库刷新完成。"
-        : await response.text(),
-    );
+    if (jellyfinAction || jfSaving) return;
+    setJellyfinAction("refresh");
+    setJfError("");
+    try {
+      const response = await fetch("/api/v1/jellyfin/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!response.ok) throw new Error(await response.text());
+      setMessage("Jellyfin 媒体库刷新完成。");
+    } catch (error) {
+      setJfError(error instanceof Error && error.message ? error.message : "无法刷新 Jellyfin。");
+    } finally {
+      setJellyfinAction(null);
+    }
   }
   async function loadActors() {
     setActorListState("loading");
@@ -1895,6 +1912,40 @@ export function App() {
           />
         )}
         {nav === "settings" && (
+          <SettingsPage
+            sourceUrl={sourceUrl}
+            setSourceUrl={(value) => { setSourceUrl(value); setRulesError(""); }}
+            yaml={yaml}
+            editing={editing}
+            validation={validation}
+            rulesMessage={rulesMessage}
+            rulesError={rulesError}
+            rulesPending={rulesPending}
+            downloadProposal={downloadProposal}
+            updateYaml={updateYaml}
+            beginEditing={() => { setEditing(true); setValidation(null); }}
+            validateRules={validateRules}
+            reviewRuleActivation={reviewRuleActivation}
+            jfUrl={jfUrl}
+            setJfUrl={(value) => { jellyfinChangeGeneration.current += 1; setJfUrl(value); setJfError(""); }}
+            jfLibraries={jfLibraries}
+            setJfLibraries={(value) => { jellyfinChangeGeneration.current += 1; setJfLibraries(value); setJfError(""); }}
+            jfKey={jfKey}
+            setJfKey={(value) => { jellyfinChangeGeneration.current += 1; setJfKey(value); setJfError(""); }}
+            jfKeyConfigured={jfKeyConfigured}
+            jfDirty={jfDirty}
+            jfLoadState={jfLoadState}
+            jfSaving={jfSaving}
+            jfError={jfError}
+            jellyfinAction={jellyfinAction}
+            saveJellyfin={saveJellyfin}
+            loadJellyfinConfig={() => void loadJellyfinConfig()}
+            testJellyfin={() => void testJellyfin()}
+            refreshJellyfin={() => void refreshJellyfin()}
+            ruleHeadingRef={ruleHeadingRef}
+          />
+        )}
+        {false && (
           <div className="settings-stack">
             <section className="rules-settings">
               <p className="eyebrow">删除规则</p>
@@ -1952,7 +2003,7 @@ export function App() {
                 {editing && !validation?.empty && (
                   <Button
                     type="button"
-                    disabled={!validation || validation.yaml !== yaml}
+                    disabled={!validation || validation?.yaml !== yaml}
                     onClick={reviewRuleActivation}
                   >
                     保存当前规则集
@@ -1962,7 +2013,7 @@ export function App() {
                   <Button
                     type="button"
                     className="danger"
-                    disabled={validation.yaml !== yaml}
+                    disabled={validation?.yaml !== yaml}
                     onClick={reviewRuleActivation}
                   >
                     确认空规则并保存
@@ -2104,62 +2155,11 @@ export function App() {
           />
         )}
       </MorphingModal>
-      <MorphingModal
-        viewId={planToConfirm ? `confirm-plan-${planToConfirm.id}` : null}
-        placement="center"
-        className="operation-plan-modal"
-        onClose={() => setPlanToConfirm(null)}
-      >
-        {planToConfirm?.operation_plan && (
-          <section
-            className="confirm-dialog operation-plan-confirmation"
-            role="dialog"
-            aria-modal="true"
-            aria-label="确认操作计划"
-          >
-            <p className="eyebrow">操作计划</p>
-            <h2>确认操作计划</h2>
-            <p>计划 <code>{planToConfirm.id}</code> 将执行已检查的快照。</p>
-            {planToConfirm.operation_plan.warnings.map((warning) => (
-              <p className="task-error" key={warning}>{warning}</p>
-            ))}
-            <ol className="confirmation-operations">
-              {planToConfirm.operation_plan.operations.map((operation) => (
-                <li key={operation}>{operations.find(([key]) => key === operation)?.[1] ?? operation}</li>
-              ))}
-            </ol>
-            <div
-              className="confirmation-action-review"
-              tabIndex={0}
-              aria-label={`检查 ${planToConfirm.operation_plan.actions.length} 个已保存操作`}
-            >
-              <p>{planToConfirm.operation_plan.actions.length} 个已保存操作</p>
-              <ol>
-                {planToConfirm.operation_plan.actions.map((action, index) => (
-                  <li className={action.destructive ? "destructive" : ""} key={`${action.kind}-${action.path}-${index}`}>
-                    <b>{kindLabel(action.kind)}</b>
-                    {action.source !== undefined || action.target !== undefined ? (
-                      <>
-                        <code>来源 {action.source ?? "—"}</code>
-                        <code>目标 {action.target ?? "—"}</code>
-                      </>
-                    ) : (
-                      <code>{action.path ?? "—"}</code>
-                    )}
-                    {action.warning && <small>{action.warning}</small>}
-                  </li>
-                ))}
-              </ol>
-            </div>
-            <div className="confirm-actions">
-              <Button onClick={() => setPlanToConfirm(null)}>取消</Button>
-              <Button className="danger" onClick={() => void confirmPlan(planToConfirm.id)}>
-                执行已确认计划
-              </Button>
-            </div>
-          </section>
-        )}
-      </MorphingModal>
+      <OperationPlanDialog
+        task={planToConfirm}
+        close={() => setPlanToConfirm(null)}
+        confirm={(planId) => void confirmPlan(planId)}
+      />
       {actorRemovalNotice && (
         <div className="shell-notice" role="status">
           <p>{actorRemovalNotice}</p>
@@ -2185,93 +2185,21 @@ export function App() {
         }
         onDismiss={() => setMessage("")}
       />
-      <MorphingModal
-        viewId={ruleActivation ? (ruleActivation.empty ? "activate-empty-rules" : "activate-rules") : null}
-        placement="center"
-        className="settings-confirmation-modal"
-        onClose={() => {
-          if (!rulesPending) setRuleActivation(null);
+      <RuleActivationDialog
+        activation={ruleActivation}
+        pending={rulesPending === "activate"}
+        close={() => { if (!rulesPending) setRuleActivation(null); }}
+        activate={() => { if (ruleActivation) void saveRules(ruleActivation); }}
+      />
+      <DiscardSettingsDialog
+        open={Boolean(pendingNavigation)}
+        keepEditing={() => setPendingNavigation(null)}
+        discard={() => {
+          const navigation = pendingNavigation?.run;
+          setPendingNavigation(null);
+          navigation?.();
         }}
-      >
-        {ruleActivation && (
-          <section
-            className="confirm-dialog settings-confirmation"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="rule-activation-title"
-            aria-describedby="rule-activation-description"
-          >
-            <p className="eyebrow">
-              {ruleActivation.empty ? "高风险变更" : "规则草案"}
-            </p>
-            <h2 id="rule-activation-title">
-              {ruleActivation.empty ? "启用空规则集" : "启用规则集"}
-            </h2>
-            <p id="rule-activation-description">
-              {ruleActivation.empty
-                ? "此规则集没有启用的规则。在启用其他规则集前，删除候选将保持为空。"
-                : "已验证的草案将替换当前规则集。"}
-            </p>
-            <pre className="rule-activation-preview">{ruleActivation.yaml}</pre>
-            <div className="dialog-actions">
-              <Button
-                type="button"
-                disabled={rulesPending === "activate"}
-                onClick={() => setRuleActivation(null)}
-              >
-                取消
-              </Button>
-              <Button
-                type="button"
-                className={ruleActivation.empty ? "danger" : ""}
-                disabled={rulesPending === "activate"}
-                onClick={() => void saveRules(ruleActivation)}
-              >
-                {rulesPending === "activate"
-                  ? "正在启用…"
-                  : ruleActivation.empty
-                    ? "启用空规则集"
-                    : "启用规则集"}
-              </Button>
-            </div>
-          </section>
-        )}
-      </MorphingModal>
-      <MorphingModal
-        viewId={pendingNavigation ? "discard-settings" : null}
-        placement="center"
-        className="settings-confirmation-modal"
-        onClose={() => setPendingNavigation(null)}
-      >
-        {pendingNavigation && (
-          <section
-            className="confirm-dialog settings-confirmation"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="discard-settings-title"
-          >
-            <p className="eyebrow">未保存的设置</p>
-            <h2 id="discard-settings-title">放弃未保存的更改？</h2>
-            <p>规则和 Jellyfin 的修改尚未保存。</p>
-            <div className="dialog-actions">
-              <Button type="button" onClick={() => setPendingNavigation(null)}>
-                继续编辑
-              </Button>
-              <Button
-                type="button"
-                className="danger"
-                onClick={() => {
-                  const navigation = pendingNavigation.run;
-                  setPendingNavigation(null);
-                  navigation();
-                }}
-              >
-                放弃更改
-              </Button>
-            </div>
-          </section>
-        )}
-      </MorphingModal>
+      />
       <MorphingModal
         viewId={storageOpen && storage ? "media-storage" : null}
         placement="center"
@@ -3159,7 +3087,7 @@ function LinkedAssetArtwork({ asset }: { asset: Asset }) {
     />
   );
 }
-function TaskPanel({
+function LegacyTaskPanel({
   tasks,
   taskTotal,
   hasMoreTasks,

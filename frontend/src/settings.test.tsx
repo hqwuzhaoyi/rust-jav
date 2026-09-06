@@ -336,6 +336,27 @@ describe("Issue #42 Jellyfin Settings state and security", () => {
       api_key: "",
     });
   });
+
+  it("makes Jellyfin test and refresh actions pending-safe and reports their failures inline", async () => {
+    let resolveTest!: (response: Response) => void;
+    const pendingTest = new Promise<Response>((resolve) => { resolveTest = resolve; });
+    stubSettingsApi((request) => {
+      if (request.url === "/api/v1/jellyfin/test") return pendingTest;
+      if (request.url === "/api/v1/jellyfin/refresh")
+        return new Response("Jellyfin refresh needs manual retry.", { status: 502 });
+    });
+    await openSettings();
+
+    const section = settingsSection("Jellyfin");
+    await userEvent.click(within(section).getByRole("button", { name: "测试连接" }));
+    expect(within(section).getByRole("button", { name: "正在测试连接…" })).toBeDisabled();
+    expect(within(section).getByRole("button", { name: "刷新 Jellyfin" })).toBeDisabled();
+
+    await act(async () => { resolveTest(Response.json({ server_name: "Jellyfin" })); });
+    await waitFor(() => expect(within(section).getByRole("button", { name: "刷新 Jellyfin" })).toBeEnabled());
+    await userEvent.click(within(section).getByRole("button", { name: "刷新 Jellyfin" }));
+    expect(await within(section).findByRole("alert")).toHaveTextContent("Jellyfin refresh needs manual retry.");
+  });
 });
 
 describe("Issue #42 mobile Settings", () => {
