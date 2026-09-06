@@ -783,6 +783,24 @@ impl AssetIndex {
         Ok(assets)
     }
 
+    /// Return exactly the Media Assets selected by their Asset Index IDs.
+    ///
+    /// Callers that intend to mutate the filesystem must still revalidate the
+    /// returned path and filesystem identity.  This lookup deliberately
+    /// accepts identifiers, rather than paths supplied by an untrusted client.
+    pub fn assets_by_ids(&self, ids: &[String]) -> Result<Vec<MediaAsset>, Error> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare("SELECT id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,artwork_status,artwork_content_type,artwork_error,observed_at,captured_date,state,exception FROM media_assets WHERE id=?1")?;
+        let mut assets = Vec::with_capacity(ids.len());
+        for id in ids {
+            let asset = statement.query_row([id], asset_from_row).optional()?;
+            if let Some(asset) = asset {
+                assets.push(asset);
+            }
+        }
+        Ok(assets)
+    }
+
     pub fn detail(&self, id: &str) -> Result<Option<AssetDetail>, Error> {
         let asset = self.connection()?.query_row(
             "SELECT id,media_root,path,device,inode,jav_code,title,nfo_path,artwork_path,artwork_status,artwork_content_type,artwork_error,observed_at,captured_date,state,exception FROM media_assets WHERE id=?1",

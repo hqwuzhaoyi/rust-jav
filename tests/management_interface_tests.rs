@@ -2391,6 +2391,198 @@ async fn generated_openapi_describes_task_rest_and_sse_contracts() {
 }
 
 #[tokio::test]
+async fn actor_asset_deletion_plan_is_path_free_confirms_each_multi_actor_asset_and_refreshes_index(
+) {
+    let (dir, mut config) = fixture();
+    let media = dir.path().join("media");
+    let actors = dir.path().join("actors");
+    let movie = media.join("MIX-001");
+    let source = movie.join("MIX-001.mp4");
+    std::fs::create_dir_all(&movie).unwrap();
+    std::fs::create_dir_all(actors.join("Alice/MIX-001")).unwrap();
+    std::fs::create_dir_all(actors.join("Beatrice/MIX-001")).unwrap();
+    std::fs::write(&source, b"shared movie").unwrap();
+    std::fs::write(
+        movie.join("MIX-001.nfo"),
+        "<movie><title>Shared Room</title><actor><name>Alice</name></actor><actor><name>Beatrice</name></actor></movie>",
+    )
+    .unwrap();
+    let alice_link = actors.join("Alice/MIX-001/MIX-001.mp4");
+    let beatrice_link = actors.join("Beatrice/MIX-001/MIX-001.mp4");
+    std::fs::hard_link(&source, &alice_link).unwrap();
+    std::fs::hard_link(&source, &beatrice_link).unwrap();
+    config.media_roots.push(media.clone());
+    config.actor_view_root = Some(actors.clone());
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+
+    let detail = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/actors/Alice",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let detail: serde_json::Value =
+        serde_json::from_slice(&to_bytes(detail.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let asset_id = detail["linked_assets"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let endpoint = "/api/v1/actors/Alice/permanent-deletion-plans";
+    let confirmation_needed = json_request(
+        app(state.clone()),
+        "POST",
+        endpoint,
+        &serde_json::json!({"asset_ids": [asset_id]}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(confirmation_needed.status(), StatusCode::CONFLICT);
+    let warning: serde_json::Value = serde_json::from_slice(
+        &to_bytes(confirmation_needed.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(warning["unconfirmed_multi_actor_asset_ids"][0], asset_id);
+    assert_eq!(
+        warning["actor_folder_impacts"][0]["other_actor_folders"][0],
+        "Beatrice"
+    );
+
+    let planned = json_request(
+        app(state.clone()),
+        "POST",
+        endpoint,
+        &serde_json::json!({
+            "asset_ids": [asset_id],
+            "confirmed_multi_actor_asset_ids": [asset_id]
+        })
+        .to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(planned.status(), StatusCode::CREATED);
+    let plan: serde_json::Value =
+        serde_json::from_slice(&to_bytes(planned.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(plan["selection"], "unified");
+    assert_eq!(plan["origin"]["type"], "actor_folder");
+    assert_eq!(plan["origin"]["actor_folder"], "Alice");
+    assert_eq!(plan["paths"].as_array().unwrap().len(), 3);
+    assert!(plan["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path["path"] == serde_json::json!(alice_link)));
+    assert!(plan["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path["path"] == serde_json::json!(beatrice_link)));
+    assert!(plan["reclaimable_space"].as_u64().unwrap() > 0);
+
+    let execute = json_request(
+        app(state.clone()),
+        "POST",
+        &format!(
+            "/api/v1/deletion-plans/{}/execute",
+            plan["id"].as_str().unwrap()
+        ),
+        r#"{"irreversible":true,"confirmation":"PERMANENTLY DELETE"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(execute.status(), StatusCode::ACCEPTED);
+    assert!(!source.exists() && !alice_link.exists() && !beatrice_link.exists());
+
+    let assets = json_request(app(state), "GET", "/api/v1/assets", "", Some(&cookie)).await;
+    let assets: serde_json::Value =
+        serde_json::from_slice(&to_bytes(assets.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(assets["total"], 0);
+}
+
+#[tokio::test]
+async fn actor_asset_deletion_plan_rejects_unindexed_ids_and_stale_actor_membership() {
+    let (dir, mut config) = fixture();
+    let media = dir.path().join("media");
+    let actors = dir.path().join("actors");
+    let movie = media.join("SAFE-001");
+    let source = movie.join("SAFE-001.mp4");
+    std::fs::create_dir_all(&movie).unwrap();
+    std::fs::create_dir_all(actors.join("Alice/SAFE-001")).unwrap();
+    std::fs::write(&source, b"movie").unwrap();
+    let nfo = movie.join("SAFE-001.nfo");
+    std::fs::write(&nfo, "<movie><actor><name>Alice</name></actor></movie>").unwrap();
+    std::fs::hard_link(&source, actors.join("Alice/SAFE-001/SAFE-001.mp4")).unwrap();
+    config.media_roots.push(media.clone());
+    config.actor_view_root = Some(actors);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+    let actor = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/actors/Alice",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let actor: serde_json::Value =
+        serde_json::from_slice(&to_bytes(actor.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let asset_id = actor["linked_assets"][0]["id"].as_str().unwrap().to_owned();
+    let endpoint = "/api/v1/actors/Alice/permanent-deletion-plans";
+
+    let unknown_id = json_request(
+        app(state.clone()),
+        "POST",
+        endpoint,
+        &serde_json::json!({"asset_ids": [source]}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(unknown_id.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let plan = json_request(
+        app(state.clone()),
+        "POST",
+        endpoint,
+        &serde_json::json!({"asset_ids": [asset_id]}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(plan.status(), StatusCode::CREATED);
+    let plan: serde_json::Value =
+        serde_json::from_slice(&to_bytes(plan.into_body(), usize::MAX).await.unwrap()).unwrap();
+    std::fs::write(&nfo, "<movie><actor><name>Beatrice</name></actor></movie>").unwrap();
+    let stale = json_request(
+        app(state),
+        "POST",
+        &format!(
+            "/api/v1/deletion-plans/{}/execute",
+            plan["id"].as_str().unwrap()
+        ),
+        r#"{"irreversible":true,"confirmation":"PERMANENTLY DELETE"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    assert!(source.exists());
+}
+
+#[tokio::test]
 async fn authenticated_candidate_plan_executes_as_durable_task_and_keeps_audit() {
     let (dir, mut config) = fixture();
     let root = dir.path().join("media");
