@@ -7,10 +7,12 @@ for generic controls.
 
 ## Primitives
 
-`@/components/ui` owns Button, Input, Card, Progress, Dialog, Sheet, Dropdown
-Menu and Toast. Dialog/Sheet and Toast adapt the already-vendored beUI prototype
-components (`MorphingModal` and `AnimatedToastStack`); the remaining primitive
-APIs follow shadcn's compositional surface and use the semantic tokens in
+`@/components/ui` owns Button, Input, Textarea, Checkbox, Select, Card,
+Progress, Tabs, Dialog, AlertDialog, Sheet, Dropdown Menu, Toggle Group,
+Accordion, Scroll Area, Badge, Separator and Toast. Dialog/Sheet, Toast, and
+Tabs adapt the already-vendored beUI prototype components (`MorphingModal`,
+`AnimatedToastStack`, and motion tabs); the remaining primitive APIs follow
+shadcn's compositional surface and use the semantic tokens in
 `design-system.css`.
 
 Application code may make thin wrappers only when they express an established
@@ -18,7 +20,8 @@ domain action or safety rule (for example, an Operation Plan confirmation). A
 thin wrapper must delegate keyboard handling, focus treatment, disabled state,
 and visual variants to a `ui` primitive.
 
-Do not add a hand-written generic button, input, dialog, menu, toast, card, or
+Do not add a hand-written generic button, input, textarea, checkbox, select,
+dialog, menu, toggle, accordion, toast, card, badge, separator, scroll area, or
 progress control in a feature component. Add or adapt the primitive first,
 including accessible behavior and reduced-motion support, then compose it in the
 feature. Feature CSS may describe layout and domain presentation but may not
@@ -28,6 +31,8 @@ redefine generic-control defaults.
 
 The login and both desktop/mobile navigations consume `Button`; login and
 search fields consume `Input`; global feedback consumes the vendored Toast.
-The UI foundation tests cover keyboard/focus semantics and reduce-motion-aware
-registry components. Existing responsive CSS remains the source of truth for
-390px, 768px, and 1440px layouts.
+Dialog, Sheet, and AlertDialog own their modal role, focus movement, focus trap,
+Escape, and opener restoration, so feature code provides domain content rather
+than accessibility mechanics. The UI foundation tests cover keyboard/focus
+semantics and reduced-motion-aware registry components. Existing responsive CSS
+remains the source of truth for 390px, 768px, and 1440px layouts.

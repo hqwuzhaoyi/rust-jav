@@ -11,6 +11,8 @@ export interface MorphingModalProps {
   placement?: "bottom" | "center";
   className?: string;
   initialAnimation?: boolean;
+  /** Alert dialogs can make dismissal an explicit domain action. */
+  dismissible?: boolean;
 }
 
 const FOCUSABLE = [
@@ -30,6 +32,7 @@ export function MorphingModal({
   placement = "bottom",
   className,
   initialAnimation = true,
+  dismissible = true,
 }: MorphingModalProps) {
   const open = viewId !== null;
   const reduce = useReducedMotion();
@@ -62,7 +65,9 @@ export function MorphingModal({
       panelRef.current?.querySelectorAll<HTMLElement>("[data-modal-view]") ?? [],
     );
     const currentView = views.find((view) => view.dataset.modalView === viewId);
-    const dialog = currentView?.querySelector<HTMLElement>('[role="dialog"]');
+    const dialog = currentView?.querySelector<HTMLElement>(
+      '[role="dialog"], [role="alertdialog"]',
+    );
 
     const focusTarget = dialog?.querySelector<HTMLElement>(FOCUSABLE) ?? dialog;
     if (focusTarget === dialog && dialog && !dialog.hasAttribute("tabindex")) {
@@ -71,7 +76,7 @@ export function MorphingModal({
     focusTarget?.focus();
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && dismissible) {
         event.preventDefault();
         onCloseRef.current();
         return;
@@ -101,11 +106,11 @@ export function MorphingModal({
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [open, viewId]);
+  }, [dismissible, open, viewId]);
 
   return (
     <AnimatePresence initial={false}>
-      {open ? (
+      {open && dismissible ? (
         <PresenceGate key="backdrop">
           {({ gate }) => (
             <motion.button
