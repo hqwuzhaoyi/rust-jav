@@ -169,7 +169,7 @@ async function openActorRemoval(dialog: HTMLElement) {
   await userEvent.click(
     within(menu).getByRole("menuitem", { name: "删除演员目录…" }),
   );
-  return screen.findByRole("dialog", { name: `移除 ${actorName}？` });
+  return screen.findByRole("alertdialog", { name: `移除 ${actorName}？` });
 }
 
 afterEach(() => {
@@ -296,7 +296,7 @@ describe("Issue #40 responsive ActorInspector", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it.each([1280, 390])(
+  it.each([1440, 768, 390])(
     "moves focus into a modal Actor detail at %ipx",
     async (width) => {
       setViewport(width);
@@ -314,6 +314,18 @@ describe("Issue #40 responsive ActorInspector", () => {
       expect(trigger).toHaveFocus();
     },
   );
+
+  it("uses the registry Sheet and Dropdown Menu boundaries", async () => {
+    stubActorApi();
+    render(<App />);
+    const { dialog } = await openActorFromCard();
+
+    expect(dialog.closest(".actor-inspector-sheet")).not.toBeNull();
+    const trigger = within(dialog).getByRole("button", { name: "更多操作" });
+    expect(trigger).toHaveClass("beui-button", "ui-touch-target");
+    await userEvent.click(trigger);
+    expect(screen.getByRole("menu", { name: "演员操作" })).toBeVisible();
+  });
 
   it("uses the real production cascade for a 44px circular Close control", async () => {
     stubActorApi();
@@ -507,14 +519,32 @@ describe("Issue #40 Actor Folder storage semantics", () => {
   });
 });
 
+describe("Issue #50 beUI Actor Folder controls", () => {
+  it("filters Actor Folders through the registry Input without changing sort semantics", async () => {
+    stubActorApi();
+    render(<App />);
+    await openActors();
+
+    const filter = await screen.findByRole("textbox", { name: "筛选演员" });
+    expect(filter).toHaveClass("beui-input");
+    expect(screen.getByRole("combobox", { name: "演员排序字段" })).toHaveClass("beui-select");
+    expect(screen.getByRole("button", { name: `打开演员 ${actorName}` }).closest(".beui-card")).not.toBeNull();
+
+    await userEvent.type(filter, "does not match");
+    expect(screen.getByText(/没有匹配/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: `打开演员 ${actorName}` })).not.toBeInTheDocument();
+  });
+});
+
 describe("Issue #40 safe Actor Folder removal", () => {
   it("suspends ActorInspector modal behavior while removal confirmation owns focus", async () => {
     stubActorApi();
     render(<App />);
     const { dialog: actorDialog } = await openActorFromCard();
     const confirmation = await openActorRemoval(actorDialog);
-    expect(document.querySelectorAll('[role="dialog"][aria-modal="true"]')).toHaveLength(1);
-    expect(actorDialog).toHaveAttribute("inert");
+    expect(confirmation).toHaveAttribute("role", "alertdialog");
+    expect(document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')).toHaveLength(1);
+    expect(screen.queryByRole("dialog", { name: actorName })).not.toBeInTheDocument();
     expect(document.activeElement && confirmation.contains(document.activeElement)).toBe(true);
 
     await userEvent.keyboard("{Escape}");
@@ -569,7 +599,7 @@ describe("Issue #40 safe Actor Folder removal", () => {
     const { dialog } = await openActorFromCard();
     await openActorRemoval(dialog);
     await userEvent.click(
-      within(await screen.findByRole("dialog", { name: `移除 ${actorName}？` }))
+      within(await screen.findByRole("alertdialog", { name: `移除 ${actorName}？` }))
         .getByRole("button", { name: "通过管理任务移除" }),
     );
 
@@ -612,7 +642,7 @@ describe("Issue #40 safe Actor Folder removal", () => {
     const { dialog } = await openActorFromCard();
     await openActorRemoval(dialog);
     await userEvent.click(
-      within(await screen.findByRole("dialog", { name: `移除 ${actorName}？` }))
+      within(await screen.findByRole("alertdialog", { name: `移除 ${actorName}？` }))
         .getByRole("button", { name: "通过管理任务移除" }),
     );
 
@@ -648,7 +678,7 @@ describe("Issue #40 safe Actor Folder removal", () => {
       const { dialog } = await openActorFromCard();
       await openActorRemoval(dialog);
       await userEvent.click(
-        within(await screen.findByRole("dialog", { name: `移除 ${actorName}？` }))
+        within(await screen.findByRole("alertdialog", { name: `移除 ${actorName}？` }))
           .getByRole("button", { name: "通过管理任务移除" }),
       );
 

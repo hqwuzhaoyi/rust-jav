@@ -3,6 +3,7 @@
 @source "./main.tsx";
 @source "./beui-tabs.tsx";
 @source "./components";
+@source "./features";
 @source "./components/ui";
 @source "./features";
 

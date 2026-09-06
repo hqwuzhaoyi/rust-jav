@@ -1188,6 +1188,9 @@ textarea:focus-visible {
   gap: 8px;
   margin-bottom: 14px;
 }
+.actor-sort-toolbar > .beui-input {
+  width: min(260px, 100%);
+}
 .actor-sort-toolbar label {
   display: flex;
   align-items: center;
@@ -1203,6 +1206,10 @@ textarea:focus-visible {
   color: var(--ds-text);
   background: var(--ds-surface-solid);
   font: inherit;
+}
+.actor-sort-toolbar .beui-select {
+  width: auto;
+  min-width: 132px;
 }
 .actor-sort-direction {
   gap: 6px;
@@ -1220,6 +1227,16 @@ textarea:focus-visible {
   border-radius: 15px;
   background: #fff;
   box-shadow: 0 5px 22px #0000000b;
+}
+.actor-folder-card.beui-card {
+  overflow: hidden;
+}
+.actor-folder-open.beui-button {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  border-radius: inherit;
 }
 .actor-folder-poster img {
   width: 100%;
@@ -1931,6 +1948,46 @@ body {
   backdrop-filter: blur(28px) saturate(150%);
   overflow-wrap: anywhere;
 }
+.actor-inspector-sheet {
+  max-width: none;
+}
+.actor-inspector-sheet > div {
+  height: 100%;
+  padding: 0;
+}
+.actor-inspector {
+  position: relative;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+.actor-inspector-content {
+  min-height: 100%;
+}
+.actor-removal-metrics {
+  padding: 12px;
+}
+.actor-removal-metrics dl {
+  margin: 0;
+}
+@media (min-width: 761px) {
+  .actor-inspector-sheet {
+    position: fixed;
+    inset: 0 0 0 auto;
+    width: 360px;
+    height: 100dvh;
+    border: 0;
+    border-left: 1px solid var(--ds-line);
+    border-radius: 0;
+    background: rgba(252, 252, 253, .9);
+    box-shadow: var(--ds-shadow-sheet);
+    backdrop-filter: blur(28px) saturate(150%);
+  }
+  .actor-inspector {
+    height: 100%;
+    padding: 22px;
+  }
+}
 .detail-section > h2 { margin: 19px 0 9px; font-size: 14px; }
 .detail-section .detail-list { margin-top: 0; }
 .detail-status-list { display: grid; gap: 10px; }
@@ -2247,7 +2304,9 @@ body {
   }
   .actor-sort-toolbar {
     justify-content: space-between;
+    flex-wrap: wrap;
   }
+  .actor-sort-toolbar > .beui-input { width: 100%; }
   .actor-sort-toolbar label {
     flex: 1;
   }
@@ -2255,6 +2314,7 @@ body {
     min-width: 0;
     flex: 1;
   }
+  .actor-sort-toolbar .beui-select { width: 100%; min-width: 0; }
   .actor-folder-meta {
     padding: 10px;
   }
@@ -2351,6 +2411,13 @@ body {
     border-radius: var(--ds-radius-sheet) var(--ds-radius-sheet) 0 0;
     box-shadow: 0 -18px 50px rgba(0, 0, 0, .16);
     overscroll-behavior: contain;
+  }
+  .actor-inspector-sheet {
+    max-height: min(86vh, 760px);
+  }
+  .actor-inspector {
+    max-height: min(86vh, 760px);
+    padding: 18px 18px calc(24px + env(safe-area-inset-bottom));
   }
   .filters {
     margin-top: 8px;

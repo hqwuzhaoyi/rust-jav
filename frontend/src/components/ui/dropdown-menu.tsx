@@ -49,7 +49,7 @@ export function DropdownMenuContent({ className, children, ...props }: HTMLAttri
   return <div ref={ref} id={menuId} role="menu" className={cn("absolute right-0 top-full z-50 mt-2 min-w-40 rounded-[var(--ds-radius-sm)] border border-border bg-[var(--ds-surface)] p-1 shadow-lg", className)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setOpen(false); } }} {...props}>{children}</div>;
 }
 
-export function DropdownMenuItem({ className, onClick, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
+export function DropdownMenuItem({ className, density = "compact", onClick, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { density?: "touch" | "compact" }) {
   const { setOpen } = useMenu();
-  return <Button role="menuitem" density="compact" variant="ghost" className={cn("w-full justify-start px-3 text-left", className)} onClick={(event) => { onClick?.(event); if (!event.defaultPrevented) setOpen(false); }} {...props} />;
+  return <Button role="menuitem" density={density} variant="ghost" className={cn("w-full justify-start px-3 text-left", className)} onClick={(event) => { onClick?.(event); if (!event.defaultPrevented) setOpen(false); }} {...props} />;
 }

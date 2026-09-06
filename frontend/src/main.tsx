@@ -54,6 +54,11 @@ import {
   Info,
   InspectorStatus,
 } from "./features/assets/inspector-details";
+import {
+  ActorFolderRemovalAlert,
+  ActorFolders as ActorFoldersFeature,
+  ActorInspectorSheet,
+} from "./features/actors/actor-view";
 import { EASE_OUT } from "./lib/ease";
 import "./design-system.css";
 import "./style.css";
@@ -1774,7 +1779,7 @@ export function App() {
           />
         )}
         {nav === "actors" && (
-          <ActorFolders
+          <ActorFoldersFeature
             actors={actors}
             state={actorListState}
             inspect={(actor) => void openActor(actor)}
@@ -2003,9 +2008,8 @@ export function App() {
           restoreFocusRef={assetOpenerRef}
         />
       )}
-      <AnimatePresence>
-        {(inspectedActor || actorDetailLoading || actorDetailError) && (
-          <ActorInspector
+      {!confirmActor && (inspectedActor || actorDetailLoading || actorDetailError) && (
+          <ActorInspectorSheet
             actor={inspectedActor}
             loading={actorDetailLoading}
             error={actorDetailError}
@@ -2016,27 +2020,15 @@ export function App() {
               const name = inspectedActor?.name ?? actorNameFromPath();
               if (name) void openActor(name, false);
             }}
-            restoreFocusRef={actorOpenerRef}
             linkedFocusRef={actorLinkedFocusRef}
-            suspended={Boolean(confirmActor)}
           />
         )}
-      </AnimatePresence>
-      <MorphingModal
-        viewId={confirmActor ? "actor-removal" : null}
-        placement="center"
-        className="actor-removal-modal"
-        onClose={() => setConfirmActor(null)}
-      >
-        {confirmActor && (
-          <ActorRemovalDialog
-            actor={confirmActor}
-            busy={actorBusy}
-            cancel={() => setConfirmActor(null)}
-            remove={() => void removeActor()}
-          />
-        )}
-      </MorphingModal>
+      <ActorFolderRemovalAlert
+        actor={confirmActor}
+        busy={actorBusy}
+        cancel={() => setConfirmActor(null)}
+        remove={() => void removeActor()}
+      />
       <OperationPlanDialog
         task={planToConfirm}
         close={() => setPlanToConfirm(null)}
@@ -2427,103 +2419,6 @@ function AssetInspector({
       </Tabs>
       </div>
     </Sheet>
-  );
-}
-function ActorFolders({
-  actors,
-  state,
-  inspect,
-  retry,
-}: {
-  actors: ActorFolder[];
-  state: LoadState;
-  inspect: (actor: ActorFolder) => void;
-  retry: () => void;
-}) {
-  const [sortKey, setSortKey] = useState<ActorSortKey>("name");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
-  const sortedActors = useMemo(() => {
-    const nameOrder = (left: ActorFolder, right: ActorFolder) =>
-      left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
-    return [...actors].sort((left, right) => {
-      const order =
-        sortKey === "count"
-          ? left.movie_count - right.movie_count
-          : sortKey === "size"
-            ? left.logical_size - right.logical_size
-            : nameOrder(left, right);
-      if (order === 0) return nameOrder(left, right);
-      return sortDirection === "asc" ? order : -order;
-    });
-  }, [actors, sortDirection, sortKey]);
-  if (state === "loading")
-    return (
-      <div className="actor-feedback" role="status" aria-label="正在加载演员目录">
-        <RefreshCw aria-hidden="true" />
-        <p>正在加载演员目录…</p>
-      </div>
-    );
-  if (state === "error")
-    return (
-      <div className="actor-feedback actor-error" role="alert">
-        <AlertTriangle aria-hidden="true" />
-        <h2>无法加载演员目录</h2>
-        <p>派生演员视图暂时不可用。</p>
-        <Button onClick={retry}>重试</Button>
-      </div>
-    );
-  if (state === "ready" && !actors.length)
-    return (
-      <div className="empty">
-        <span><UserRound aria-hidden="true" /></span>
-        <h2>暂无演员目录</h2>
-        <p>请根据 NFO 元数据生成派生演员视图。</p>
-      </div>
-    );
-  return (
-    <>
-      <div className="actor-sort-toolbar" aria-label="演员排序">
-        <label>
-          <span>排序</span>
-          <select
-            aria-label="演员排序字段"
-            value={sortKey}
-            onChange={(event) => {
-              const nextKey = event.target.value as ActorSortKey;
-              setSortKey(nextKey);
-              setSortDirection(nextKey === "name" ? "asc" : "desc");
-            }}
-          >
-            <option value="name">演员名</option>
-            <option value="count">资产数量</option>
-            <option value="size">逻辑大小</option>
-          </select>
-        </label>
-        <Button
-          className="actor-sort-direction"
-          aria-label={sortDirection === "asc" ? "切换为降序" : "切换为升序"}
-          onClick={() => setSortDirection((current) => current === "asc" ? "desc" : "asc")}
-        >
-          {sortDirection === "asc" ? <ArrowUp aria-hidden="true" /> : <ArrowDown aria-hidden="true" />}
-          {sortDirection === "asc" ? "升序" : "降序"}
-        </Button>
-      </div>
-      <div className="actor-folder-grid">
-      {sortedActors.map((actor) => (
-        <article className="actor-folder-card" key={actor.name}>
-          <Button className="actor-folder-open" aria-label={`打开演员 ${actor.name}`} onClick={() => inspect(actor)}>
-            <div className="actor-folder-poster" style={{ aspectRatio: "2 / 3" }}>
-              <ActorPortrait actor={actor} loading="lazy" />
-              <div>
-                <b>{actor.name}</b>
-                <p>{actor.movie_count} 个媒体资产 · {formatBytes(actor.logical_size)}</p>
-              </div>
-            </div>
-          </Button>
-        </article>
-      ))}
-      </div>
-    </>
   );
 }
 function ActorInspector({
