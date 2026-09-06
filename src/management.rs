@@ -1835,12 +1835,24 @@ async fn create_actor_deletion_plan(
         .iter()
         .map(|identity| (identity.device, identity.inode))
         .collect::<HashSet<_>>();
+    // Match Actor Inspector semantics: local NFO is authoritative when it
+    // identifies actors, while a certain Jellyfin Association supplies the
+    // actor membership when the local NFO has none.
+    let jellyfin_items = match jellyfin_client(&state) {
+        Ok(Some(client)) => state.jellyfin_items(&client).await.ok(),
+        _ => None,
+    };
     let mut impacts = Vec::with_capacity(assets.len());
     let mut selections = Vec::with_capacity(assets.len());
     for asset in &assets {
         if !indexed_asset_is_current(&state.config, asset)
             || !actor_identities.contains(&(asset.device, asset.inode))
-            || !actor_asset_membership_is_current(&state, &actor_name, asset, None)
+            || !actor_asset_membership_is_current(
+                &state,
+                &actor_name,
+                asset,
+                jellyfin_items.as_ref().map(|items| items.as_slice()),
+            )
         {
             return (
                 StatusCode::CONFLICT,
@@ -1853,14 +1865,10 @@ async fn create_actor_deletion_plan(
             Ok(None) => return StatusCode::CONFLICT.into_response(),
             Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         };
-        let metadata_actors = detail
-            .actors
-            .into_iter()
-            .map(|actor| actor.name)
-            .collect::<Vec<_>>();
-        let requires_multi_actor_confirmation = metadata_actors
-            .iter()
-            .any(|name| !person_names_equal(name, &actor_name));
+        let metadata_actors = actor_names_for_deletion_impact(
+            &detail,
+            jellyfin_items.as_ref().map(|items| items.as_slice()),
+        );
         let affected_actor_folders = match actor_folders_for_identities(
             actor_root,
             &HashSet::from([(asset.device, asset.inode)]),
@@ -1874,11 +1882,15 @@ async fn create_actor_deletion_plan(
                     .into_response()
             }
         };
-        let other_actor_folders = affected_actor_folders
+        let other_actor_folders: Vec<String> = affected_actor_folders
             .iter()
             .filter(|name| !person_names_equal(name, &actor_name))
             .cloned()
             .collect();
+        let requires_multi_actor_confirmation = metadata_actors
+            .iter()
+            .any(|name| !person_names_equal(name, &actor_name))
+            || !other_actor_folders.is_empty();
         impacts.push(ActorDeletionImpact {
             asset_id: asset.id.clone(),
             metadata_actors,
@@ -1896,6 +1908,13 @@ async fn create_actor_deletion_plan(
         .confirmed_multi_actor_asset_ids
         .into_iter()
         .collect::<HashSet<_>>();
+    if !confirmed.is_subset(&requested_ids) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "multi-actor confirmation ids must be selected Asset Index ids",
+        )
+            .into_response();
+    }
     let unconfirmed = impacts
         .iter()
         .filter(|impact| {
@@ -1919,7 +1938,7 @@ async fn create_actor_deletion_plan(
     let now = UNIX_EPOCH + Duration::from_secs(state.now());
     let preview = match planner.create_plan(
         selections.iter().map(|asset| asset.path.clone()).collect(),
-        Duration::from_secs(600),
+        Duration::from_secs(900),
         now,
     ) {
         Ok(plan) => plan,
@@ -1936,7 +1955,7 @@ async fn create_actor_deletion_plan(
         .collect::<Vec<_>>();
     approved_paths.extend(discovered_hard_links.iter().map(|path| path.path.clone()));
     let plan = match PermanentDeletionPlanner::new(preview.hard_link_search_roots.clone())
-        .create_plan(approved_paths, Duration::from_secs(600), now)
+        .create_plan(approved_paths, Duration::from_secs(900), now)
     {
         Ok(plan) => plan,
         Err(error) => return (StatusCode::CONFLICT, error.to_string()).into_response(),
@@ -2001,6 +2020,52 @@ fn actor_folders_for_identities(
     Ok(names)
 }
 
+fn actor_names_for_deletion_impact(
+    detail: &crate::asset_index::AssetDetail,
+    jellyfin_items: Option<&[JellyfinItem]>,
+) -> Vec<String> {
+    let mut names = detail
+        .actors
+        .iter()
+        .map(|actor| actor.name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if !names.is_empty() {
+        return names;
+    }
+    let Some(items) = jellyfin_items else {
+        return names;
+    };
+    let Some(association) = associate(
+        &detail.path,
+        detail.jav_code.as_deref(),
+        detail.title.as_deref(),
+        items,
+    ) else {
+        return names;
+    };
+    if association.confidence != AssociationConfidence::CertainPath {
+        return names;
+    }
+    let Some(item) = items.iter().find(|item| item.id == association.item_id) else {
+        return names;
+    };
+    for name in item
+        .actor_names()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        if !names
+            .iter()
+            .any(|existing| person_names_equal(existing, name))
+        {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
 fn actor_deletion_impacts_json(impacts: &[ActorDeletionImpact]) -> serde_json::Value {
     serde_json::Value::Array(
         impacts
@@ -2043,16 +2108,14 @@ async fn execute_deletion_plan(
     let Some(stored) = state.deletion_plans.lock().unwrap().remove(&plan_id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if stored
-        .actor_deletion
-        .as_ref()
-        .is_some_and(|context| !actor_deletion_association_is_current(&state, context))
-    {
-        return (
-            StatusCode::CONFLICT,
-            "Actor Folder association changed; this Operation Plan is no longer valid and a fresh plan is required",
-        )
-            .into_response();
+    if let Some(context) = stored.actor_deletion.as_ref() {
+        if !actor_deletion_association_is_current(&state, context).await {
+            return (
+                StatusCode::CONFLICT,
+                "Actor Folder association changed; this Operation Plan is no longer valid and a fresh plan is required",
+            )
+                .into_response();
+        }
     }
     let authority = plan_json(&plan_id, &stored);
     let task_media_root = stored
@@ -2194,7 +2257,10 @@ fn refresh_actor_deletion_index(state: &AppState, stored: &StoredDeletionPlan) -
         .collect()
 }
 
-fn actor_deletion_association_is_current(state: &AppState, context: &ActorDeletionContext) -> bool {
+async fn actor_deletion_association_is_current(
+    state: &AppState,
+    context: &ActorDeletionContext,
+) -> bool {
     let Some(actor_root) = state.config.actor_view_root.as_deref() else {
         return false;
     };
@@ -2219,10 +2285,19 @@ fn actor_deletion_association_is_current(state: &AppState, context: &ActorDeleti
         .iter()
         .map(|identity| (identity.device, identity.inode))
         .collect::<HashSet<_>>();
+    let jellyfin_items = match jellyfin_client(state) {
+        Ok(Some(client)) => state.jellyfin_items(&client).await.ok(),
+        _ => None,
+    };
     assets.iter().all(|asset| {
         actor_identities.contains(&(asset.device, asset.inode))
             && indexed_asset_is_current(&state.config, asset)
-            && actor_asset_membership_is_current(state, &context.actor_folder, asset, None)
+            && actor_asset_membership_is_current(
+                state,
+                &context.actor_folder,
+                asset,
+                jellyfin_items.as_ref().map(|items| items.as_slice()),
+            )
     })
 }
 

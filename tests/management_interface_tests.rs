@@ -2391,6 +2391,124 @@ async fn generated_openapi_describes_task_rest_and_sse_contracts() {
 }
 
 #[tokio::test]
+async fn actor_deletion_uses_certain_jellyfin_membership_and_actual_other_actor_folder_impact() {
+    use axum::{routing::get, Json, Router};
+
+    let jellyfin = Router::new().route(
+        "/Items",
+        get(|| async {
+            Json(serde_json::json!({"Items":[{
+                "Id":"jf-actual-impact",
+                "Name":"ACTUAL-001",
+                "Path":"/library/media/ACTUAL-001/ACTUAL-001.mp4",
+                "ProviderIds":{}, "UserData":{}, "ImageTags":{},
+                "People":[{"Name":"Alice","Type":"Actor"}]
+            }]}))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let jellyfin_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, jellyfin).await.unwrap() });
+
+    let (dir, mut config) = fixture();
+    let media = dir.path().join("media");
+    let movie = media.join("ACTUAL-001");
+    let source = movie.join("ACTUAL-001.mp4");
+    let actors = dir.path().join("actors");
+    std::fs::create_dir_all(&movie).unwrap();
+    std::fs::write(&source, b"video").unwrap();
+    std::fs::write(movie.join("movie.nfo"), b"").unwrap();
+    for actor in ["Alice", "Unlisted Actor Folder"] {
+        let folder = actors.join(actor).join("ACTUAL-001");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::hard_link(&source, folder.join("ACTUAL-001.mp4")).unwrap();
+    }
+    config.media_roots.push(media);
+    config.actor_view_root = Some(actors);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+    let configured = json_request(
+        app(state.clone()),
+        "PUT",
+        "/api/v1/jellyfin/config",
+        &serde_json::json!({"url":jellyfin_url,"library_ids":["jav"],"api_key":"server-only-secret"}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(configured.status(), StatusCode::NO_CONTENT);
+    let alice = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/actors/Alice",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    let alice: serde_json::Value =
+        serde_json::from_slice(&to_bytes(alice.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let asset_id = alice["linked_assets"][0]["id"].as_str().unwrap().to_owned();
+    let endpoint = "/api/v1/actors/Alice/permanent-deletion-plans";
+
+    let warning = json_request(
+        app(state.clone()),
+        "POST",
+        endpoint,
+        &serde_json::json!({"asset_ids":[asset_id]}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(warning.status(), StatusCode::CONFLICT);
+    let warning: serde_json::Value =
+        serde_json::from_slice(&to_bytes(warning.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(
+        warning["actor_folder_impacts"][0]["metadata_actors"],
+        serde_json::json!(["Alice"])
+    );
+    assert_eq!(
+        warning["actor_folder_impacts"][0]["other_actor_folders"],
+        serde_json::json!(["Unlisted Actor Folder"])
+    );
+    assert_eq!(
+        warning["actor_folder_impacts"][0]["requires_multi_actor_confirmation"],
+        true
+    );
+
+    let planned = json_request(
+        app(state.clone()),
+        "POST",
+        endpoint,
+        &serde_json::json!({
+            "asset_ids":[asset_id],
+            "confirmed_multi_actor_asset_ids":[asset_id]
+        })
+        .to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(planned.status(), StatusCode::CREATED);
+    let plan: serde_json::Value =
+        serde_json::from_slice(&to_bytes(planned.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let executed = json_request(
+        app(state),
+        "POST",
+        &format!(
+            "/api/v1/deletion-plans/{}/execute",
+            plan["id"].as_str().unwrap()
+        ),
+        r#"{"irreversible":true,"confirmation":"PERMANENTLY DELETE"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(executed.status(), StatusCode::ACCEPTED);
+    assert!(!source.exists());
+}
+
+#[tokio::test]
 async fn actor_asset_deletion_plan_is_path_free_confirms_each_multi_actor_asset_and_refreshes_index(
 ) {
     let (dir, mut config) = fixture();
@@ -2477,6 +2595,10 @@ async fn actor_asset_deletion_plan_is_path_free_confirms_each_multi_actor_asset_
     assert_eq!(plan["selection"], "unified");
     assert_eq!(plan["origin"]["type"], "actor_folder");
     assert_eq!(plan["origin"]["actor_folder"], "Alice");
+    assert_eq!(
+        plan["expires_at"].as_u64().unwrap() - plan["created_at"].as_u64().unwrap(),
+        900
+    );
     assert_eq!(plan["paths"].as_array().unwrap().len(), 3);
     assert!(plan["paths"]
         .as_array()
@@ -3699,6 +3821,51 @@ async fn certain_jellyfin_people_fill_empty_asset_actors_and_filter_stale_actor_
             expected_assets
         );
     }
+
+    let mut deletion_url = url::Url::parse("http://localhost/api/v1/actors/").unwrap();
+    deletion_url
+        .path_segments_mut()
+        .unwrap()
+        .pop_if_empty()
+        .push("架乃ゆら")
+        .push("permanent-deletion-plans");
+    let confirmation_needed = json_request(
+        app(state.clone()),
+        "POST",
+        deletion_url.path(),
+        &serde_json::json!({"asset_ids": [id]}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(confirmation_needed.status(), StatusCode::CONFLICT);
+    let warning: serde_json::Value = serde_json::from_slice(
+        &to_bytes(confirmation_needed.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        warning["actor_folder_impacts"][0]["metadata_actors"],
+        serde_json::json!(["架乃ゆら", "三上悠亜"]),
+    );
+    assert_eq!(
+        warning["actor_folder_impacts"][0]["other_actor_folders"],
+        serde_json::json!(["错误演员"]),
+    );
+
+    let invalid_confirmation = json_request(
+        app(state),
+        "POST",
+        deletion_url.path(),
+        &serde_json::json!({
+            "asset_ids": [id],
+            "confirmed_multi_actor_asset_ids": ["unselected-asset-id"]
+        })
+        .to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(invalid_confirmation.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
