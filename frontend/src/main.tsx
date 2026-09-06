@@ -4,7 +4,6 @@ import React, {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import { createRoot } from "react-dom/client";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -22,16 +21,13 @@ import {
   ListTodo,
   LogOut,
   RefreshCw,
-  Search,
   Settings,
   Trash2,
   UserRound,
   Users,
   X,
 } from "lucide-react";
-import { BeUITab, BeUITabPanel, BeUITabs, BeUITabsList } from "./beui-tabs";
 import { MorphingModal } from "./components/motion/morphing-modal";
-import { TiltCard } from "./components/motion/tilt-card";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { Input } from "./components/ui/input";
@@ -48,6 +44,16 @@ import { SettingsPage } from "./features/settings/SettingsPage";
 import { DiscardSettingsDialog, RuleActivationDialog } from "./features/settings/SettingsDialogs";
 import { OperationPlanDialog } from "./features/tasks/OperationPlanDialog";
 import { TaskPanel } from "./features/tasks/TaskPanel";
+import { Sheet } from "./components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
+import { MediaAssetGallery } from "./features/assets/media-asset-gallery";
+import { galleryStateFromUrl, galleryUrl } from "./features/assets/url-state";
+import {
+  DataList,
+  DetailSection,
+  Info,
+  InspectorStatus,
+} from "./features/assets/inspector-details";
 import { EASE_OUT } from "./lib/ease";
 import "./design-system.css";
 import "./style.css";
@@ -382,7 +388,6 @@ function jellyfinStatusLabel(status?: NonNullable<AssetDetail["jellyfin"]>["stat
 function parseStatusLabel(status: AssetDetail["parse_status"]) {
   return status === "valid" ? "有效" : status === "missing" ? "缺失" : "无效";
 }
-const assetStates = new Set<AssetState>(["normal", "synchronizing", "exception"]);
 function assetIdFromPath(pathname = location.pathname) {
   const match = pathname.match(/^\/assets\/([^/]+)$/);
   if (!match) return null;
@@ -398,25 +403,6 @@ function assetTabFromSearch(search = location.search): AssetTab {
 function assetRoute(id: string, tab: AssetTab) {
   const path = `/assets/${encodeURIComponent(id)}`;
   return tab === "nfo" ? `${path}?tab=nfo` : path;
-}
-function galleryStateFromUrl() {
-  const params = new URLSearchParams(location.search);
-  const rawState = params.get("state") as AssetState | null;
-  const rawPage = Number(params.get("page") ?? "1");
-  return {
-    query: params.get("q") ?? "",
-    filter: rawState && assetStates.has(rawState) ? rawState : "" as const,
-    page: Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1,
-  };
-}
-function galleryUrl(query: string, filter: AssetState | "", page: number, assetId?: string | null) {
-  const params = new URLSearchParams();
-  params.set("page", String(page));
-  params.set("per_page", "48");
-  if (query) params.set("q", query);
-  if (filter) params.set("state", filter);
-  const pathname = assetId ? `/assets/${encodeURIComponent(assetId)}` : "/";
-  return `${pathname}?${params}`;
 }
 function useMobileBreakpoint() {
   const [mobile, setMobile] = useState(() => window.innerWidth <= 760);
@@ -1517,16 +1503,6 @@ export function App() {
     setPlanToConfirm(null);
     watchTask(task.id);
   }
-  const grouped = useMemo(
-    () =>
-      assets.groups
-        .map((group) => ({
-          group,
-          items: assets.items.filter((a) => a.captured_date === group.date),
-        }))
-        .filter((g) => g.items.length),
-    [assets],
-  );
   const jfDirty =
     jfUrl !== jfBaseline.url ||
     normalizeLibraryIds(jfLibraries) !== jfBaseline.libraries ||
@@ -1754,126 +1730,32 @@ export function App() {
           )}
         </header>
         {(nav === "assets" || nav === "recent" || nav === "exceptions") && (
-          <>
-            <div className="toolbar">
-              <label className="search">
-                <Search aria-hidden="true" />
-                <Input
-                  aria-label="搜索资产"
-                  placeholder="搜索番号、标题或路径"
-                  value={query}
-                  onChange={(e) => {
-                    const nextQuery = e.target.value;
-                    setQuery(nextQuery);
-                    setPage(1);
-                    history.replaceState(
-                      {},
-                      "",
-                      galleryUrl(nextQuery, filter, 1, assetIdFromPath()),
-                    );
-                  }}
-                />
-              </label>
-              <BeUITabs
-                defaultValue="all"
-                value={filter || "all"}
-                onValueChange={(value) => {
-                  const next = value === "all" ? "" : value as AssetState;
-                  setFilter(next);
-                  setPage(1);
-                  history.pushState({}, "", galleryUrl(query, next, 1, assetIdFromPath()));
-                }}
-                variant="segment"
-                className="gallery-filter-tabs"
-              >
-                <BeUITabsList label="资产状态筛选">
-                  <BeUITab value="all">全部</BeUITab>
-                  <BeUITab value="normal">正常</BeUITab>
-                  <BeUITab value="synchronizing">刷新中</BeUITab>
-                  <BeUITab value="exception">异常</BeUITab>
-                </BeUITabsList>
-              </BeUITabs>
-            </div>
-            <div className="library" aria-busy={galleryLoading}>
-              {galleryLoading ? (
-                <div className="gallery-feedback gallery-loading" role="status" aria-label="正在加载媒体资产">
-                  <RefreshCw aria-hidden="true" />
-                  <span>正在加载媒体资产…</span>
-                </div>
-              ) : galleryError ? (
-                <div className="gallery-feedback gallery-error" role="alert">
-                  <AlertTriangle aria-hidden="true" />
-                  <h2>无法加载媒体资产</h2>
-                  <p>请检查连接后重试。</p>
-                  <Button onClick={() => setGalleryRetry((value) => value + 1)}>重试</Button>
-                </div>
-              ) : grouped.length === 0 ? (
-                <Empty />
-              ) : (
-                grouped.map(({ group, items }) => (
-                  <section className="date-group" key={group.date}>
-                    <div className="date-heading">
-                      <h2>{formatDate(group.date)}</h2>
-                      <span>{group.count} 项</span>
-                    </div>
-                    <div className="asset-grid">
-                      {items.map((a) => (
-                        <TiltCard
-                          className={`asset-card photos-tile ${inspectedAsset?.id === a.id ? "selected" : ""}`}
-                          key={a.id}
-                        >
-                          <Button
-                            className="asset-select"
-                            onClick={() => void inspect(a)}
-                            aria-label={`查看资产 ${a.jav_code ?? a.title ?? "未识别资产"}`}
-                          >
-                            <div className="poster" style={{ aspectRatio: "4 / 3" }}>
-                              <AssetArtwork asset={a} />
-                              <div className="asset-overlay">
-                                <Film aria-hidden="true" />
-                                <span>
-                                  <b>{a.jav_code ?? a.title ?? "未识别"}</b>
-                                  <small>{a.title ?? a.path.split("/").pop()}</small>
-                                </span>
-                                <em className={`state-label ${a.state}`}>{labels[a.state]}</em>
-                              </div>
-                            </div>
-                          </Button>
-                        </TiltCard>
-                      ))}
-                    </div>
-                  </section>
-                ))
-              )}
-            </div>
-            {assets.total_pages > 1 && (
-              <div className="pagination">
-                <Button
-                  disabled={page === 1}
-                  onClick={() => {
-                    const nextPage = page - 1;
-                    setPage(nextPage);
-                    history.pushState({}, "", galleryUrl(query, filter, nextPage, assetIdFromPath()));
-                  }}
-                >
-                  上一页
-                </Button>
-                <span>
-                  {page} / {assets.total_pages}
-                </span>
-                <Button
-                  disabled={page === assets.total_pages}
-                  onClick={() => {
-                    const nextPage = page + 1;
-                    setPage(nextPage);
-                    history.pushState({}, "", galleryUrl(query, filter, nextPage, assetIdFromPath()));
-                  }}
-                >
-                  下一页
-                </Button>
-              </div>
-            )}
-          </>
+          <MediaAssetGallery
+            assets={assets}
+            query={query}
+            filter={filter}
+            loading={galleryLoading}
+            error={galleryError}
+            inspectedAssetId={inspectedAsset?.id ?? null}
+            renderArtwork={(asset) => <AssetArtwork asset={asset} />}
+            formatDate={formatDate}
+            onQueryChange={(nextQuery) => {
+              setQuery(nextQuery);
+              setPage(1);
+              history.replaceState({}, "", galleryUrl(nextQuery, filter, 1, assetIdFromPath()));
+            }}
+            onFilterChange={(next) => {
+              setFilter(next);
+              setPage(1);
+              history.pushState({}, "", galleryUrl(query, next, 1, assetIdFromPath()));
+            }}
+            onPageChange={(nextPage) => {
+              setPage(nextPage);
+              history.pushState({}, "", galleryUrl(query, filter, nextPage, assetIdFromPath()));
+            }}
+            onInspect={(asset) => void inspect(asset)}
+            onRetry={() => setGalleryRetry((value) => value + 1)}
+          />
         )}
         {nav === "tasks" && (
           <TaskPanel
@@ -2312,13 +2194,10 @@ function AssetInspector({
   onTabChange: (tab: AssetTab) => void;
   restoreFocusRef: { current: HTMLElement | null };
 }) {
-  const dialogRef = useRef<HTMLElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef(close);
   closeRef.current = close;
-  const prefersReducedMotion = useReducedMotion();
-  const reduce = prefersReducedMotion
-    || (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
   const mobile = useMobileBreakpoint();
   useEffect(() => {
     const background = Array.from(
@@ -2382,17 +2261,8 @@ function AssetInspector({
     };
   }, [mobile, restoreFocusRef]);
   return (
-    <motion.aside
-      ref={dialogRef}
-      initial={reduce ? false : mobile ? { y: 28, opacity: 0 } : { x: 28, opacity: 0 }}
-      animate={mobile ? { y: 0, opacity: 1 } : { x: 0, opacity: 1 }}
-      exit={reduce ? { opacity: 0 } : mobile ? { y: 28, opacity: 0 } : { x: 28, opacity: 0 }}
-      transition={reduce ? { duration: 0 } : undefined}
-      className="asset-inspector"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="asset-detail-title"
-    >
+    <Sheet open onClose={close} aria-label={asset.jav_code ?? "媒体资产"} className="asset-inspector-sheet" contentClassName="asset-inspector">
+      <div ref={dialogRef}>
       <div className="sheet-handle" aria-hidden="true" />
       <Button
         ref={closeButtonRef}
@@ -2423,20 +2293,20 @@ function AssetInspector({
           </span>
         </div>
       </div>
-      <BeUITabs defaultValue="overview" value={tab} onValueChange={(value) => onTabChange(value as AssetTab)} variant="underline" className="detail-tabs">
-        <BeUITabsList label="资产详情">
-          <BeUITab value="overview">概览</BeUITab>
-          <BeUITab value="nfo">NFO</BeUITab>
-        </BeUITabsList>
+      <Tabs defaultValue="overview" value={tab} onValueChange={(value) => onTabChange(value as AssetTab)} variant="underline" className="detail-tabs">
+        <TabsList label="资产详情">
+          <TabsTrigger value="overview">概览</TabsTrigger>
+          <TabsTrigger value="nfo">NFO</TabsTrigger>
+        </TabsList>
       {loading ? (
         <p className="detail-loading" role="status">
           正在加载资产详情…
         </p>
       ) : detail && tab === "overview" ? (
-        <BeUITabPanel value="overview">
+        <TabsContent value="overview">
           <DetailSection title="状态">
             <div className="detail-status-list">
-              <Status
+              <InspectorStatus
                 name="本地资产"
                 label={labels[detail.state]}
                 tone={detail.state}
@@ -2445,7 +2315,7 @@ function AssetInspector({
                   : "本地索引资产仍为权威来源。")}
               />
               {detail.artwork && (
-                <Status
+                <InspectorStatus
                   name="本地封面"
                   label={artworkStatusLabel(detail.artwork.status)}
                   tone={detail.artwork.status === "valid"
@@ -2462,7 +2332,7 @@ function AssetInspector({
                   ]} />}
                 />
               )}
-              <Status
+              <InspectorStatus
                 name="Jellyfin"
                 label={jellyfinStatusLabel(detail.jellyfin?.status)}
                 tone={detail.jellyfin?.status === "offline" || detail.jellyfin?.status === "not_found"
@@ -2530,10 +2400,10 @@ function AssetInspector({
               ["源视频", detail.path],
             ]} />
           </DetailSection>
-        </BeUITabPanel>
+        </TabsContent>
       ) : (
         detail && (
-          <BeUITabPanel value="nfo">
+          <TabsContent value="nfo">
             <p className="plot">{detail.plot ?? "此 NFO 中没有简介。"}</p>
             <DetailSection title="NFO 元数据">
               <DataList items={[
@@ -2551,56 +2421,13 @@ function AssetInspector({
                 <span key={tag}>{tag}</span>
               ))}
             </div>
-          </BeUITabPanel>
+          </TabsContent>
         )
       )}
-      </BeUITabs>
-    </motion.aside>
+      </Tabs>
+      </div>
+    </Sheet>
   );
-}
-function DetailSection({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="detail-section">
-      <h2>{title}</h2>
-      {children}
-    </section>
-  );
-}
-function DataList({ items }: { items: Array<readonly [string, ReactNode | null | undefined]> }) {
-  return (
-    <dl className="detail-list">
-      {items.map(([label, value]) => (
-        <div key={label}>
-          <dt>{label}</dt>
-          <dd>{value ?? "未提供"}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-function Status({
-  name,
-  label,
-  description,
-  tone,
-  action,
-}: {
-  name: string;
-  label: string;
-  description: string;
-  tone: AssetState;
-  action?: ReactNode;
-}) {
-  return (
-    <div className={`detail-status ${tone}`}>
-      <div><b>{name}</b><span>{label}</span></div>
-      <p>{description}</p>
-      {action}
-    </div>
-  );
-}
-function Info({ k, v }: { k: string; v: ReactNode | null | undefined }) {
-  return <div><dt>{k}</dt><dd>{v ?? "未提供"}</dd></div>;
 }
 function ActorFolders({
   actors,

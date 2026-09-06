@@ -4,6 +4,7 @@
 @source "./beui-tabs.tsx";
 @source "./components";
 @source "./components/ui";
+@source "./features";
 
 /* Foundation layer: Tailwind theme, semantic tokens, and reusable ui-* controls only. */
 :root {
