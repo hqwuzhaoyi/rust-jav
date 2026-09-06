@@ -7,6 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "check": "tsc --noEmit",
+    "lint": "node ./scripts/check-ui-boundary.mjs",
     "test": "vitest run"
   },
   "dependencies": {

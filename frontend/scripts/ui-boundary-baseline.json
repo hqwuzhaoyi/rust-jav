@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "temporary": true,
+  "remove_when": "After #49 through #55 migrate their feature controls, reduce every count to zero and remove the corresponding legacy source files.",
+  "allow": {
+    "src/main.tsx": {
+      "raw:select": 1,
+      "raw:textarea": 1,
+      "role:<dynamic>": 1,
+      "role:dialog": 9,
+      "role:menu": 1,
+      "role:menuitem": 1,
+      "role:progressbar": 1
+    },
+    "src/components/motion/animated-toast-stack.tsx": {
+      "raw:button": 2
+    },
+    "src/components/motion/morphing-modal.tsx": {
+      "raw:motion.button": 1
+    }
+  }
+}
