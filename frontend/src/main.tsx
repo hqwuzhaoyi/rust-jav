@@ -37,6 +37,13 @@ import { Card } from "./components/ui/card";
 import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
 import { Toast } from "./components/ui/toast";
+import {
+  DeletionCandidateBrowser,
+  PermanentDeletionReview,
+  type DeletionCandidate as Candidate,
+  type DeletionExecutionTask,
+  type DeletionPlan,
+} from "./features/permanent-deletion";
 import { EASE_OUT } from "./lib/ease";
 import "./design-system.css";
 import "./style.css";
@@ -156,36 +163,6 @@ type StorageHealth = {
     used_bytes: number | null;
     available_bytes: number | null;
   };
-};
-type Candidate = {
-  path: string;
-  matching_rule: string;
-  type: string;
-  video_warning: string | null;
-  logical_size: number;
-  reclaimable_space: number;
-};
-type DeletionPlan = {
-  id: string;
-  selection: "selected" | "unified";
-  logical_size: number;
-  reclaimable_space: number;
-  created_at: number;
-  expires_at: number;
-  hard_link_search_roots: string[];
-  paths: Array<{ path: string; type: string; video_warning: string | null }>;
-  discovered_hard_links: Array<{ path: string; type: string }>;
-};
-type DeletionExecutionTask = {
-  id: string;
-  task_type: string;
-  status: Task["status"];
-  error: string | null;
-  items: Array<{
-    path: string | null;
-    status: string;
-    message: string | null;
-  }>;
 };
 type OperationPlan = {
   operations: string[];
@@ -1906,63 +1883,16 @@ export function App() {
           />
         )}
         {nav === "deletion" && (
-          <section className="deletion-browser">
-            <div className="deletion-intro">
-              <div>
-                <p className="eyebrow">当前规则集</p>
-                <h2>检查永久删除</h2>
-                <p>
-                  大小来自当前文件系统观测。只有明确确认操作计划后才会删除文件。
-                </p>
-              </div>
-              <Button
-                disabled={!selected.length}
-                onClick={() => void previewDeletion("selected")}
-              >
-                检查 {selected.length || "已选择项"}
-              </Button>
-            </div>
-            <div className="candidate-list">
-              {candidates.map((candidate) => (
-                <label className="candidate" key={candidate.path}>
-                  <Input
-                    type="checkbox"
-                    aria-label={`选择 ${candidate.path}`}
-                    checked={selected.includes(candidate.path)}
-                    onChange={(e) =>
-                      setSelected((current) =>
-                        e.target.checked
-                          ? [...current, candidate.path]
-                          : current.filter((path) => path !== candidate.path),
-                      )
-                    }
-                  />
-                  <div>
-                    <code title={candidate.path}>{candidate.path}</code>
-                    <small>
-                      规则：{candidate.matching_rule} · {fileTypeLabel(candidate.type)}
-                    </small>
-                    {candidate.video_warning && (
-                      <strong>{deletionWarningLabel(candidate.video_warning)}</strong>
-                    )}
-                  </div>
-                  <dl>
-                    <div>
-                      <dt>逻辑大小</dt>
-                      <dd>{formatBytes(candidate.logical_size)}</dd>
-                    </div>
-                    <div>
-                      <dt>可回收空间</dt>
-                      <dd>{formatBytes(candidate.reclaimable_space)}</dd>
-                    </div>
-                  </dl>
-                </label>
-              ))}
-            </div>
-            {!candidates.length && (
-              <p className="task-empty">没有路径命中当前规则集。</p>
-            )}
-          </section>
+          <DeletionCandidateBrowser
+            candidates={candidates}
+            selected={selected}
+            setSelected={setSelected}
+            preview={(selection) => void previewDeletion(selection)}
+            planning={deletionPending === "planning"}
+            formatBytes={formatBytes}
+            fileTypeLabel={fileTypeLabel}
+            warningLabel={deletionWarningLabel}
+          />
         )}
         {nav === "settings" && (
           <div className="settings-stack">
@@ -2416,182 +2346,22 @@ export function App() {
           <span><Settings aria-hidden="true" /></span>设置
         </Button>
       </nav>
-      <MorphingModal
-        viewId={
-          deletionOutcome
-            ? `deletion-outcome-${deletionOutcome.id}`
-            : plan
-              ? `deletion-plan-${plan.id}`
-              : null
-        }
-        placement="center"
-        className="permanent-deletion-modal"
-        initialAnimation={false}
+      <PermanentDeletionReview
+        plan={plan}
+        outcome={deletionOutcome}
+        pending={deletionPending}
+        invalid={deletionPlanInvalid}
+        error={deletionError}
+        confirmText={confirmText}
+        onConfirmTextChange={setConfirmText}
+        onPreview={(selection) => void previewDeletion(selection)}
+        onExecute={() => void executeDeletion()}
         onClose={closeDeletionReview}
-      >
-        {deletionOutcome ? (
-          <section
-            className="delete-confirm deletion-outcome"
-            style={{ maxWidth: "100%" }}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="deletion-outcome-title"
-          >
-            <p className="eyebrow">文件系统结果</p>
-            <h2 id="deletion-outcome-title">
-              {deletionOutcome.status === "failed"
-                ? "永久删除已完成，但部分路径失败"
-                : deletionOutcome.status === "completed"
-                  ? "永久删除已完成"
-                  : deletionOutcome.status === "interrupted"
-                    ? "永久删除已中断"
-                    : `永久删除状态：${taskStatusLabels[deletionOutcome.status] ?? deletionOutcome.status}`}
-            </h2>
-            {deletionOutcome.error && <p className="deletion-inline-error">{deletionOutcome.error}</p>}
-            <ol className="deletion-outcome-list">
-              {deletionOutcome.items.map((item, index) => (
-                <li key={`${item.path}-${index}`}>
-                  <div>
-                    <b>
-                      {item.status === "deleted"
-                        ? "已删除"
-                        : item.status === "changed"
-                          ? "计划后已被替换"
-                          : "失败"}
-                    </b>
-                    <code style={{ overflowWrap: "anywhere" }}>{item.path ?? "未知路径"}</code>
-                  </div>
-                  {item.message && <p>{item.message}</p>}
-                </li>
-              ))}
-            </ol>
-            {deletionOutcome.status !== "completed" && (
-              <p className="no-rollback">未尝试回滚。</p>
-            )}
-            <div className="confirm-actions">
-              <Button type="button" onClick={closeDeletionReview}>关闭</Button>
-            </div>
-          </section>
-        ) : plan ? (
-          <section
-            className="delete-confirm"
-            style={{ maxWidth: "100%" }}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="delete-title"
-            aria-describedby="delete-authority"
-          >
-            <p className="eyebrow">不可撤销操作</p>
-            <h2 id="delete-title">
-              永久删除 {plan.paths.length} 个路径？
-            </h2>
-            <p id="delete-authority" className="deletion-authority">
-              服务器会在解除链接前重新验证每个文件系统身份。只有这份最新操作计划能够授权变更。
-            </p>
-            <div className="choice" aria-label="删除范围">
-              <Button
-                type="button"
-                aria-pressed={plan.selection === "selected"}
-                className={plan.selection === "selected" ? "selected" : ""}
-                disabled={Boolean(deletionPending)}
-                onClick={() => void previewDeletion("selected")}
-              >
-                仅选择的路径
-              </Button>
-              <Button
-                type="button"
-                aria-pressed={plan.selection === "unified"}
-                className={plan.selection === "unified" ? "selected" : ""}
-                disabled={Boolean(deletionPending)}
-                onClick={() => void previewDeletion("unified")}
-              >
-                所有已发现硬链接（{plan.discovered_hard_links.length}）
-              </Button>
-            </div>
-            <dl className="deletion-plan-metrics">
-              <div><dt>逻辑大小</dt><dd>{formatBytes(plan.logical_size)}</dd></div>
-              <div><dt>可回收空间</dt><dd>{formatBytes(plan.reclaimable_space)}</dd></div>
-            </dl>
-            <section className="deletion-scope" aria-labelledby="hard-link-roots-title">
-              <h3 id="hard-link-roots-title">硬链接搜索根目录</h3>
-              <div className="deletion-root-list">
-                {(plan.hard_link_search_roots ?? []).map((root) => <code key={root}>{root}</code>)}
-              </div>
-            </section>
-            {plan.paths.some((path) => path.video_warning) && (
-              <p className="video-warning">
-                ⚠ 此计划会永久删除视频内容。
-              </p>
-            )}
-            <section className="deletion-scope" aria-labelledby="approved-paths-title">
-              <h3 id="approved-paths-title">此计划已批准的路径</h3>
-              <div className="plan-paths">
-                {plan.paths.map((path) => (
-                  <div className="deletion-path" key={path.path}>
-                    <code style={{ overflowWrap: "anywhere" }}>{path.path}</code>
-                    <span>{fileTypeLabel(path.type)}</span>
-                    {path.video_warning && <small>{deletionWarningLabel(path.video_warning)}</small>}
-                  </div>
-                ))}
-              </div>
-            </section>
-            {plan.selection === "selected" && plan.discovered_hard_links.length > 0 && (
-              <section className="deletion-scope" aria-labelledby="discovered-links-title">
-                <h3 id="discovered-links-title">已发现但未批准的硬链接</h3>
-                <div className="plan-paths discovered-links">
-                  {plan.discovered_hard_links.map((link) => (
-                    <div className="deletion-path" key={link.path}>
-                      <code style={{ overflowWrap: "anywhere" }}>{link.path}</code>
-                      <span>已发现 · {fileTypeLabel(link.type ?? "file")}</span>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-            {plan.selection === "unified" && plan.discovered_hard_links.length > 0 && (
-              <p className="unified-scope-note">
-                已发现的 {plan.discovered_hard_links.length} 个硬链接全部包含在上述批准路径中。
-              </p>
-            )}
-            {deletionError && <p className="deletion-inline-error" role="alert">{deletionError}</p>}
-            {deletionPlanInvalid && (
-              <Button
-                type="button"
-                className="fresh-plan-button"
-                disabled={Boolean(deletionPending)}
-                onClick={() => void previewDeletion(plan.selection)}
-              >
-                {deletionPending === "planning" ? "正在创建最新操作计划…" : "创建最新操作计划"}
-              </Button>
-            )}
-            <label htmlFor="confirm-delete">
-              输入 <b>PERMANENTLY DELETE</b> 进行确认
-            </label>
-            <Input
-              id="confirm-delete"
-              value={confirmText}
-              disabled={deletionPlanInvalid || Boolean(deletionPending)}
-              onChange={(event) => setConfirmText(event.target.value)}
-              autoComplete="off"
-            />
-            <div className="confirm-actions">
-              <Button type="button" disabled={Boolean(deletionPending)} onClick={closeDeletionReview}>取消</Button>
-              <Button
-                type="button"
-                className="danger"
-                disabled={
-                  deletionPlanInvalid ||
-                  Boolean(deletionPending) ||
-                  confirmText !== "PERMANENTLY DELETE"
-                }
-                onClick={() => void executeDeletion()}
-              >
-                {deletionPending === "executing" ? "正在重新验证并删除…" : "永久删除"}
-              </Button>
-            </div>
-          </section>
-        ) : null}
-      </MorphingModal>
+        formatBytes={formatBytes}
+        fileTypeLabel={fileTypeLabel}
+        warningLabel={deletionWarningLabel}
+        taskStatusLabel={(status) => taskStatusLabels[status as TaskDisplayStatus] ?? status}
+      />
     </motion.div>
   );
 }

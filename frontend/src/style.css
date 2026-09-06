@@ -639,26 +639,27 @@ input {
   gap: 9px;
 }
 .candidate {
+  display: block;
+  cursor: pointer;
+}
+.candidate-card {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  background: #fff;
 }
-.candidate code {
+.candidate-card code {
   display: block;
   overflow-wrap: anywhere;
   font-size: 11px;
 }
-.candidate small {
+.candidate-card small {
   display: block;
   margin-top: 5px;
   color: #777;
 }
-.candidate strong {
+.candidate-card strong {
   display: block;
   margin-top: 5px;
   color: #b3362f;
@@ -669,17 +670,17 @@ input {
   color: #b3362f;
   font-size: 11px;
 }
-.candidate dl {
+.candidate-card dl {
   display: flex;
   gap: 18px;
   margin: 0;
   text-align: right;
 }
-.candidate dt {
+.candidate-card dt {
   color: #8a8a8f;
   font-size: 9px;
 }
-.candidate dd {
+.candidate-card dd {
   margin: 2px 0 0;
   font-size: 12px;
   font-weight: 650;
@@ -715,7 +716,7 @@ input {
   border-radius: 9px;
   background: #fff;
 }
-.choice button.selected {
+.choice button[aria-pressed="true"] {
   border-color: var(--blue);
   background: #eaf4ff;
 }
@@ -821,9 +822,13 @@ input {
   font-weight: 650;
 }
 .deletion-outcome-list {
+  margin: 14px 0;
+  padding: 0;
+}
+.deletion-outcome-list > ol {
   display: grid;
   gap: 8px;
-  margin: 14px 0;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
@@ -2183,10 +2188,10 @@ body {
   .deletion-intro button {
     width: 100%;
   }
-  .candidate {
+  .candidate-card {
     grid-template-columns: auto minmax(0, 1fr);
   }
-  .candidate dl {
+  .candidate-card dl {
     grid-column: 2;
     justify-content: space-between;
     text-align: left;
