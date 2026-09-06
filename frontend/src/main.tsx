@@ -1,11 +1,9 @@
 import React, {
   FormEvent,
-  forwardRef,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type ButtonHTMLAttributes,
   type ReactNode,
 } from "react";
 import { createRoot } from "react-dom/client";
@@ -32,26 +30,17 @@ import {
   X,
 } from "lucide-react";
 import { BeUITab, BeUITabPanel, BeUITabs, BeUITabsList } from "./beui-tabs";
-import { AnimatedToastStack } from "./components/motion/animated-toast-stack";
 import { MorphingModal } from "./components/motion/morphing-modal";
 import { TiltCard } from "./components/motion/tilt-card";
+import { Button } from "./components/ui/button";
+import { Card } from "./components/ui/card";
+import { Input } from "./components/ui/input";
+import { Progress } from "./components/ui/progress";
+import { Toast } from "./components/ui/toast";
 import { EASE_OUT } from "./lib/ease";
 import "./design-system.css";
 import "./style.css";
 type View = "loading" | "initialize" | "login" | "ready";
-type ControlButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  density?: "touch" | "compact";
-};
-
-const ControlButton = forwardRef<HTMLButtonElement, ControlButtonProps>(
-  function ControlButton({ className, density = "touch", ...props }, ref) {
-    const classes = [density === "touch" ? "ui-touch-target" : "", className]
-      .filter(Boolean)
-      .join(" ");
-    return <button ref={ref} className={classes || undefined} {...props} />;
-  },
-);
-
 type Navigation =
   | "assets"
   | "recent"
@@ -1580,7 +1569,7 @@ export function App() {
         </h1>
         <form className="ui-panel" onSubmit={submit}>
           <label htmlFor="password">密码</label>
-          <input
+          <Input
             id="password"
             type="password"
             minLength={4}
@@ -1590,13 +1579,13 @@ export function App() {
             required
             autoFocus
           />
-          <ControlButton className="ui-primary-button" type="submit" disabled={submitting}>
+          <Button className="ui-primary-button" type="submit" disabled={submitting}>
             {submitting
               ? "请稍候…"
               : view === "initialize"
                 ? "初始化"
                 : "登录"}
-          </ControlButton>
+          </Button>
         </form>
         {message && <p role="status">{message}</p>}
       </motion.main>
@@ -1619,7 +1608,7 @@ export function App() {
         </div>
         <nav aria-label="桌面主导航">
           <p>图库</p>
-          <ControlButton
+          <Button
             aria-label="所有资产"
             title="所有资产"
             aria-current={nav === "assets" ? "page" : undefined}
@@ -1634,8 +1623,8 @@ export function App() {
             }}
           >
             <span><Grid2X2 aria-hidden="true" /></span> 所有资产 <em>{libraryTotal || assets.total}</em>
-          </ControlButton>
-          <ControlButton
+          </Button>
+          <Button
             aria-label="最近入库"
             aria-current={nav === "recent" ? "page" : undefined}
             className={nav === "recent" ? "active" : ""}
@@ -1649,8 +1638,8 @@ export function App() {
             }}
           >
             <span><Clock3 aria-hidden="true" /></span> 最近入库
-          </ControlButton>
-          <ControlButton
+          </Button>
+          <Button
             aria-label="演员"
             aria-current={nav === "actors" ? "page" : undefined}
             className={nav === "actors" ? "active" : ""}
@@ -1658,25 +1647,25 @@ export function App() {
           >
             <span><Users aria-hidden="true" /></span> 演员
             <em>{actors.length}</em>
-          </ControlButton>
-          <ControlButton
+          </Button>
+          <Button
             aria-label="删除候选"
             aria-current={nav === "deletion" ? "page" : undefined}
             className={nav === "deletion" ? "active" : ""}
             onClick={() => requestNavigation(() => setNav("deletion"))}
           >
             <span><Trash2 aria-hidden="true" /></span> 删除候选
-          </ControlButton>
+          </Button>
           <p>管理</p>
-          <ControlButton
+          <Button
             aria-label="整理任务"
             aria-current={nav === "tasks" ? "page" : undefined}
             className={nav === "tasks" ? "active" : ""}
             onClick={() => requestNavigation(() => setNav("tasks"))}
           >
             <span><ListTodo aria-hidden="true" /></span> 整理任务
-          </ControlButton>
-          <ControlButton
+          </Button>
+          <Button
             aria-label="异常资产"
             aria-current={nav === "exceptions" ? "page" : undefined}
             className={nav === "exceptions" ? "active" : ""}
@@ -1690,18 +1679,18 @@ export function App() {
             }}
           >
             <span><AlertTriangle aria-hidden="true" /></span> 异常资产
-          </ControlButton>
-          <ControlButton
+          </Button>
+          <Button
             aria-label="设置"
             aria-current={nav === "settings" ? "page" : undefined}
             className={nav === "settings" ? "active" : ""}
             onClick={() => setNav("settings")}
           >
             <span><Settings aria-hidden="true" /></span> 设置
-          </ControlButton>
+          </Button>
         </nav>
         {storage && <MediaStorageStatus storage={storage} />}
-        <div className="root-card">
+        <Card className="root-card">
           <small>资产索引</small>
           <b>
             <i className={`health-dot ${health?.state}`} />
@@ -1712,14 +1701,14 @@ export function App() {
               ? `最近一次${health.mode === "startup" ? "启动" : health.mode === "manual" ? "手动" : "增量"}扫描`
               : "以文件系统为准"}
           </span>
-        </div>
-        <ControlButton
+        </Card>
+        <Button
           className="signout"
           onClick={() => requestNavigation(() => void logout())}
           aria-label="退出登录"
         >
           <LogOut aria-hidden="true" /> 退出登录
-        </ControlButton>
+        </Button>
       </aside>
       <main className="content">
         <header>
@@ -1755,19 +1744,19 @@ export function App() {
             </small>
           </div>
           {storage && (
-            <ControlButton
+            <Button
               className="mobile-storage-entry"
               aria-label="媒体存储"
               onClick={() => setStorageOpen(true)}
             >
               <HardDrive aria-hidden="true" />
               <span>媒体存储</span>
-            </ControlButton>
+            </Button>
           )}
           {(nav === "assets" || nav === "recent" || nav === "exceptions") && (
-            <ControlButton className="scan" onClick={scan} aria-label="重新扫描">
+            <Button className="scan" onClick={scan} aria-label="重新扫描">
               <RefreshCw aria-hidden="true" /> <span>重新扫描</span>
-            </ControlButton>
+            </Button>
           )}
         </header>
         {(nav === "assets" || nav === "recent" || nav === "exceptions") && (
@@ -1775,7 +1764,7 @@ export function App() {
             <div className="toolbar">
               <label className="search">
                 <Search aria-hidden="true" />
-                <input
+                <Input
                   aria-label="搜索资产"
                   placeholder="搜索番号、标题或路径"
                   value={query}
@@ -1822,7 +1811,7 @@ export function App() {
                   <AlertTriangle aria-hidden="true" />
                   <h2>无法加载媒体资产</h2>
                   <p>请检查连接后重试。</p>
-                  <ControlButton onClick={() => setGalleryRetry((value) => value + 1)}>重试</ControlButton>
+                  <Button onClick={() => setGalleryRetry((value) => value + 1)}>重试</Button>
                 </div>
               ) : grouped.length === 0 ? (
                 <Empty />
@@ -1839,7 +1828,7 @@ export function App() {
                           className={`asset-card photos-tile ${inspectedAsset?.id === a.id ? "selected" : ""}`}
                           key={a.id}
                         >
-                          <ControlButton
+                          <Button
                             className="asset-select"
                             onClick={() => void inspect(a)}
                             aria-label={`查看资产 ${a.jav_code ?? a.title ?? "未识别资产"}`}
@@ -1855,7 +1844,7 @@ export function App() {
                                 <em className={`state-label ${a.state}`}>{labels[a.state]}</em>
                               </div>
                             </div>
-                          </ControlButton>
+                          </Button>
                         </TiltCard>
                       ))}
                     </div>
@@ -1865,7 +1854,7 @@ export function App() {
             </div>
             {assets.total_pages > 1 && (
               <div className="pagination">
-                <ControlButton
+                <Button
                   disabled={page === 1}
                   onClick={() => {
                     const nextPage = page - 1;
@@ -1874,11 +1863,11 @@ export function App() {
                   }}
                 >
                   上一页
-                </ControlButton>
+                </Button>
                 <span>
                   {page} / {assets.total_pages}
                 </span>
-                <ControlButton
+                <Button
                   disabled={page === assets.total_pages}
                   onClick={() => {
                     const nextPage = page + 1;
@@ -1887,7 +1876,7 @@ export function App() {
                   }}
                 >
                   下一页
-                </ControlButton>
+                </Button>
               </div>
             )}
           </>
@@ -1926,17 +1915,17 @@ export function App() {
                   大小来自当前文件系统观测。只有明确确认操作计划后才会删除文件。
                 </p>
               </div>
-              <ControlButton
+              <Button
                 disabled={!selected.length}
                 onClick={() => void previewDeletion("selected")}
               >
                 检查 {selected.length || "已选择项"}
-              </ControlButton>
+              </Button>
             </div>
             <div className="candidate-list">
               {candidates.map((candidate) => (
                 <label className="candidate" key={candidate.path}>
-                  <input
+                  <Input
                     type="checkbox"
                     aria-label={`选择 ${candidate.path}`}
                     checked={selected.includes(candidate.path)}
@@ -1985,7 +1974,7 @@ export function App() {
               </p>
               <label htmlFor="rule-source">规则来源 URL</label>
               <div className="rule-actions">
-                <input
+                <Input
                   id="rule-source"
                   type="url"
                   placeholder="https://raw.githubusercontent.com/…"
@@ -1996,13 +1985,13 @@ export function App() {
                     setRulesError("");
                   }}
                 />
-                <ControlButton
+                <Button
                   type="button"
                   disabled={!sourceUrl || rulesPending !== null}
                   onClick={downloadProposal}
                 >
                   {rulesPending === "download" ? "正在下载草案…" : "下载草案"}
-                </ControlButton>
+                </Button>
               </div>
               <label htmlFor="rules-yaml">当前规则集 YAML</label>
               <textarea
@@ -2015,7 +2004,7 @@ export function App() {
               />
               <div className="rule-actions">
                 {!editing && (
-                  <ControlButton
+                  <Button
                     type="button"
                     onClick={() => {
                       setEditing(true);
@@ -2023,31 +2012,31 @@ export function App() {
                     }}
                   >
                     编辑
-                  </ControlButton>
+                  </Button>
                 )}
                 {editing && (
-                  <ControlButton type="button" disabled={rulesPending !== null} onClick={validateRules}>
+                  <Button type="button" disabled={rulesPending !== null} onClick={validateRules}>
                     {rulesPending === "validate" ? "正在验证…" : "验证"}
-                  </ControlButton>
+                  </Button>
                 )}
                 {editing && !validation?.empty && (
-                  <ControlButton
+                  <Button
                     type="button"
                     disabled={!validation || validation.yaml !== yaml}
                     onClick={reviewRuleActivation}
                   >
                     保存当前规则集
-                  </ControlButton>
+                  </Button>
                 )}
                 {editing && validation?.empty && (
-                  <ControlButton
+                  <Button
                     type="button"
                     className="danger"
                     disabled={validation.yaml !== yaml}
                     onClick={reviewRuleActivation}
                   >
                     确认空规则并保存
-                  </ControlButton>
+                  </Button>
                 )}
               </div>
               {rulesMessage && (
@@ -2073,7 +2062,7 @@ export function App() {
               <form className="task-form" onSubmit={saveJellyfin}>
                 {jfDirty && <p className="settings-dirty">有未保存的更改</p>}
                 <label htmlFor="jellyfin-url">服务器 URL</label>
-                <input
+                <Input
                   id="jellyfin-url"
                   type="url"
                   value={jfUrl}
@@ -2087,7 +2076,7 @@ export function App() {
                   required
                 />
                 <label htmlFor="jellyfin-libraries">媒体库 ID</label>
-                <input
+                <Input
                   id="jellyfin-libraries"
                   value={jfLibraries}
                   disabled={jfSaving}
@@ -2100,7 +2089,7 @@ export function App() {
                   required
                 />
                 <label htmlFor="jellyfin-key">服务器 API 密钥</label>
-                <input
+                <Input
                   id="jellyfin-key"
                   type="password"
                   autoComplete="off"
@@ -2113,27 +2102,27 @@ export function App() {
                   }}
                   required={!jfKeyConfigured}
                 />
-                <ControlButton type="submit" disabled={!jfDirty || jfSaving}>
+                <Button type="submit" disabled={!jfDirty || jfSaving}>
                   {jfSaving ? "正在保存 Jellyfin…" : "保存 Jellyfin"}
-                </ControlButton>
+                </Button>
                 {jfError && (
                   <p role="alert" className="notice settings-error">
                     {jfError}
                   </p>
                 )}
                 {jfLoadState === "error" && (
-                  <ControlButton type="button" className="settings-retry" onClick={() => void loadJellyfinConfig()}>
+                  <Button type="button" className="settings-retry" onClick={() => void loadJellyfinConfig()}>
                     重新加载 Jellyfin 设置
-                  </ControlButton>
+                  </Button>
                 )}
               </form>
               <div className="jellyfin-actions">
-                <ControlButton type="button" disabled={jfDirty || jfSaving} onClick={() => void testJellyfin()}>
+                <Button type="button" disabled={jfDirty || jfSaving} onClick={() => void testJellyfin()}>
                   测试连接
-                </ControlButton>
-                <ControlButton type="button" disabled={jfDirty || jfSaving} onClick={() => void refreshJellyfin()}>
+                </Button>
+                <Button type="button" disabled={jfDirty || jfSaving} onClick={() => void refreshJellyfin()}>
                   刷新 Jellyfin
-                </ControlButton>
+                </Button>
               </div>
             </section>
           </div>
@@ -2233,10 +2222,10 @@ export function App() {
               </ol>
             </div>
             <div className="confirm-actions">
-              <ControlButton onClick={() => setPlanToConfirm(null)}>取消</ControlButton>
-              <ControlButton className="danger" onClick={() => void confirmPlan(planToConfirm.id)}>
+              <Button onClick={() => setPlanToConfirm(null)}>取消</Button>
+              <Button className="danger" onClick={() => void confirmPlan(planToConfirm.id)}>
                 执行已确认计划
-              </ControlButton>
+              </Button>
             </div>
           </section>
         )}
@@ -2244,20 +2233,20 @@ export function App() {
       {actorRemovalNotice && (
         <div className="shell-notice" role="status">
           <p>{actorRemovalNotice}</p>
-          <ControlButton className="ui-icon-button" onClick={() => setActorRemovalNotice(null)} aria-label="关闭演员目录移除通知">
+          <Button className="ui-icon-button" onClick={() => setActorRemovalNotice(null)} aria-label="关闭演员目录移除通知">
             <X aria-hidden="true" />
-          </ControlButton>
+          </Button>
         </div>
       )}
       {actorRemovalFailure && (
         <div className="shell-notice actor-removal-failure" role="alert">
           <p>{actorRemovalFailure}</p>
-          <ControlButton className="ui-icon-button" onClick={() => setActorRemovalFailure(null)} aria-label="关闭演员目录移除错误">
+          <Button className="ui-icon-button" onClick={() => setActorRemovalFailure(null)} aria-label="关闭演员目录移除错误">
             <X aria-hidden="true" />
-          </ControlButton>
+          </Button>
         </div>
       )}
-      <AnimatedToastStack
+      <Toast
         fixed
         toasts={
           message
@@ -2295,14 +2284,14 @@ export function App() {
             </p>
             <pre className="rule-activation-preview">{ruleActivation.yaml}</pre>
             <div className="dialog-actions">
-              <ControlButton
+              <Button
                 type="button"
                 disabled={rulesPending === "activate"}
                 onClick={() => setRuleActivation(null)}
               >
                 取消
-              </ControlButton>
-              <ControlButton
+              </Button>
+              <Button
                 type="button"
                 className={ruleActivation.empty ? "danger" : ""}
                 disabled={rulesPending === "activate"}
@@ -2313,7 +2302,7 @@ export function App() {
                   : ruleActivation.empty
                     ? "启用空规则集"
                     : "启用规则集"}
-              </ControlButton>
+              </Button>
             </div>
           </section>
         )}
@@ -2335,10 +2324,10 @@ export function App() {
             <h2 id="discard-settings-title">放弃未保存的更改？</h2>
             <p>规则和 Jellyfin 的修改尚未保存。</p>
             <div className="dialog-actions">
-              <ControlButton type="button" onClick={() => setPendingNavigation(null)}>
+              <Button type="button" onClick={() => setPendingNavigation(null)}>
                 继续编辑
-              </ControlButton>
-              <ControlButton
+              </Button>
+              <Button
                 type="button"
                 className="danger"
                 onClick={() => {
@@ -2348,7 +2337,7 @@ export function App() {
                 }}
               >
                 放弃更改
-              </ControlButton>
+              </Button>
             </div>
           </section>
         )}
@@ -2366,20 +2355,20 @@ export function App() {
             aria-modal="true"
             aria-label="媒体存储"
           >
-            <ControlButton
+            <Button
               density="compact"
               className="storage-dialog-close"
               aria-label="关闭媒体存储"
               onClick={() => setStorageOpen(false)}
             >
               <X aria-hidden="true" />
-            </ControlButton>
+            </Button>
             <MediaStorageStatus storage={storage} compact />
           </section>
         )}
       </MorphingModal>
       <nav className="bottom-nav" aria-label="移动端主导航">
-        <ControlButton
+        <Button
           aria-label="图库"
           aria-current={nav === "assets" || nav === "recent" || nav === "exceptions" ? "page" : undefined}
           className={nav === "assets" || nav === "recent" || nav === "exceptions" ? "active" : ""}
@@ -2393,39 +2382,39 @@ export function App() {
           }}
         >
           <span><Grid2X2 aria-hidden="true" /></span>图库
-        </ControlButton>
-        <ControlButton
+        </Button>
+        <Button
           aria-label="演员"
           aria-current={nav === "actors" ? "page" : undefined}
           className={nav === "actors" ? "active" : ""}
           onClick={() => requestNavigation(showActorFolders)}
         >
           <span><Users aria-hidden="true" /></span>演员
-        </ControlButton>
-        <ControlButton
+        </Button>
+        <Button
           aria-label="删除"
           aria-current={nav === "deletion" ? "page" : undefined}
           className={nav === "deletion" ? "active" : ""}
           onClick={() => requestNavigation(() => setNav("deletion"))}
         >
           <span><Trash2 aria-hidden="true" /></span>删除
-        </ControlButton>
-        <ControlButton
+        </Button>
+        <Button
           aria-label="任务"
           aria-current={nav === "tasks" ? "page" : undefined}
           className={nav === "tasks" ? "active" : ""}
           onClick={() => requestNavigation(() => setNav("tasks"))}
         >
           <span><ListTodo aria-hidden="true" /></span>任务
-        </ControlButton>
-        <ControlButton
+        </Button>
+        <Button
           aria-label="设置"
           aria-current={nav === "settings" ? "page" : undefined}
           className={nav === "settings" ? "active" : ""}
           onClick={() => setNav("settings")}
         >
           <span><Settings aria-hidden="true" /></span>设置
-        </ControlButton>
+        </Button>
       </nav>
       <MorphingModal
         viewId={
@@ -2480,7 +2469,7 @@ export function App() {
               <p className="no-rollback">未尝试回滚。</p>
             )}
             <div className="confirm-actions">
-              <ControlButton type="button" onClick={closeDeletionReview}>关闭</ControlButton>
+              <Button type="button" onClick={closeDeletionReview}>关闭</Button>
             </div>
           </section>
         ) : plan ? (
@@ -2500,7 +2489,7 @@ export function App() {
               服务器会在解除链接前重新验证每个文件系统身份。只有这份最新操作计划能够授权变更。
             </p>
             <div className="choice" aria-label="删除范围">
-              <ControlButton
+              <Button
                 type="button"
                 aria-pressed={plan.selection === "selected"}
                 className={plan.selection === "selected" ? "selected" : ""}
@@ -2508,8 +2497,8 @@ export function App() {
                 onClick={() => void previewDeletion("selected")}
               >
                 仅选择的路径
-              </ControlButton>
-              <ControlButton
+              </Button>
+              <Button
                 type="button"
                 aria-pressed={plan.selection === "unified"}
                 className={plan.selection === "unified" ? "selected" : ""}
@@ -2517,7 +2506,7 @@ export function App() {
                 onClick={() => void previewDeletion("unified")}
               >
                 所有已发现硬链接（{plan.discovered_hard_links.length}）
-              </ControlButton>
+              </Button>
             </div>
             <dl className="deletion-plan-metrics">
               <div><dt>逻辑大小</dt><dd>{formatBytes(plan.logical_size)}</dd></div>
@@ -2566,19 +2555,19 @@ export function App() {
             )}
             {deletionError && <p className="deletion-inline-error" role="alert">{deletionError}</p>}
             {deletionPlanInvalid && (
-              <ControlButton
+              <Button
                 type="button"
                 className="fresh-plan-button"
                 disabled={Boolean(deletionPending)}
                 onClick={() => void previewDeletion(plan.selection)}
               >
                 {deletionPending === "planning" ? "正在创建最新操作计划…" : "创建最新操作计划"}
-              </ControlButton>
+              </Button>
             )}
             <label htmlFor="confirm-delete">
               输入 <b>PERMANENTLY DELETE</b> 进行确认
             </label>
-            <input
+            <Input
               id="confirm-delete"
               value={confirmText}
               disabled={deletionPlanInvalid || Boolean(deletionPending)}
@@ -2586,8 +2575,8 @@ export function App() {
               autoComplete="off"
             />
             <div className="confirm-actions">
-              <ControlButton type="button" disabled={Boolean(deletionPending)} onClick={closeDeletionReview}>取消</ControlButton>
-              <ControlButton
+              <Button type="button" disabled={Boolean(deletionPending)} onClick={closeDeletionReview}>取消</Button>
+              <Button
                 type="button"
                 className="danger"
                 disabled={
@@ -2598,7 +2587,7 @@ export function App() {
                 onClick={() => void executeDeletion()}
               >
                 {deletionPending === "executing" ? "正在重新验证并删除…" : "永久删除"}
-              </ControlButton>
+              </Button>
             </div>
           </section>
         ) : null}
@@ -2707,18 +2696,18 @@ function AssetInspector({
       aria-labelledby="asset-detail-title"
     >
       <div className="sheet-handle" aria-hidden="true" />
-      <ControlButton
+      <Button
         ref={closeButtonRef}
         className="inspector-close ui-icon-button"
         onClick={close}
         aria-label="关闭资产详情"
       >
         <X aria-hidden="true" />
-      </ControlButton>
+      </Button>
       {backLabel && (
-        <ControlButton className="inspector-back" onClick={close} aria-label={backLabel}>
+        <Button className="inspector-back" onClick={close} aria-label={backLabel}>
           <ArrowLeft aria-hidden="true" /> <span>{backLabel}</span>
-        </ControlButton>
+        </Button>
       )}
       <div className="inspector-hero">
         <AssetArtwork
@@ -2955,7 +2944,7 @@ function ActorFolders({
         <AlertTriangle aria-hidden="true" />
         <h2>无法加载演员目录</h2>
         <p>派生演员视图暂时不可用。</p>
-        <ControlButton onClick={retry}>重试</ControlButton>
+        <Button onClick={retry}>重试</Button>
       </div>
     );
   if (state === "ready" && !actors.length)
@@ -2985,19 +2974,19 @@ function ActorFolders({
             <option value="size">逻辑大小</option>
           </select>
         </label>
-        <ControlButton
+        <Button
           className="actor-sort-direction"
           aria-label={sortDirection === "asc" ? "切换为降序" : "切换为升序"}
           onClick={() => setSortDirection((current) => current === "asc" ? "desc" : "asc")}
         >
           {sortDirection === "asc" ? <ArrowUp aria-hidden="true" /> : <ArrowDown aria-hidden="true" />}
           {sortDirection === "asc" ? "升序" : "降序"}
-        </ControlButton>
+        </Button>
       </div>
       <div className="actor-folder-grid">
       {sortedActors.map((actor) => (
         <article className="actor-folder-card" key={actor.name}>
-          <ControlButton className="actor-folder-open" aria-label={`打开演员 ${actor.name}`} onClick={() => inspect(actor)}>
+          <Button className="actor-folder-open" aria-label={`打开演员 ${actor.name}`} onClick={() => inspect(actor)}>
             <div className="actor-folder-poster" style={{ aspectRatio: "2 / 3" }}>
               <ActorPortrait actor={actor} loading="lazy" />
               <div>
@@ -3005,7 +2994,7 @@ function ActorFolders({
                 <p>{actor.movie_count} 个媒体资产 · {formatBytes(actor.logical_size)}</p>
               </div>
             </div>
-          </ControlButton>
+          </Button>
         </article>
       ))}
       </div>
@@ -3150,10 +3139,10 @@ function ActorInspector({
       transition={reduce ? { duration: 0 } : undefined}
     >
       <div className="sheet-handle" aria-hidden="true" />
-      <ControlButton ref={closeButtonRef} className="inspector-close ui-icon-button" onClick={close} aria-label="关闭演员详情"><X aria-hidden="true" /></ControlButton>
+      <Button ref={closeButtonRef} className="inspector-close ui-icon-button" onClick={close} aria-label="关闭演员详情"><X aria-hidden="true" /></Button>
       {actor && (
         <div className="actor-action-menu" ref={actionMenuRef}>
-          <ControlButton
+          <Button
             ref={actionMenuButtonRef}
             className="actor-action-menu-trigger ui-icon-button"
             aria-label="更多操作"
@@ -3162,10 +3151,10 @@ function ActorInspector({
             onClick={() => setActionMenuOpen((open) => !open)}
           >
             <Ellipsis aria-hidden="true" />
-          </ControlButton>
+          </Button>
           {actionMenuOpen && (
             <div className="actor-action-menu-popover" role="menu" aria-label="演员操作">
-              <ControlButton
+              <Button
                 role="menuitem"
                 onClick={() => {
                   setActionMenuOpen(false);
@@ -3173,7 +3162,7 @@ function ActorInspector({
                 }}
               >
                 <Trash2 aria-hidden="true" /> 删除演员目录…
-              </ControlButton>
+              </Button>
             </div>
           )}
         </div>
@@ -3197,10 +3186,10 @@ function ActorInspector({
             {(actor.linked_assets ?? []).length ? (
               <div className="linked-asset-grid">
                 {(actor.linked_assets ?? []).map((asset) => (
-                  <ControlButton key={asset.id} data-asset-id={asset.id} aria-label={`打开资产 ${asset.jav_code ?? asset.title ?? "媒体资产"}`} onClick={() => openAsset(asset)}>
+                  <Button key={asset.id} data-asset-id={asset.id} aria-label={`打开资产 ${asset.jav_code ?? asset.title ?? "媒体资产"}`} onClick={() => openAsset(asset)}>
                     <LinkedAssetArtwork asset={asset} />
                     <span><b>{asset.jav_code ?? "媒体资产"}</b><small>{asset.title ?? asset.path}</small></span>
-                  </ControlButton>
+                  </Button>
                 ))}
               </div>
             ) : <p className="muted">暂无关联媒体资产。</p>}
@@ -3212,7 +3201,7 @@ function ActorInspector({
           <AlertTriangle aria-hidden="true" />
           <h2>{error}</h2>
           <p>演员目录仍然存在，请重新读取当前文件系统状态。</p>
-          <ControlButton onClick={retry}>重试演员目录</ControlButton>
+          <Button onClick={retry}>重试演员目录</Button>
         </div>
       )}
     </motion.aside>
@@ -3293,12 +3282,12 @@ function ActorRemovalDialog({
           之后可根据源 NFO 元数据重新生成演员链接。硬链接要求演员视图和媒体根目录位于同一文件系统。
         </p>
         <div className="dialog-actions">
-          <ControlButton disabled={busy} onClick={cancel}>
+          <Button disabled={busy} onClick={cancel}>
             取消
-          </ControlButton>
-          <ControlButton className="danger" disabled={busy} onClick={remove}>
+          </Button>
+          <Button className="danger" disabled={busy} onClick={remove}>
             通过管理任务移除
-          </ControlButton>
+          </Button>
         </div>
     </section>
   );
@@ -3339,16 +3328,11 @@ function MediaStorageStatus({
           <b>{formatBytes(total!)} 总量</b>
           <span>{formatBytes(used!)} 已用</span>
           <span>{formatBytes(available!)} 剩余</span>
-          <div
+          <Progress
             className="storage-progress"
-            role="progressbar"
             aria-label={`媒体存储已使用 ${percentage}%`}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={percentage}
-          >
-            <i style={{ width: `${percentage}%` }} />
-          </div>
+            value={percentage}
+          />
         </>
       ) : (
         <>
@@ -3444,7 +3428,7 @@ function TaskPanel({
         <h2>新建操作计划</h2>
         <form className="task-form" onSubmit={createTask}>
           <label htmlFor="media-root">媒体根目录</label>
-          <input
+          <Input
             id="media-root"
             value={mediaRoot}
             onChange={(e) => setMediaRoot(e.target.value)}
@@ -3453,17 +3437,17 @@ function TaskPanel({
           />
           <div className="operation-heading">
             <label>操作</label>
-            <ControlButton
+            <Button
               type="button"
               onClick={() => setSelectedOps(operations.map(([key]) => key))}
             >
               完整流程
-            </ControlButton>
+            </Button>
           </div>
           <div className="operation-list">
             {operations.map(([key, label]) => (
               <label key={key}>
-                <input
+                <Input
                   type="checkbox"
                   checked={selectedOps.includes(key)}
                   onChange={() => toggle(key)}
@@ -3472,9 +3456,9 @@ function TaskPanel({
               </label>
             ))}
           </div>
-          <ControlButton type="submit" disabled={!selectedOps.length}>
+          <Button type="submit" disabled={!selectedOps.length}>
             预览 15 分钟有效的计划
-          </ControlButton>
+          </Button>
         </form>
       </section>
       <section className="task-history">
@@ -3484,9 +3468,9 @@ function TaskPanel({
             <p>持久化历史、实时进度、报告与验证</p>
             <p className="task-count">{taskTotal} 个任务</p>
           </div>
-          <ControlButton className="refresh" onClick={() => void refresh()}>
+          <Button className="refresh" onClick={() => void refresh()}>
             刷新
-          </ControlButton>
+          </Button>
         </div>
         {tasks.length === 0 ? (
           <p className="task-empty">暂无管理任务。</p>
@@ -3558,9 +3542,9 @@ function TaskPanel({
                     {task.status === "completed" &&
                       !task.plan_consumed_at &&
                       Date.now() / 1000 <= task.plan_expires_at! && (
-                        <ControlButton onClick={() => requestPlanConfirmation(task)}>
+                        <Button onClick={() => requestPlanConfirmation(task)}>
                           确认并执行
-                        </ControlButton>
+                        </Button>
                       )}
                   </div>
                 )}
@@ -3573,14 +3557,14 @@ function TaskPanel({
                         <span className="task-item-path">
                           <code>{item.path ?? "—"}</code>
                           {item.path && (
-                            <ControlButton
+                            <Button
                               type="button"
                               className="copy-path"
                               aria-label={`复制完整路径 ${item.path}`}
                               onClick={() => void navigator.clipboard?.writeText(item.path!)}
                             >
                               复制
-                            </ControlButton>
+                            </Button>
                           )}
                         </span>
                         {item.message && <small>{item.message}</small>}
@@ -3604,14 +3588,14 @@ function TaskPanel({
           </ol>
         )}
         {hasMoreTasks && (
-          <ControlButton
+          <Button
             type="button"
             className="show-more-tasks"
             disabled={historyPageLoading}
             onClick={() => void loadMore()}
           >
             {historyPageLoading ? "正在加载任务…" : "再加载 20 个任务"}
-          </ControlButton>
+          </Button>
         )}
       </section>
     </div>
