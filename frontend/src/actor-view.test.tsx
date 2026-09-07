@@ -116,6 +116,17 @@ function stubActorApi(options: StubOptions = {}) {
           );
         return options.actorDetailResponse ?? Response.json(actor);
       }
+      if (url === `/api/v1/actors/${encodedActorName}/permanent-deletion-plans` && method === "POST")
+        return Response.json({
+          id: "actor-delete-plan-1", selection: "unified", logical_size: 1024,
+          reclaimable_space: 1024, created_at: 1, expires_at: 900,
+          hard_link_search_roots: ["/media", "/actors"],
+          paths: [{ path: linkedAsset.path, type: "file" }], discovered_hard_links: [],
+          origin: { type: "actor_folder", actor_folder: actorName, selected_asset_ids: [linkedAsset.id] },
+          actor_folder_impacts: [{ asset_id: linkedAsset.id, metadata_actors: [actorName], affected_actor_folders: [actorName], other_actor_folders: [], requires_multi_actor_confirmation: false }],
+        }, { status: 201 });
+      if (url === "/api/v1/deletion-plans/actor-delete-plan-1/execute" && method === "POST")
+        return Response.json({ id: "task-actor-delete-1", task_type: "permanent_deletion", status: "completed", error: null, items: [{ path: linkedAsset.path, status: "deleted", message: null }] }, { status: 202 });
       if (url === `/api/v1/actors/${encodedLongActorName}`)
         return Response.json(fallbackActor);
       if (url === "/api/v1/assets/asset%2Ffrom%20actor%3F%231")
@@ -533,6 +544,28 @@ describe("Issue #50 beUI Actor Folder controls", () => {
     await userEvent.type(filter, "does not match");
     expect(screen.getByText(/没有匹配/)).toBeVisible();
     expect(screen.queryByRole("button", { name: `打开演员 ${actorName}` })).not.toBeInTheDocument();
+  });
+});
+
+describe("Issue #55 Actor-selected source deletion", () => {
+  it("sends only selected Asset Index ids, requires the exact phrase, and shows the task outcome", async () => {
+    stubActorApi();
+    render(<App />);
+    const { dialog } = await openActorFromCard();
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: "选择资产 ABC-123" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "永久删除源媒体…" }));
+
+    const review = await screen.findByRole("alertdialog", { name: "永久删除 1 个路径？" });
+    const execute = within(review).getByRole("button", { name: "永久删除" });
+    expect(execute).toBeDisabled();
+    await userEvent.type(within(review).getByRole("textbox"), "PERMANENTLY DELETE");
+    await userEvent.click(execute);
+    expect(await screen.findByRole("alertdialog", { name: "永久删除已完成" })).toHaveTextContent("deleted");
+
+    const calls = vi.mocked(fetch).mock.calls;
+    const plan = calls.find(([url]) => String(url).includes("permanent-deletion-plans"));
+    expect(JSON.parse(String(plan?.[1]?.body))).toEqual({ asset_ids: [linkedAsset.id] });
+    expect(String(plan?.[1]?.body)).not.toContain("path");
   });
 });
 

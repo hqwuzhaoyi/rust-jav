@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
+import { Checkbox } from "./components/ui/checkbox";
 import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
 import { Toast } from "./components/ui/toast";
@@ -38,7 +39,7 @@ import { SettingsPage } from "./features/settings/SettingsPage";
 import { DiscardSettingsDialog, RuleActivationDialog } from "./features/settings/SettingsDialogs";
 import { OperationPlanDialog } from "./features/tasks/OperationPlanDialog";
 import { TaskPanel } from "./features/tasks/TaskPanel";
-import { Dialog, Sheet } from "./components/ui/dialog";
+import { AlertDialog, Dialog, Sheet } from "./components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { MediaAssetGallery } from "./features/assets/media-asset-gallery";
 import { galleryStateFromUrl, galleryUrl } from "./features/assets/url-state";
@@ -53,6 +54,12 @@ import {
   ActorFolders as ActorFoldersFeature,
   ActorInspectorSheet,
 } from "./features/actors/actor-view";
+import {
+  createActorDeletionPlan,
+  executeDeletionPlan,
+  type ActorFolderDeletionImpact,
+  type UnifiedDeletionPlan,
+} from "./lib/actor-deletion-api";
 import { EASE_OUT } from "./lib/ease";
 import "./design-system.css";
 import "./style.css";
@@ -540,6 +547,15 @@ export function App() {
   const [inspectedActor, setInspectedActor] = useState<ActorFolder | null>(null);
   const [actorDetailLoading, setActorDetailLoading] = useState(false);
   const [actorDetailError, setActorDetailError] = useState<string | null>(null);
+  const [selectedActorAssetIds, setSelectedActorAssetIds] = useState<Set<string>>(new Set());
+  const [actorDeletionPlan, setActorDeletionPlan] = useState<UnifiedDeletionPlan | null>(null);
+  const [actorDeletionImpacts, setActorDeletionImpacts] = useState<ActorFolderDeletionImpact[]>([]);
+  const [actorDeletionConfirmations, setActorDeletionConfirmations] = useState<Set<string>>(new Set());
+  const [actorDeletionActor, setActorDeletionActor] = useState<ActorFolder | null>(null);
+  const [actorDeletionError, setActorDeletionError] = useState<string | null>(null);
+  const [actorDeletionPhrase, setActorDeletionPhrase] = useState("");
+  const [actorDeletionOutcome, setActorDeletionOutcome] = useState<DeletionExecutionTask | null>(null);
+  const [actorDeletionPending, setActorDeletionPending] = useState<"planning" | "executing" | null>(null);
   const [assetBackActor, setAssetBackActor] = useState<ActorFolder | null>(null);
   const actorOpenerRef = useRef<HTMLElement | null>(null);
   const actorLinkedFocusRef = useRef<string | null>(null);
@@ -813,6 +829,7 @@ export function App() {
     setInspectedActor(null);
     setInspectedAsset(null);
     setAssetDetail(null);
+    setSelectedActorAssetIds(new Set());
     if (push) {
       const state: ActorHistoryState = {
         actor: name,
@@ -898,6 +915,43 @@ export function App() {
     setConfirmActor(null);
     setActorRemovalNotice("已创建移除演员目录的管理任务。");
     setActorBusy(false);
+  }
+  async function requestActorPermanentDeletion(actor: ActorFolder, assetIds: string[], confirmed = new Set<string>()) {
+    setActorDeletionPending("planning");
+    setActorDeletionError(null);
+    setActorDeletionPhrase("");
+    const result = await createActorDeletionPlan(actor.name, {
+      asset_ids: assetIds,
+      ...(confirmed.size ? { confirmed_multi_actor_asset_ids: [...confirmed] } : {}),
+    });
+    setActorDeletionPending(null);
+    if (result.status === "created") {
+      setActorDeletionPlan(result.plan);
+      setActorDeletionImpacts(result.plan.actor_folder_impacts);
+      setActorDeletionActor(actor);
+      return;
+    }
+    if (result.status === "multi_actor_confirmation_required") {
+      setActorDeletionImpacts(result.actor_folder_impacts);
+      setActorDeletionActor(actor);
+      setActorDeletionConfirmations(new Set());
+      return;
+    }
+    setActorDeletionError(result.error);
+  }
+  async function executeActorPermanentDeletion() {
+    if (!actorDeletionPlan || actorDeletionPhrase !== "PERMANENTLY DELETE") return;
+    setActorDeletionPending("executing");
+    const result = await executeDeletionPlan(actorDeletionPlan.id, actorDeletionPhrase);
+    setActorDeletionPending(null);
+    if (result.http_status === 202 && result.body && typeof result.body === "object") {
+      setActorDeletionOutcome(result.body as DeletionExecutionTask);
+      setActorDeletionPlan(null);
+      setSelectedActorAssetIds(new Set());
+      return;
+    }
+    setActorDeletionPhrase("");
+    setActorDeletionError(typeof result.body === "string" ? result.body : "永久删除计划已过期或文件状态已变化，请重新检查。");
   }
   async function loadCandidates() {
     const r = await fetch("/api/v1/deletion-candidates");
@@ -1852,6 +1906,11 @@ export function App() {
               if (name) void openActor(name, false);
             }}
             linkedFocusRef={actorLinkedFocusRef}
+            selectedAssetIds={selectedActorAssetIds}
+            onSelectedAssetIdsChange={setSelectedActorAssetIds}
+            onPermanentDelete={(assetIds) => {
+              if (inspectedActor) void requestActorPermanentDeletion(inspectedActor, assetIds);
+            }}
           />
         )}
       <ActorFolderRemovalAlert
@@ -1860,6 +1919,66 @@ export function App() {
         cancel={() => setConfirmActor(null)}
         remove={() => void removeActor()}
       />
+      <AlertDialog
+        open={Boolean(actorDeletionActor && !actorDeletionPlan && actorDeletionImpacts.some((impact) => impact.requires_multi_actor_confirmation))}
+        onClose={() => { setActorDeletionActor(null); setActorDeletionImpacts([]); }}
+        title="确认多人作品影响"
+        description="每个多人 Media Asset 都需要单独确认；这不会移除 Actor Folder。"
+        className="actor-deletion-review-modal"
+        contentClassName="actor-deletion-confirmation"
+      >
+        {actorDeletionActor && !actorDeletionPlan ? <>
+          {actorDeletionImpacts.filter((impact) => impact.requires_multi_actor_confirmation).map((impact) => (
+            <label key={impact.asset_id} className="actor-deletion-impact">
+              <Checkbox
+                checked={actorDeletionConfirmations.has(impact.asset_id)}
+                onChange={() => setActorDeletionConfirmations((current) => {
+                  const next = new Set(current);
+                  if (next.has(impact.asset_id)) next.delete(impact.asset_id); else next.add(impact.asset_id);
+                  return next;
+                })}
+              />
+              <span>确认 {impact.asset_id} 会影响：{impact.other_actor_folders.join("、") || impact.metadata_actors.join("、")}</span>
+            </label>
+          ))}
+          <div className="dialog-actions">
+            <Button variant="outline" onClick={() => { setActorDeletionActor(null); setActorDeletionImpacts([]); }}>取消</Button>
+            <Button
+              variant="destructive"
+              disabled={actorDeletionImpacts.filter((impact) => impact.requires_multi_actor_confirmation).some((impact) => !actorDeletionConfirmations.has(impact.asset_id))}
+              onClick={() => void requestActorPermanentDeletion(actorDeletionActor, [...selectedActorAssetIds], actorDeletionConfirmations)}
+            >继续检查</Button>
+          </div>
+        </> : null}
+      </AlertDialog>
+      <AlertDialog
+        open={Boolean(actorDeletionPlan)}
+        onClose={() => { setActorDeletionPlan(null); setActorDeletionPhrase(""); }}
+        title={actorDeletionPlan ? `永久删除 ${actorDeletionPlan.paths.length} 个路径？` : "永久删除源媒体"}
+        description="将删除选定 Media Asset 的源路径及所有已发现硬链接。"
+        className="actor-deletion-review-modal"
+        contentClassName="actor-deletion-confirmation"
+      >
+        {actorDeletionPlan ? <>
+          <p className="actor-deletion-warning">{actorDeletionPlan.actor_folder_impacts.some((impact) => impact.other_actor_folders.length) ? "多人作品：其他 Actor Folder 也会失去这些派生路径。" : "所有已发现硬链接均已包含在本计划中。"}</p>
+          <dl className="deletion-plan-metrics"><div><dt>逻辑大小</dt><dd>{formatBytes(actorDeletionPlan.logical_size)}</dd></div><div><dt>可回收空间</dt><dd>{formatBytes(actorDeletionPlan.reclaimable_space)}</dd></div></dl>
+          <div className="plan-paths">{actorDeletionPlan.paths.map((path) => <code key={path.path}>{path.path}</code>)}</div>
+          {actorDeletionError ? <p role="alert">{actorDeletionError}</p> : null}
+          <label>输入 <b>PERMANENTLY DELETE</b> 进行确认
+            <Input value={actorDeletionPhrase} onChange={(event) => setActorDeletionPhrase(event.target.value)} autoComplete="off" />
+          </label>
+          <div className="dialog-actions"><Button variant="outline" onClick={() => setActorDeletionPlan(null)}>取消</Button><Button variant="destructive" disabled={actorDeletionPhrase !== "PERMANENTLY DELETE" || Boolean(actorDeletionPending)} onClick={() => void executeActorPermanentDeletion()}>{actorDeletionPending === "executing" ? "正在永久删除…" : "永久删除"}</Button></div>
+        </> : null}
+      </AlertDialog>
+      <AlertDialog
+        open={Boolean(actorDeletionOutcome)}
+        onClose={() => setActorDeletionOutcome(null)}
+        title={actorDeletionOutcome?.status === "completed" ? "永久删除已完成" : "永久删除已完成，但部分路径失败"}
+        className="actor-deletion-review-modal"
+        contentClassName="actor-deletion-confirmation"
+      >
+        {actorDeletionOutcome ? <><div className="plan-paths">{actorDeletionOutcome.items.map((item) => <code key={`${item.path}-${item.status}`}>{item.path ?? "未知路径"} · {item.status} {item.message ?? ""}</code>)}</div><Button onClick={() => setActorDeletionOutcome(null)}>关闭</Button></> : null}
+      </AlertDialog>
       <OperationPlanDialog
         task={planToConfirm}
         close={() => setPlanToConfirm(null)}

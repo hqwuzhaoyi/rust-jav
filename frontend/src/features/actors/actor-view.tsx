@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 
@@ -235,6 +236,9 @@ export function ActorInspectorSheet({
   remove,
   retry,
   linkedFocusRef,
+  selectedAssetIds,
+  onSelectedAssetIdsChange,
+  onPermanentDelete,
 }: {
   actor: ActorFolder | null;
   loading: boolean;
@@ -244,6 +248,9 @@ export function ActorInspectorSheet({
   remove: (actor: ActorFolder) => void;
   retry: () => void;
   linkedFocusRef: { current: string | null };
+  selectedAssetIds: ReadonlySet<string>;
+  onSelectedAssetIdsChange: (ids: Set<string>) => void;
+  onPermanentDelete: (assetIds: string[]) => void;
 }) {
   const mobile = useMobileBreakpoint();
   const contentRef = useRef<HTMLElement>(null);
@@ -336,21 +343,40 @@ export function ActorInspectorSheet({
               {(actor.linked_assets ?? []).length ? (
                 <div className="linked-asset-grid">
                   {(actor.linked_assets ?? []).map((asset) => (
-                    <Button
-                      key={asset.id}
-                      variant="ghost"
-                      data-asset-id={asset.id}
-                      aria-label={`打开资产 ${asset.jav_code ?? asset.title ?? "媒体资产"}`}
-                      onClick={() => openAsset(asset)}
-                    >
-                      <ActorAssetArtwork asset={asset} />
-                      <span><b>{asset.jav_code ?? "媒体资产"}</b><small>{asset.title ?? asset.path}</small></span>
-                    </Button>
+                    <div className="actor-linked-asset" key={asset.id}>
+                      <Checkbox
+                        checked={selectedAssetIds.has(asset.id)}
+                        aria-label={`选择资产 ${asset.jav_code ?? asset.title ?? "媒体资产"}`}
+                        onChange={() => {
+                          const next = new Set(selectedAssetIds);
+                          if (next.has(asset.id)) next.delete(asset.id);
+                          else next.add(asset.id);
+                          onSelectedAssetIdsChange(next);
+                        }}
+                      />
+                      <Button
+                        variant="ghost"
+                        data-asset-id={asset.id}
+                        aria-label={`打开资产 ${asset.jav_code ?? asset.title ?? "媒体资产"}`}
+                        onClick={() => openAsset(asset)}
+                      >
+                        <ActorAssetArtwork asset={asset} />
+                        <span><b>{asset.jav_code ?? "媒体资产"}</b><small>{asset.title ?? asset.path}</small></span>
+                      </Button>
+                    </div>
                   ))}
                 </div>
               ) : <p className="muted">暂无关联媒体资产。</p>}
             </section>
           </>
+        ) : null}
+        {actor && selectedAssetIds.size > 0 ? (
+          <div className="actor-deletion-selection-bar" role="status">
+            <span>已选择 {selectedAssetIds.size} 个 Media Asset</span>
+            <Button variant="destructive" onClick={() => onPermanentDelete([...selectedAssetIds])}>
+              永久删除源媒体…
+            </Button>
+          </div>
         ) : null}
         {!loading && error ? (
           <div className="actor-feedback actor-detail-error" role="alert">

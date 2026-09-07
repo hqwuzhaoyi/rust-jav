@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "source_digest": "407a85a30b7bd7ca6a535e527014f492721f45a18c62a6dd2478656ec676b0f1",
+  "source_digest": "2137d2454ff2e0663575ef3b57b73e4f71676465f82048b6d452a8e9080ebbee",
   "index": {
     "path": "/index.html",
     "normalized_sha256": "fa7de887bbc5fbbe7655ee4703d6007223e047c0f8b33e0385b664bae7a65d71"
@@ -8,11 +8,11 @@
   "assets": {
     "javascript": {
       "path": "/assets/app.js",
-      "sha256": "80766b738d0001b918c8608f1588b9bef475e7bc5e7e05f21b67bbc38dc66a03"
+      "sha256": "c84e9ebe2d722ed0e667cd78714ad5a6d80fa0a83a7910e7300d92f7755dcada"
     },
     "stylesheet": {
       "path": "/assets/app.css",
-      "sha256": "257a20238b411d6309ecf7d8c9b693e6c37283b509e2a104e3e27d27cdea32b9"
+      "sha256": "73956baf55cb55fdd66144159260c3b4f1c32c8579538f358e9688e85e6d1ac2"
     }
   }
 }
