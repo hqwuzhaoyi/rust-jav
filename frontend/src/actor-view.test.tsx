@@ -123,7 +123,7 @@ function stubActorApi(options: StubOptions = {}) {
           id: "actor-delete-plan-1", selection: "unified", logical_size: 1024,
           reclaimable_space: 1024, created_at: 1, expires_at: 900,
           hard_link_search_roots: ["/media", "/actors"],
-          paths: [{ path: linkedAsset.path, type: "file" }], discovered_hard_links: [],
+          paths: [{ path: linkedAsset.path, type: "file", video_warning: "Permanent deletion removes video content and cannot be rolled back" }], discovered_hard_links: [],
           origin: { type: "actor_folder", actor_folder: actorName, selected_asset_ids: [linkedAsset.id] },
           actor_folder_impacts: [{ asset_id: linkedAsset.id, metadata_actors: [actorName], affected_actor_folders: [actorName], other_actor_folders: [], requires_multi_actor_confirmation: false }],
         }, { status: 201 });
@@ -210,7 +210,7 @@ describe("Issue #40 Actor Folder prototype cards", () => {
     });
     expect(portrait).toHaveAttribute("src", posterUrl);
     expect(portrait).toHaveAttribute("loading", "lazy");
-    expect(within(portraitCard).getByText("2 个媒体资产 · 4.9 GiB")).toBeVisible();
+    expect(within(portraitCard).getByText("2 部影片 · 4.9 GiB")).toBeVisible();
     expect(
       getComputedStyle(portraitCard.querySelector(".actor-folder-poster") as HTMLElement)
         .aspectRatio,
@@ -219,7 +219,7 @@ describe("Issue #40 Actor Folder prototype cards", () => {
     const fallbackCard = screen.getByRole("button", {
       name: `打开演员 ${longActorName}`,
     });
-    expect(within(fallbackCard).getByText("0 个媒体资产 · 0 B")).toBeVisible();
+    expect(within(fallbackCard).getByText("0 部影片 · 0 B")).toBeVisible();
     expect(
       within(fallbackCard).getByRole("img", {
         name: `${longActorName} 暂无头像`,
@@ -561,6 +561,8 @@ describe("Issue #55 Actor-selected source deletion", () => {
     expect(review).toHaveTextContent("硬链接搜索根目录");
     expect(review).toHaveTextContent("/media");
     expect(review).toHaveTextContent("文件");
+    expect(review).toHaveTextContent("永久删除会移除视频内容且无法回滚。");
+    expect(review).not.toHaveTextContent("Permanent deletion removes video content");
     const execute = within(review).getByRole("button", { name: "永久删除" });
     expect(execute).toBeDisabled();
     await userEvent.type(within(review).getByRole("textbox"), "PERMANENTLY DELETE");

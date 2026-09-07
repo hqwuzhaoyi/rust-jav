@@ -205,7 +205,7 @@ export function ActorFolders({
                   <ActorPortrait actor={actor} loading="lazy" />
                   <div>
                     <b>{actor.name}</b>
-                    <p>{actor.movie_count} 个媒体资产 · {formatBytes(actor.logical_size)}</p>
+                    <p>{actor.movie_count} 部影片 · {formatBytes(actor.logical_size)}</p>
                   </div>
                 </div>
               </Button>

@@ -230,9 +230,13 @@ function fileTypeLabel(kind: string) {
   return labels[kind] ?? kind;
 }
 function deletionWarningLabel(warning: string) {
-  return warning === "Video file: permanent deletion removes playable media."
-    ? "视频文件：永久删除会移除可播放媒体。"
-    : warning;
+  if (warning === "Video file: permanent deletion removes playable media.") {
+    return "视频文件：永久删除会移除可播放媒体。";
+  }
+  if (warning === "Permanent deletion removes video content and cannot be rolled back") {
+    return "永久删除会移除视频内容且无法回滚。";
+  }
+  return warning;
 }
 function jellyfinReasonLabel(reason: string) {
   const normalized = reason.toLowerCase();
