@@ -89,6 +89,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
     process.exitCode = 1;
   } else {
-    console.log("UI boundary check passed (zero application-level generic control violations)." );
+    console.log("UI boundary check passed (zero application-level generic control violations).");
   }
 }

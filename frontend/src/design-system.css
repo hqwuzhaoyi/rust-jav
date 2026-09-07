@@ -166,6 +166,73 @@ select:focus-visible {
 .toast-close:hover .ui-compact-surface {
   background: color-mix(in srgb, var(--primary) 10%, transparent);
 }
+
+.beui-tabs-list {
+  position: relative;
+  display: flex;
+  width: 100%;
+  border-bottom: 1px solid var(--ds-line);
+}
+.beui-tabs-list > .beui-button {
+  position: relative;
+  flex: 1;
+  border: 0;
+  color: var(--ds-secondary);
+  background: transparent;
+  font-weight: 650;
+}
+.beui-tabs-list > .beui-button[aria-selected="true"] { color: var(--ds-text); }
+.beui-tabs-list[data-variant="segment"] {
+  min-height: var(--ds-control);
+  align-items: stretch;
+  gap: 2px;
+  padding: 3px;
+  border: 0;
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-muted);
+}
+.beui-tabs-list[data-variant="segment"] > .beui-button {
+  isolation: isolate;
+  min-height: 38px;
+  padding: 6px 14px;
+  border-radius: var(--ds-radius-sm);
+  font-size: 11px;
+  transition: color .16s ease, background-color .16s ease, box-shadow .16s ease;
+}
+.beui-tabs-list[data-variant="segment"] > .beui-button:hover { color: var(--ds-text); }
+.beui-tabs-list[data-variant="segment"] > .beui-button[aria-selected="true"] { font-weight: 680; }
+.beui-tabs-list[data-variant="segment"] .beui-tab-indicator {
+  inset: 0;
+  z-index: -1;
+  height: auto;
+  border-radius: var(--ds-radius-sm);
+  background: var(--ds-surface-solid);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .12);
+}
+.beui-tabs-list[data-variant="underline"] > .beui-button {
+  isolation: isolate;
+  min-height: var(--ds-control);
+  padding: 8px 12px 10px;
+  font-size: 13px;
+  font-weight: 560;
+  transition: color .16s ease;
+}
+.beui-tabs-list[data-variant="underline"] > .beui-button:hover { color: var(--ds-text); }
+.beui-tabs-list[data-variant="underline"] > .beui-button[aria-selected="true"] { font-weight: 680; }
+.beui-tab-indicator {
+  position: absolute;
+  inset: auto 0 -1px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--ds-accent);
+}
+@media (max-width: 760px) {
+  .beui-tabs-list[data-variant="segment"] { width: 100%; }
+  .beui-tabs-list[data-variant="segment"] > .beui-button {
+    flex: 1;
+    padding-inline: 6px;
+  }
+}
 .actor-removal-modal { max-width: 480px; }
 .actor-removal-modal .confirm-dialog {
   width: 100%;
