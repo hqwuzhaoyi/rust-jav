@@ -3,19 +3,30 @@ import { type ReactNode, useId } from "react";
 import { MorphingModal, type MorphingModalProps } from "@/components/motion/morphing-modal";
 import { cn } from "@/lib/utils";
 
-type ModalSurfaceProps = Omit<MorphingModalProps, "viewId" | "placement" | "children"> & {
+type AccessibleName =
+  | { title: NonNullable<ReactNode>; "aria-label"?: never }
+  | { title?: never; "aria-label": string };
+
+type SharedModalSurfaceProps = Omit<
+  MorphingModalProps,
+  "viewId" | "placement" | "children" | "dismissible"
+> & {
   open: boolean;
-  title?: ReactNode;
   description?: ReactNode;
-  "aria-label"?: string;
   "aria-describedby"?: string;
   contentClassName?: string;
   children: ReactNode;
 };
 
+type ModalSurfaceProps = SharedModalSurfaceProps &
+  AccessibleName & {
+    dismissible?: boolean;
+  };
+
 export type DialogProps = ModalSurfaceProps;
 export type SheetProps = ModalSurfaceProps;
-export type AlertDialogProps = Omit<ModalSurfaceProps, "dismissible"> & {
+export type AlertDialogProps = SharedModalSurfaceProps &
+  AccessibleName & {
   /** Defaults to false so destructive confirmation must use an explicit action. */
   dismissible?: boolean;
 };

@@ -110,20 +110,34 @@ export function MorphingModal({
 
   return (
     <AnimatePresence initial={false}>
-      {open && dismissible ? (
+      {open ? (
         <PresenceGate key="backdrop">
           {({ gate }) => (
-            <motion.button
-              type="button"
-              aria-label="关闭对话框"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2, ease: EASE_OUT }}
-              {...gate}
-              onClick={onClose}
-              className="ui-touch-target pointer-events-auto fixed inset-0 z-[80] bg-background/5 [backdrop-filter:blur(14px)_saturate(140%)] [-webkit-backdrop-filter:blur(14px)_saturate(140%)]"
-            />
+            dismissible ? (
+              <motion.button
+                type="button"
+                aria-label="关闭对话框"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
+                {...gate}
+                onClick={onClose}
+                className="ui-touch-target pointer-events-auto fixed inset-0 z-[80] bg-background/5 [backdrop-filter:blur(14px)_saturate(140%)] [-webkit-backdrop-filter:blur(14px)_saturate(140%)]"
+              />
+            ) : (
+              <motion.div
+                aria-hidden="true"
+                data-modal-backdrop="blocking"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
+                {...gate}
+                onPointerDown={(event) => event.preventDefault()}
+                className="pointer-events-auto fixed inset-0 z-[80] bg-background/5 [backdrop-filter:blur(14px)_saturate(140%)] [-webkit-backdrop-filter:blur(14px)_saturate(140%)]"
+              />
+            )
           )}
         </PresenceGate>
       ) : null}
