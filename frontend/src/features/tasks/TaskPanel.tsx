@@ -133,7 +133,7 @@ export function TaskPanel({
                     <p className="task-error">{task.error}</p>
                   ))}
                   {task.operation_plan && (
-                    <Accordion type="multiple" defaultValue="plan" className="plan">
+                    <Accordion type="multiple" defaultValue={["plan"]} className="plan">
                       <AccordionItem value="plan">
                         <AccordionTrigger>
                           <span>检查最终路径 · 到期时间 {new Date(task.plan_expires_at! * 1000).toLocaleTimeString()}</span>
@@ -158,7 +158,7 @@ export function TaskPanel({
                     </Accordion>
                   )}
                   {task.items.length > 0 && (
-                    <Accordion type="multiple" defaultValue="items" className="task-items">
+                    <Accordion type="multiple" defaultValue={["items"]} className="task-items">
                       <AccordionItem value="items">
                         <AccordionTrigger>逐项结果（{task.items.length}）</AccordionTrigger>
                         <AccordionContent>

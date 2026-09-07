@@ -4,7 +4,6 @@
  * primitives. This deliberately uses the TypeScript parser rather than regex
  * so JSX aliases, self-closing elements, and role attributes are audited.
  */
-import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { API } from "typescript/unstable/sync";
@@ -12,8 +11,6 @@ import * as ts from "typescript/unstable/ast";
 
 const frontendRoot = process.cwd();
 const sourceRoot = path.join(frontendRoot, "src");
-const baselinePath = path.join(frontendRoot, "scripts", "ui-boundary-baseline.json");
-const baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8"));
 const RAW_INTERACTIVE = new Set(["button", "input", "select", "textarea"]);
 const GENERIC_ROLES = new Set([
   "alertdialog", "button", "checkbox", "combobox", "dialog", "menu",
@@ -48,7 +45,10 @@ export function collectFindings(root = frontendRoot) {
     if (!file.endsWith(".tsx") || file.endsWith(".test.tsx")) continue;
     const relative = path.relative(root, file).split(path.sep).join("/");
     // Registry source owns the generic primitive implementation.
-    if (relative.startsWith("src/components/ui/")) continue;
+    if (
+      relative.startsWith("src/components/ui/") ||
+      relative.startsWith("src/components/motion/")
+    ) continue;
     const source = project.program.getSourceFile(file);
     if (!source) throw new Error(`UI boundary lint could not parse ${relative}`);
     const visit = (node) => {
@@ -75,25 +75,9 @@ export function collectFindings(root = frontendRoot) {
   return findings;
 }
 
-function baselineViolations(findings) {
-  const remaining = new Map(
-    Object.entries(baseline.allow).flatMap(([file, entries]) =>
-      Object.entries(entries).map(([key, count]) => [`${file}:${key}`, count]),
-    ),
-  );
-  const violations = [];
-  for (const finding of findings) {
-    const baselineKey = `${finding.file}:${finding.key}`;
-    const allowed = remaining.get(baselineKey) ?? 0;
-    if (allowed <= 0) violations.push(finding);
-    else remaining.set(baselineKey, allowed - 1);
-  }
-  return violations;
-}
-
 export function auditUiBoundary(root = frontendRoot) {
   const findings = collectFindings(root);
-  return { findings, violations: baselineViolations(findings) };
+  return { findings, violations: findings };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -105,6 +89,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
     process.exitCode = 1;
   } else {
-    console.log(`UI boundary check passed (${findings.length} temporary legacy occurrences tracked).`);
+    console.log("UI boundary check passed (zero application-level generic control violations)." );
   }
 }

@@ -1,10 +1,7 @@
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
 @source "./main.tsx";
-@source "./beui-tabs.tsx";
 @source "./components";
-@source "./features";
-@source "./components/ui";
 @source "./features";
 
 /* Foundation layer: Tailwind theme, semantic tokens, and reusable ui-* controls only. */

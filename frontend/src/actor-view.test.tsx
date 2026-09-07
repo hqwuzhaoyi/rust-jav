@@ -560,7 +560,7 @@ describe("Issue #55 Actor-selected source deletion", () => {
     expect(execute).toBeDisabled();
     await userEvent.type(within(review).getByRole("textbox"), "PERMANENTLY DELETE");
     await userEvent.click(execute);
-    expect(await screen.findByRole("alertdialog", { name: "永久删除已完成" })).toHaveTextContent("deleted");
+    expect(await screen.findByRole("alertdialog", { name: "永久删除已完成" })).toHaveTextContent("已删除");
 
     const calls = vi.mocked(fetch).mock.calls;
     const plan = calls.find(([url]) => String(url).includes("permanent-deletion-plans"));

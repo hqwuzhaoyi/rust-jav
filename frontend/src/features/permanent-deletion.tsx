@@ -176,7 +176,7 @@ export function PermanentDeletionReview({
       initialAnimation={false}
       className="permanent-deletion-modal"
       contentClassName={outcome ? "delete-confirm deletion-outcome" : "delete-confirm"}
-      title={outcomeTitle ?? (plan ? `永久删除 ${plan.paths.length} 个路径？` : undefined)}
+      title={outcomeTitle ?? (plan ? `永久删除 ${plan.paths.length} 个路径？` : "永久删除")}
       description={
         outcome
           ? undefined

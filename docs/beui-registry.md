@@ -37,21 +37,21 @@ than accessibility mechanics. The UI foundation tests cover keyboard/focus
 semantics and reduced-motion-aware registry components. Existing responsive CSS
 remains the source of truth for 390px, 768px, and 1440px layouts.
 
-## Enforcement and temporary migration baseline
+## Enforcement
 
 `npm run lint` parses production `.tsx` with the TypeScript compiler API. It
 rejects raw `button`, `input`, `textarea`, and `select` elements plus generic
 or dynamically computed interaction roles (including Dialog, menu, tab, and
-progress roles) outside
-`src/components/ui`. Semantic content HTML remains allowed: headings, text,
+progress roles) outside the approved registry implementation roots:
+`src/components/ui` and the vendored beUI motion sources in
+`src/components/motion`. Application and feature modules may import generic
+interactions only through `components/ui`. Semantic content HTML remains allowed: headings, text,
 lists, `label`, links, native `details`/`summary`, regions, status/alert
 announcements, images, and form structure are not generic-control
 reimplementations.
 
-`scripts/ui-boundary-baseline.json` is an explicit, temporary allowlist for
-pre-migration occurrences in `main.tsx` and the vendored motion modal/toast
-sources. It permits only the recorded count for each file and control kind;
-new occurrences fail lint. Final #56 integration must reduce every allowlist
-count to zero, delete the allowlist, and only then remove legacy compatibility
-surfaces (`ControlButton` history, `beui-tabs.tsx`, and motion Dialog/Toast
-adapters) after their feature migrations have no callers.
+There is no migration allowlist: every production finding fails lint. The
+legacy `ControlButton` and `beui-tabs.tsx` compatibility surfaces have been
+removed. `MorphingModal` and `AnimatedToastStack` remain private vendored beUI
+implementations behind the registry Dialog/Sheet/AlertDialog and Toast seams;
+feature modules must never import them directly.

@@ -948,6 +948,12 @@ export function App() {
       setActorDeletionOutcome(result.body as DeletionExecutionTask);
       setActorDeletionPlan(null);
       setSelectedActorAssetIds(new Set());
+      setActorDeletionActor(null);
+      setActorDeletionImpacts([]);
+      setInspectedActor(null);
+      setNav("actors");
+      history.replaceState({}, "", "/actors");
+      await loadActors();
       return;
     }
     setActorDeletionPhrase("");
@@ -1938,7 +1944,10 @@ export function App() {
                   return next;
                 })}
               />
-              <span>确认 {impact.asset_id} 会影响：{impact.other_actor_folders.join("、") || impact.metadata_actors.join("、")}</span>
+              <span>
+                确认 {actorDeletionActor.linked_assets?.find((asset) => asset.id === impact.asset_id)?.jav_code ?? impact.asset_id}
+                {" "}会影响：{impact.other_actor_folders.join("、") || impact.metadata_actors.join("、")}
+              </span>
             </label>
           ))}
           <div className="dialog-actions">
@@ -1960,7 +1969,17 @@ export function App() {
         contentClassName="actor-deletion-confirmation"
       >
         {actorDeletionPlan ? <>
-          <p className="actor-deletion-warning">{actorDeletionPlan.actor_folder_impacts.some((impact) => impact.other_actor_folders.length) ? "多人作品：其他 Actor Folder 也会失去这些派生路径。" : "所有已发现硬链接均已包含在本计划中。"}</p>
+          <p className="actor-deletion-warning">{actorDeletionPlan.actor_folder_impacts.some((impact) => impact.other_actor_folders.length) ? "多人作品：以下其他 Actor Folder 也会失去这些派生路径。" : "所有已发现硬链接均已包含在本计划中。"}</p>
+          {actorDeletionPlan.actor_folder_impacts.some((impact) => impact.other_actor_folders.length) ? (
+            <ul className="actor-deletion-affected-folders">
+              {actorDeletionPlan.actor_folder_impacts.map((impact) => (
+                <li key={impact.asset_id}>
+                  <b>{actorDeletionActor?.linked_assets?.find((asset) => asset.id === impact.asset_id)?.jav_code ?? impact.asset_id}</b>
+                  ：{impact.other_actor_folders.join("、") || "无其他演员目录"}
+                </li>
+              ))}
+            </ul>
+          ) : null}
           <dl className="deletion-plan-metrics"><div><dt>逻辑大小</dt><dd>{formatBytes(actorDeletionPlan.logical_size)}</dd></div><div><dt>可回收空间</dt><dd>{formatBytes(actorDeletionPlan.reclaimable_space)}</dd></div></dl>
           <div className="plan-paths">{actorDeletionPlan.paths.map((path) => <code key={path.path}>{path.path}</code>)}</div>
           {actorDeletionError ? <p role="alert">{actorDeletionError}</p> : null}
@@ -1977,7 +1996,7 @@ export function App() {
         className="actor-deletion-review-modal"
         contentClassName="actor-deletion-confirmation"
       >
-        {actorDeletionOutcome ? <><div className="plan-paths">{actorDeletionOutcome.items.map((item) => <code key={`${item.path}-${item.status}`}>{item.path ?? "未知路径"} · {item.status} {item.message ?? ""}</code>)}</div><Button onClick={() => setActorDeletionOutcome(null)}>关闭</Button></> : null}
+        {actorDeletionOutcome ? <><div className="plan-paths">{actorDeletionOutcome.items.map((item) => <code key={`${item.path}-${item.status}`}>{item.path ?? "未知路径"} · {taskItemStatusLabels[item.status] ?? item.status} {item.message ?? ""}</code>)}</div><Button onClick={() => setActorDeletionOutcome(null)}>关闭</Button></> : null}
       </AlertDialog>
       <OperationPlanDialog
         task={planToConfirm}

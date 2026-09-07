@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 import { Button } from "./components/ui/button";
@@ -86,6 +86,16 @@ describe("beUI registry primitives", () => {
     expect(screen.getByRole("alertdialog", { name: "永久删除" })).toHaveAttribute("aria-modal", "true");
     await userEvent.keyboard("{Escape}");
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a pointer-blocking backdrop behind non-dismissible AlertDialog content", () => {
+    const close = vi.fn();
+    render(<AlertDialog open title="永久删除" onClose={close}><Button>确认</Button></AlertDialog>);
+    const backdrop = document.querySelector('[data-modal-backdrop="blocking"]');
+    expect(backdrop).toBeInTheDocument();
+    fireEvent.pointerDown(backdrop!);
+    fireEvent.click(backdrop!);
+    expect(close).not.toHaveBeenCalled();
   });
 
   it("keeps Textarea, Checkbox and Select as keyboard-native form controls", async () => {
