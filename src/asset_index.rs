@@ -1085,21 +1085,61 @@ fn current_errno() -> libc::c_int {
     unsafe { *errno_location() }
 }
 
+/// Return the indexed primary media path and every recognized secondary part
+/// in its multipart set. This intentionally shares the Asset Index's
+/// `movie.nfo`-backed naming convention, so callers never promote arbitrary
+/// sibling videos into a multipart operation.
+pub fn recognized_multipart_constituents(primary: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let metadata = fs::symlink_metadata(primary)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || !is_video(primary) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "multipart primary must be a regular indexed media file",
+        ));
+    }
+    let parent = primary.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "multipart primary has no parent directory",
+        )
+    })?;
+    let mut constituents = vec![primary.to_path_buf()];
+    for entry in fs::read_dir(parent)? {
+        let path = entry?.path();
+        if path == primary
+            || !fs::symlink_metadata(&path)
+                .is_ok_and(|metadata| !metadata.file_type().is_symlink() && metadata.is_file())
+            || !is_video(&path)
+        {
+            continue;
+        }
+        if multipart_primary_path(&path).as_deref() == Some(primary) {
+            constituents.push(path);
+        }
+    }
+    constituents.sort();
+    Ok(constituents)
+}
+
 fn is_secondary_multipart(path: &Path) -> bool {
+    multipart_primary_path(path).is_some()
+}
+
+fn multipart_primary_path(path: &Path) -> Option<PathBuf> {
     let Some(parent) = path.parent() else {
-        return false;
+        return None;
     };
     if !parent.join("movie.nfo").is_file() {
-        return false;
+        return None;
     }
     let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
-        return false;
+        return None;
     };
     let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
-        return false;
+        return None;
     };
     let Some((base, suffix)) = stem.rsplit_once('-') else {
-        return false;
+        return None;
     };
     let primary_suffix = if suffix.len() == 1
         && suffix
@@ -1114,11 +1154,15 @@ fn is_secondary_multipart(path: &Path) -> bool {
     } else if suffix.parse::<u32>().is_ok_and(|part| part > 1) {
         "1"
     } else {
-        return false;
+        return None;
     };
     let primary = parent.join(format!("{base}-{primary_suffix}.{extension}"));
     let unsuffixed = parent.join(format!("{base}.{extension}"));
-    primary.is_file() || unsuffixed.is_file()
+    if primary.is_file() {
+        Some(primary)
+    } else {
+        unsuffixed.is_file().then_some(unsuffixed)
+    }
 }
 fn is_video(path: &Path) -> bool {
     matches!(

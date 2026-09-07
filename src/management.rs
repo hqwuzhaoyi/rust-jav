@@ -647,12 +647,20 @@ struct StoredDeletionPlan {
 struct ActorDeletionContext {
     actor_folder: String,
     assets: Vec<IndexedAssetSelection>,
+    constituents: Vec<MediaDeletionConstituent>,
     impacts: Vec<ActorDeletionImpact>,
 }
 
 #[derive(Clone)]
 struct IndexedAssetSelection {
     id: String,
+    media_root: PathBuf,
+    path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct MediaDeletionConstituent {
+    primary_path: PathBuf,
     media_root: PathBuf,
     path: PathBuf,
 }
@@ -1842,7 +1850,6 @@ async fn create_actor_deletion_plan(
         Ok(Some(client)) => state.jellyfin_items(&client).await.ok(),
         _ => None,
     };
-    let mut impacts = Vec::with_capacity(assets.len());
     let mut selections = Vec::with_capacity(assets.len());
     for asset in &assets {
         if !indexed_asset_is_current(&state.config, asset)
@@ -1860,6 +1867,18 @@ async fn create_actor_deletion_plan(
             )
                 .into_response();
         }
+        selections.push(IndexedAssetSelection {
+            id: asset.id.clone(),
+            media_root: PathBuf::from(&asset.media_root),
+            path: PathBuf::from(&asset.path),
+        });
+    }
+    let constituents = match actor_deletion_constituents(&selections) {
+        Ok(constituents) => constituents,
+        Err(error) => return (StatusCode::CONFLICT, error).into_response(),
+    };
+    let mut impacts = Vec::with_capacity(assets.len());
+    for (asset, selection) in assets.iter().zip(&selections) {
         let detail = match state.assets.detail(&asset.id) {
             Ok(Some(detail)) => detail,
             Ok(None) => return StatusCode::CONFLICT.into_response(),
@@ -1869,10 +1888,28 @@ async fn create_actor_deletion_plan(
             &detail,
             jellyfin_items.as_ref().map(|items| items.as_slice()),
         );
-        let affected_actor_folders = match actor_folders_for_identities(
-            actor_root,
-            &HashSet::from([(asset.device, asset.inode)]),
-        ) {
+        let identities = constituents
+            .iter()
+            .filter(|constituent| {
+                constituent.media_root == selection.media_root
+                    && constituent.primary_path == selection.path
+            })
+            .map(|constituent| {
+                fs::symlink_metadata(&constituent.path)
+                    .map(|metadata| (metadata.dev(), metadata.ino()))
+                    .map_err(|error| {
+                        format!(
+                            "recognized multipart constituent changed while checking Actor Folder impact: {}: {error}",
+                            constituent.path.display()
+                        )
+                    })
+            })
+            .collect::<Result<HashSet<_>, _>>();
+        let identities = match identities {
+            Ok(identities) => identities,
+            Err(error) => return (StatusCode::CONFLICT, error).into_response(),
+        };
+        let affected_actor_folders = match actor_folders_for_identities(actor_root, &identities) {
             Ok(folders) => folders,
             Err(error) => {
                 return (
@@ -1897,11 +1934,6 @@ async fn create_actor_deletion_plan(
             affected_actor_folders,
             other_actor_folders,
             requires_multi_actor_confirmation,
-        });
-        selections.push(IndexedAssetSelection {
-            id: asset.id.clone(),
-            media_root: PathBuf::from(&asset.media_root),
-            path: PathBuf::from(&asset.path),
         });
     }
     let confirmed = input
@@ -1934,32 +1966,12 @@ async fn create_actor_deletion_plan(
             .into_response();
     }
 
-    let planner = deletion_planner(&state.config);
     let now = UNIX_EPOCH + Duration::from_secs(state.now());
-    let preview = match planner.create_plan(
-        selections.iter().map(|asset| asset.path.clone()).collect(),
-        Duration::from_secs(900),
-        now,
-    ) {
-        Ok(plan) => plan,
-        Err(error) => return (StatusCode::CONFLICT, error.to_string()).into_response(),
-    };
-    // This endpoint always approves the exact complete link set discovered in
-    // the fresh preview.  A selected-only Actor Folder deletion can never
-    // claim to reclaim space and is deliberately not offered here.
-    let discovered_hard_links = preview.related_hard_links.clone();
-    let mut approved_paths = preview
-        .approved_paths
-        .iter()
-        .map(|path| path.path.clone())
-        .collect::<Vec<_>>();
-    approved_paths.extend(discovered_hard_links.iter().map(|path| path.path.clone()));
-    let plan = match PermanentDeletionPlanner::new(preview.hard_link_search_roots.clone())
-        .create_plan(approved_paths, Duration::from_secs(900), now)
-    {
-        Ok(plan) => plan,
-        Err(error) => return (StatusCode::CONFLICT, error.to_string()).into_response(),
-    };
+    let (plan, discovered_hard_links) =
+        match create_unified_actor_deletion_plan(&state.config, &constituents, now) {
+            Ok(result) => result,
+            Err(error) => return (StatusCode::CONFLICT, error.to_string()).into_response(),
+        };
     let id = random_token();
     let stored = StoredDeletionPlan {
         plan,
@@ -1973,12 +1985,85 @@ async fn create_actor_deletion_plan(
         actor_deletion: Some(ActorDeletionContext {
             actor_folder: actor_name,
             assets: selections,
+            constituents,
             impacts,
         }),
     };
     let response = plan_json(&id, &stored);
     state.deletion_plans.lock().unwrap().insert(id, stored);
     (StatusCode::CREATED, Json(response)).into_response()
+}
+
+fn actor_deletion_constituents(
+    selections: &[IndexedAssetSelection],
+) -> Result<Vec<MediaDeletionConstituent>, String> {
+    let mut constituents = HashSet::new();
+    for selection in selections {
+        for path in crate::asset_index::recognized_multipart_constituents(&selection.path).map_err(
+            |error| {
+                format!(
+                    "cannot discover the recognized multipart set for {}: {error}",
+                    selection.path.display()
+                )
+            },
+        )? {
+            if !path.starts_with(&selection.media_root) {
+                return Err(format!(
+                    "recognized multipart constituent is outside its Media Root: {}",
+                    path.display()
+                ));
+            }
+            constituents.insert(MediaDeletionConstituent {
+                primary_path: selection.path.clone(),
+                media_root: selection.media_root.clone(),
+                path,
+            });
+        }
+    }
+    let mut constituents = constituents.into_iter().collect::<Vec<_>>();
+    constituents.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(constituents)
+}
+
+fn create_unified_actor_deletion_plan(
+    config: &ManagementConfig,
+    constituents: &[MediaDeletionConstituent],
+    now: SystemTime,
+) -> Result<(PermanentDeletionPlan, Vec<RelatedHardLink>), String> {
+    let planner = deletion_planner(config);
+    let mut plan = planner
+        .create_plan(
+            constituents
+                .iter()
+                .map(|constituent| constituent.path.clone())
+                .collect(),
+            Duration::from_secs(900),
+            now,
+        )
+        .map_err(|error| error.to_string())?;
+    let mut discovered_hard_links = plan.related_hard_links.clone();
+
+    // Every planning pass promotes the exact link scope it observed. A later
+    // pass must observe no unapproved links before an irreversible plan is
+    // issued; otherwise the caller must retry against a stable filesystem.
+    for _ in 0..4 {
+        if plan.related_hard_links.is_empty() {
+            discovered_hard_links.sort_by(|left, right| left.path.cmp(&right.path));
+            discovered_hard_links.dedup_by(|left, right| left.path == right.path);
+            return Ok((plan, discovered_hard_links));
+        }
+        let mut approved_paths = plan
+            .approved_paths
+            .iter()
+            .map(|path| path.path.clone())
+            .collect::<Vec<_>>();
+        approved_paths.extend(plan.related_hard_links.iter().map(|path| path.path.clone()));
+        plan = PermanentDeletionPlanner::new(plan.hard_link_search_roots.clone())
+            .create_plan(approved_paths, Duration::from_secs(900), now)
+            .map_err(|error| error.to_string())?;
+        discovered_hard_links.extend(plan.related_hard_links.iter().cloned());
+    }
+    Err("hard-link scope changed while creating the Operation Plan; retry after filesystem activity settles".to_owned())
 }
 
 fn indexed_asset_is_current(
@@ -2230,22 +2315,30 @@ async fn execute_deletion_plan(
 }
 
 fn refresh_actor_deletion_index(state: &AppState, stored: &StoredDeletionPlan) -> Vec<String> {
-    let Some(context) = &stored.actor_deletion else {
+    let Some(_context) = &stored.actor_deletion else {
         return Vec::new();
     };
-    let mut by_root = HashMap::<PathBuf, Vec<PathBuf>>::new();
-    for asset in &context.assets {
-        by_root
-            .entry(asset.media_root.clone())
-            .or_default()
-            .push(asset.path.clone());
+    let mut by_root = HashMap::<PathBuf, HashSet<PathBuf>>::new();
+    for planned in &stored.plan.approved_paths {
+        if let Some(root) = state
+            .config
+            .media_roots
+            .iter()
+            .filter(|root| planned.path.starts_with(root))
+            .max_by_key(|root| root.components().count())
+        {
+            by_root
+                .entry(root.clone())
+                .or_default()
+                .insert(planned.path.clone());
+        }
     }
     by_root
         .into_iter()
         .filter_map(|(root, paths)| {
             state
                 .assets
-                .reconcile_paths(&root, &paths, state.now())
+                .reconcile_paths(&root, &paths.into_iter().collect::<Vec<_>>(), state.now())
                 .err()
                 .map(|error| {
                     format!(
@@ -2278,6 +2371,23 @@ async fn actor_deletion_association_is_current(
         return false;
     };
     if assets.len() != context.assets.len() {
+        return false;
+    }
+    if !assets
+        .iter()
+        .zip(&context.assets)
+        .all(|(asset, selection)| {
+            asset.id == selection.id
+                && Path::new(&asset.media_root) == selection.media_root
+                && Path::new(&asset.path) == selection.path
+        })
+    {
+        return false;
+    }
+    let Ok(constituents) = actor_deletion_constituents(&context.assets) else {
+        return false;
+    };
+    if constituents != context.constituents {
         return false;
     }
     let actor_identities = actor_detail

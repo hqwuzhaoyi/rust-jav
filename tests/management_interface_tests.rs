@@ -2705,6 +2705,160 @@ async fn actor_asset_deletion_plan_rejects_unindexed_ids_and_stale_actor_members
 }
 
 #[tokio::test]
+async fn actor_deletion_includes_only_the_recognized_ofje_550_multipart_set_and_refreshes_every_part(
+) {
+    let (dir, mut config) = fixture();
+    let media = dir.path().join("media");
+    let actors = dir.path().join("actors");
+    let movie = media.join("OFJE-550");
+    let first = movie.join("OFJE-550-1.mp4");
+    let second = movie.join("OFJE-550-2.mp4");
+    let unrelated = movie.join("TRAILER-001.mp4");
+    let actor_movie = actors.join("Alice/OFJE-550");
+    let other_actor_movie = actors.join("Beatrice/OFJE-550");
+    std::fs::create_dir_all(&movie).unwrap();
+    std::fs::create_dir_all(&actor_movie).unwrap();
+    std::fs::create_dir_all(&other_actor_movie).unwrap();
+    std::fs::write(
+        movie.join("movie.nfo"),
+        "<movie><title>OFJE-550</title><actor><name>Alice</name></actor></movie>",
+    )
+    .unwrap();
+    std::fs::write(&first, b"first part").unwrap();
+    std::fs::write(&second, b"second part").unwrap();
+    std::fs::write(&unrelated, b"unrelated video").unwrap();
+    let first_link = actor_movie.join("OFJE-550-1.mp4");
+    let second_link = actor_movie.join("OFJE-550-2.mp4");
+    let other_second_link = other_actor_movie.join("OFJE-550-2.mp4");
+    let unrelated_link = actor_movie.join("TRAILER-001.mp4");
+    std::fs::hard_link(&first, &first_link).unwrap();
+    std::fs::hard_link(&second, &second_link).unwrap();
+    std::fs::hard_link(&second, &other_second_link).unwrap();
+    std::fs::hard_link(&unrelated, &unrelated_link).unwrap();
+    config.media_roots.push(media.clone());
+    config.actor_view_root = Some(actors);
+    password_secrets(
+        &SecretsStore::new(config.secrets_file.clone()),
+        "a strong password",
+    )
+    .unwrap();
+    let state = AppState::new(config, TestClock(100)).unwrap();
+    let cookie = login_cookie(&state).await;
+
+    let actor = json_request(
+        app(state.clone()),
+        "GET",
+        "/api/v1/actors/Alice",
+        "",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(actor.status(), StatusCode::OK);
+    let actor: serde_json::Value =
+        serde_json::from_slice(&to_bytes(actor.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let asset_id = actor["linked_assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|asset| asset["path"] == serde_json::json!(first))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let confirmation_required = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/actors/Alice/permanent-deletion-plans",
+        &serde_json::json!({"asset_ids": [asset_id]}).to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(confirmation_required.status(), StatusCode::CONFLICT);
+    let confirmation_required: serde_json::Value = serde_json::from_slice(
+        &to_bytes(confirmation_required.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        confirmation_required["unconfirmed_multi_actor_asset_ids"],
+        serde_json::json!([asset_id])
+    );
+    assert!(
+        confirmation_required["actor_folder_impacts"][0]["other_actor_folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|folder| folder == "Beatrice")
+    );
+
+    let plan_response = json_request(
+        app(state.clone()),
+        "POST",
+        "/api/v1/actors/Alice/permanent-deletion-plans",
+        &serde_json::json!({
+            "asset_ids": [asset_id],
+            "confirmed_multi_actor_asset_ids": [asset_id],
+        })
+        .to_string(),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(plan_response.status(), StatusCode::CREATED);
+    let plan: serde_json::Value = serde_json::from_slice(
+        &to_bytes(plan_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let planned_paths = plan["paths"].as_array().unwrap();
+    for expected in [
+        &first,
+        &first_link,
+        &second,
+        &second_link,
+        &other_second_link,
+    ] {
+        assert!(planned_paths
+            .iter()
+            .any(|path| path["path"] == serde_json::json!(expected)));
+    }
+    for excluded in [&unrelated, &unrelated_link] {
+        assert!(!planned_paths
+            .iter()
+            .any(|path| path["path"] == serde_json::json!(excluded)));
+    }
+
+    let execute = json_request(
+        app(state.clone()),
+        "POST",
+        &format!(
+            "/api/v1/deletion-plans/{}/execute",
+            plan["id"].as_str().unwrap()
+        ),
+        r#"{"irreversible":true,"confirmation":"PERMANENTLY DELETE"}"#,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(execute.status(), StatusCode::ACCEPTED);
+    assert!(
+        !first.exists()
+            && !first_link.exists()
+            && !second.exists()
+            && !second_link.exists()
+            && !other_second_link.exists()
+    );
+    assert!(unrelated.exists() && unrelated_link.exists());
+
+    let assets = json_request(app(state), "GET", "/api/v1/assets", "", Some(&cookie)).await;
+    let assets: serde_json::Value =
+        serde_json::from_slice(&to_bytes(assets.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(assets["total"], 1);
+    assert_eq!(assets["items"][0]["path"], serde_json::json!(unrelated));
+}
+
+#[tokio::test]
 async fn authenticated_candidate_plan_executes_as_durable_task_and_keeps_audit() {
     let (dir, mut config) = fixture();
     let root = dir.path().join("media");
