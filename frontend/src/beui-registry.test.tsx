@@ -72,6 +72,28 @@ describe("beUI registry primitives", () => {
     expect(screen.getByRole("button", { name: "更多操作" })).toHaveFocus();
   });
 
+  it("closes a Dropdown Menu with Escape without also closing its parent Sheet", async () => {
+    const closeSheet = vi.fn();
+    render(
+      <Sheet open title="演员详情" onClose={closeSheet}>
+        <DropdownMenu>
+          <DropdownMenuTrigger aria-label="更多操作">•••</DropdownMenuTrigger>
+          <DropdownMenuContent aria-label="演员操作">
+            <DropdownMenuItem>移除演员目录…</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </Sheet>,
+    );
+    const trigger = screen.getByRole("button", { name: "更多操作" });
+    await userEvent.click(trigger);
+    expect(screen.getByRole("menu", { name: "演员操作" })).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("menu", { name: "演员操作" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "演员详情" })).toBeVisible();
+    expect(closeSheet).not.toHaveBeenCalled();
+    expect(trigger).toHaveFocus();
+  });
+
   it("adapts the vendored beUI modal with focus and Escape behavior", async () => {
     const close = vi.fn();
     render(

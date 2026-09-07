@@ -106,6 +106,7 @@ export function MorphingModal({
     focusTarget?.focus();
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       if (event.key === "Escape" && dismissible) {
         event.preventDefault();
         onCloseRef.current();
