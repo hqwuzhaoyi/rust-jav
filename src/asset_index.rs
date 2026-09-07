@@ -1126,21 +1126,13 @@ fn is_secondary_multipart(path: &Path) -> bool {
 }
 
 fn multipart_primary_path(path: &Path) -> Option<PathBuf> {
-    let Some(parent) = path.parent() else {
-        return None;
-    };
+    let parent = path.parent()?;
     if !parent.join("movie.nfo").is_file() {
         return None;
     }
-    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
-        return None;
-    };
-    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
-        return None;
-    };
-    let Some((base, suffix)) = stem.rsplit_once('-') else {
-        return None;
-    };
+    let stem = path.file_stem().and_then(|value| value.to_str())?;
+    let extension = path.extension().and_then(|value| value.to_str())?;
+    let (base, suffix) = stem.rsplit_once('-')?;
     let primary_suffix = if suffix.len() == 1
         && suffix
             .bytes()
