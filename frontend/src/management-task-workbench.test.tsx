@@ -298,6 +298,23 @@ describe("Issue #41 Management Task 创建与确认", () => {
     expect(confirmation).toHaveTextContent("/media/library/ABC-001/ABC-001.mp4");
     expect(confirmation).toHaveTextContent("来源 /media/library/incoming/ABC-001.mp4");
     expect(confirmation).toHaveTextContent("目标 /media/library/ABC-001/ABC-001.mp4");
+    const actionReview = within(confirmation).getByRole("button", { name: "2 个已保存操作" });
+    if (actionReview.getAttribute("aria-expanded") !== "true") await userEvent.click(actionReview);
+    expect(
+      within(confirmation).getAllByRole("button", {
+        name: "复制完整路径 /media/library/ABC-001/ad.txt",
+      }).at(-1)!,
+    ).toBeInTheDocument();
+    expect(
+      within(confirmation).getAllByRole("button", {
+        name: "复制完整路径 /media/library/incoming/ABC-001.mp4",
+      }).at(-1)!,
+    ).toBeInTheDocument();
+    expect(
+      within(confirmation).getAllByRole("button", {
+        name: "复制完整路径 /media/library/ABC-001/ABC-001.mp4",
+      }).at(-1)!,
+    ).toBeInTheDocument();
 
     await userEvent.click(
       within(confirmation).getByRole("button", { name: "执行已确认计划" }),

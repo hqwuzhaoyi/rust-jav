@@ -76,6 +76,8 @@ type StubOptions = {
   actors?: typeof actor[];
   actorListResponse?: Promise<Response> | Response;
   actorDetailResponse?: Promise<Response> | Response;
+  actorPlanResponse?: Promise<Response> | Response;
+  actorExecuteResponse?: Promise<Response> | Response;
 };
 
 function stubActorApi(options: StubOptions = {}) {
@@ -116,6 +118,17 @@ function stubActorApi(options: StubOptions = {}) {
           );
         return options.actorDetailResponse ?? Response.json(actor);
       }
+      if (url === `/api/v1/actors/${encodedActorName}/permanent-deletion-plans` && method === "POST")
+        return options.actorPlanResponse ?? Response.json({
+          id: "actor-delete-plan-1", selection: "unified", logical_size: 1024,
+          reclaimable_space: 1024, created_at: 1, expires_at: 900,
+          hard_link_search_roots: ["/media", "/actors"],
+          paths: [{ path: linkedAsset.path, type: "file", video_warning: "Permanent deletion removes video content and cannot be rolled back" }], discovered_hard_links: [],
+          origin: { type: "actor_folder", actor_folder: actorName, selected_asset_ids: [linkedAsset.id] },
+          actor_folder_impacts: [{ asset_id: linkedAsset.id, metadata_actors: [actorName], affected_actor_folders: [actorName], other_actor_folders: [], requires_multi_actor_confirmation: false }],
+        }, { status: 201 });
+      if (url === "/api/v1/deletion-plans/actor-delete-plan-1/execute" && method === "POST")
+        return options.actorExecuteResponse ?? Response.json({ id: "task-actor-delete-1", task_type: "permanent_deletion", status: "completed", error: null, items: [{ path: linkedAsset.path, status: "deleted", message: null }] }, { status: 202 });
       if (url === `/api/v1/actors/${encodedLongActorName}`)
         return Response.json(fallbackActor);
       if (url === "/api/v1/assets/asset%2Ffrom%20actor%3F%231")
@@ -169,7 +182,7 @@ async function openActorRemoval(dialog: HTMLElement) {
   await userEvent.click(
     within(menu).getByRole("menuitem", { name: "删除演员目录…" }),
   );
-  return screen.findByRole("dialog", { name: `移除 ${actorName}？` });
+  return screen.findByRole("alertdialog", { name: `移除 ${actorName}？` });
 }
 
 afterEach(() => {
@@ -197,7 +210,7 @@ describe("Issue #40 Actor Folder prototype cards", () => {
     });
     expect(portrait).toHaveAttribute("src", posterUrl);
     expect(portrait).toHaveAttribute("loading", "lazy");
-    expect(within(portraitCard).getByText("2 个媒体资产 · 4.9 GiB")).toBeVisible();
+    expect(within(portraitCard).getByText("2 部影片 · 4.9 GiB")).toBeVisible();
     expect(
       getComputedStyle(portraitCard.querySelector(".actor-folder-poster") as HTMLElement)
         .aspectRatio,
@@ -206,7 +219,7 @@ describe("Issue #40 Actor Folder prototype cards", () => {
     const fallbackCard = screen.getByRole("button", {
       name: `打开演员 ${longActorName}`,
     });
-    expect(within(fallbackCard).getByText("0 个媒体资产 · 0 B")).toBeVisible();
+    expect(within(fallbackCard).getByText("0 部影片 · 0 B")).toBeVisible();
     expect(
       within(fallbackCard).getByRole("img", {
         name: `${longActorName} 暂无头像`,
@@ -296,7 +309,7 @@ describe("Issue #40 responsive ActorInspector", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it.each([1280, 390])(
+  it.each([1440, 768, 390])(
     "moves focus into a modal Actor detail at %ipx",
     async (width) => {
       setViewport(width);
@@ -314,6 +327,18 @@ describe("Issue #40 responsive ActorInspector", () => {
       expect(trigger).toHaveFocus();
     },
   );
+
+  it("uses the registry Sheet and Dropdown Menu boundaries", async () => {
+    stubActorApi();
+    render(<App />);
+    const { dialog } = await openActorFromCard();
+
+    expect(dialog.closest(".actor-inspector-sheet")).not.toBeNull();
+    const trigger = within(dialog).getByRole("button", { name: "更多操作" });
+    expect(trigger).toHaveClass("beui-button", "ui-touch-target");
+    await userEvent.click(trigger);
+    expect(screen.getByRole("menu", { name: "演员操作" })).toBeVisible();
+  });
 
   it("uses the real production cascade for a 44px circular Close control", async () => {
     stubActorApi();
@@ -507,14 +532,127 @@ describe("Issue #40 Actor Folder storage semantics", () => {
   });
 });
 
+describe("Issue #50 beUI Actor Folder controls", () => {
+  it("filters Actor Folders through the registry Input without changing sort semantics", async () => {
+    stubActorApi();
+    render(<App />);
+    await openActors();
+
+    const filter = await screen.findByRole("textbox", { name: "筛选演员" });
+    expect(filter).toHaveClass("beui-input");
+    expect(screen.getByRole("combobox", { name: "演员排序字段" })).toHaveClass("beui-select");
+    expect(screen.getByRole("button", { name: `打开演员 ${actorName}` }).closest(".beui-card")).not.toBeNull();
+
+    await userEvent.type(filter, "does not match");
+    expect(screen.getByText(/没有匹配/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: `打开演员 ${actorName}` })).not.toBeInTheDocument();
+  });
+});
+
+describe("Issue #55 Actor-selected source deletion", () => {
+  it("sends only selected Asset Index ids, requires the exact phrase, and shows the task outcome", async () => {
+    stubActorApi();
+    render(<App />);
+    const { dialog } = await openActorFromCard();
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: "选择资产 ABC-123" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "永久删除源媒体…" }));
+
+    const review = await screen.findByRole("alertdialog", { name: "永久删除 1 个路径？" });
+    expect(review).toHaveTextContent("硬链接搜索根目录");
+    expect(review).toHaveTextContent("/media");
+    expect(review).toHaveTextContent("文件");
+    expect(review).toHaveTextContent("永久删除会移除视频内容且无法回滚。");
+    expect(review).not.toHaveTextContent("Permanent deletion removes video content");
+    const execute = within(review).getByRole("button", { name: "永久删除" });
+    expect(execute).toBeDisabled();
+    await userEvent.type(within(review).getByRole("textbox"), "PERMANENTLY DELETE");
+    await userEvent.click(execute);
+    expect(await screen.findByRole("alertdialog", { name: "永久删除已完成" })).toHaveTextContent("已删除");
+
+    const calls = vi.mocked(fetch).mock.calls;
+    const plan = calls.find(([url]) => String(url).includes("permanent-deletion-plans"));
+    expect(JSON.parse(String(plan?.[1]?.body))).toEqual({ asset_ids: [linkedAsset.id] });
+    expect(String(plan?.[1]?.body)).not.toContain("path");
+    expect(calls.filter(([url]) => String(url).startsWith("/api/v1/assets?")).length).toBeGreaterThan(1);
+  });
+
+  it("surfaces a rejected or consumed plan and offers a fresh, path-free retry", async () => {
+    stubActorApi({ actorPlanResponse: new Response("Actor Folder association changed", { status: 409 }) });
+    render(<App />);
+    const { dialog } = await openActorFromCard();
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: "选择资产 ABC-123" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "永久删除源媒体…" }));
+
+    const rejected = await screen.findByRole("alertdialog", { name: "无法创建最新永久删除计划" });
+    expect(rejected).toHaveTextContent("演员目录或媒体资产状态可能已变化");
+    expect(within(rejected).getByRole("button", { name: "创建最新操作计划" })).toBeEnabled();
+  });
+
+  it("cancels the whole source-deletion flow instead of reopening multi-actor confirmation", async () => {
+    const impact = {
+      asset_id: linkedAsset.id,
+      metadata_actors: [actorName, "另一位演员"],
+      affected_actor_folders: [actorName, "另一位演员"],
+      other_actor_folders: ["另一位演员"],
+      requires_multi_actor_confirmation: true,
+    };
+    stubActorApi({
+      actorPlanResponse: Response.json({
+        error: "multi actor confirmation required",
+        unconfirmed_multi_actor_asset_ids: [linkedAsset.id],
+        actor_folder_impacts: [impact],
+      }, { status: 409 }),
+    });
+    render(<App />);
+    const { dialog } = await openActorFromCard();
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: "选择资产 ABC-123" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "永久删除源媒体…" }));
+    const multiActor = await screen.findByRole("alertdialog", { name: "确认多人作品影响" });
+    vi.mocked(fetch).mockImplementationOnce(async () => Response.json({
+      id: "actor-delete-plan-1",
+      selection: "unified",
+      logical_size: 1024,
+      reclaimable_space: 1024,
+      created_at: 1,
+      expires_at: 900,
+      hard_link_search_roots: ["/media", "/actors"],
+      paths: [{ path: linkedAsset.path, type: "file" }],
+      discovered_hard_links: [],
+      origin: { type: "actor_folder", actor_folder: actorName, selected_asset_ids: [linkedAsset.id] },
+      actor_folder_impacts: [impact],
+    }, { status: 201 }));
+    await userEvent.click(within(multiActor).getByRole("checkbox"));
+    await userEvent.click(within(multiActor).getByRole("button", { name: "继续检查" }));
+    const review = await screen.findByRole("alertdialog", { name: "永久删除 1 个路径？" });
+    await userEvent.click(within(review).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+  });
+
+  it("invalidates a consumed plan after execute rejection and requires a fresh plan", async () => {
+    stubActorApi({ actorExecuteResponse: new Response("Operation Plan has expired", { status: 409 }) });
+    render(<App />);
+    const { dialog } = await openActorFromCard();
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: "选择资产 ABC-123" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "永久删除源媒体…" }));
+    const review = await screen.findByRole("alertdialog", { name: "永久删除 1 个路径？" });
+    await userEvent.type(within(review).getByRole("textbox"), "PERMANENTLY DELETE");
+    await userEvent.click(within(review).getByRole("button", { name: "永久删除" }));
+
+    const rejected = await screen.findByRole("alertdialog", { name: "无法创建最新永久删除计划" });
+    expect(rejected).toHaveTextContent("永久删除计划已过期或文件状态已变化");
+    expect(screen.queryByRole("alertdialog", { name: "永久删除 1 个路径？" })).not.toBeInTheDocument();
+  });
+});
+
 describe("Issue #40 safe Actor Folder removal", () => {
   it("suspends ActorInspector modal behavior while removal confirmation owns focus", async () => {
     stubActorApi();
     render(<App />);
     const { dialog: actorDialog } = await openActorFromCard();
     const confirmation = await openActorRemoval(actorDialog);
-    expect(document.querySelectorAll('[role="dialog"][aria-modal="true"]')).toHaveLength(1);
-    expect(actorDialog).toHaveAttribute("inert");
+    expect(confirmation).toHaveAttribute("role", "alertdialog");
+    expect(document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')).toHaveLength(1);
+    expect(screen.queryByRole("dialog", { name: actorName })).not.toBeInTheDocument();
     expect(document.activeElement && confirmation.contains(document.activeElement)).toBe(true);
 
     await userEvent.keyboard("{Escape}");
@@ -569,7 +707,7 @@ describe("Issue #40 safe Actor Folder removal", () => {
     const { dialog } = await openActorFromCard();
     await openActorRemoval(dialog);
     await userEvent.click(
-      within(await screen.findByRole("dialog", { name: `移除 ${actorName}？` }))
+      within(await screen.findByRole("alertdialog", { name: `移除 ${actorName}？` }))
         .getByRole("button", { name: "通过管理任务移除" }),
     );
 
@@ -612,7 +750,7 @@ describe("Issue #40 safe Actor Folder removal", () => {
     const { dialog } = await openActorFromCard();
     await openActorRemoval(dialog);
     await userEvent.click(
-      within(await screen.findByRole("dialog", { name: `移除 ${actorName}？` }))
+      within(await screen.findByRole("alertdialog", { name: `移除 ${actorName}？` }))
         .getByRole("button", { name: "通过管理任务移除" }),
     );
 
@@ -648,7 +786,7 @@ describe("Issue #40 safe Actor Folder removal", () => {
       const { dialog } = await openActorFromCard();
       await openActorRemoval(dialog);
       await userEvent.click(
-        within(await screen.findByRole("dialog", { name: `移除 ${actorName}？` }))
+        within(await screen.findByRole("alertdialog", { name: `移除 ${actorName}？` }))
           .getByRole("button", { name: "通过管理任务移除" }),
       );
 

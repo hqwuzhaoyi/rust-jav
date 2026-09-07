@@ -11,6 +11,10 @@ export interface MorphingModalProps {
   placement?: "bottom" | "center";
   className?: string;
   initialAnimation?: boolean;
+  /** Alert dialogs can make dismissal an explicit domain action. */
+  dismissible?: boolean;
+  /** Sheets preserve document position while the modal owns body scrolling. */
+  lockScrollPosition?: boolean;
 }
 
 const FOCUSABLE = [
@@ -30,6 +34,8 @@ export function MorphingModal({
   placement = "bottom",
   className,
   initialAnimation = true,
+  dismissible = true,
+  lockScrollPosition = false,
 }: MorphingModalProps) {
   const open = viewId !== null;
   const reduce = useReducedMotion();
@@ -42,19 +48,46 @@ export function MorphingModal({
 
   useEffect(() => {
     if (!open) return;
-    const previousOverflow = document.body.style.overflow;
+    const body = document.body;
+    const previous = {
+      overflow: body.style.overflow,
+      position: body.style.position,
+      top: body.style.top,
+      width: body.style.width,
+    };
+    const scrollY = window.scrollY;
+    const backgrounds = Array.from(document.querySelectorAll<HTMLElement>("[data-modal-background]"));
+    const priorInert = backgrounds.map((element) => ({ element, inert: element.inert, hadAttribute: element.hasAttribute("inert") }));
     returnFocusRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
-    document.body.style.overflow = "hidden";
+    body.style.overflow = "hidden";
+    if (lockScrollPosition) {
+      body.style.position = "fixed";
+      body.style.top = `-${scrollY}px`;
+      body.style.width = "100%";
+    }
+    priorInert.forEach(({ element }) => {
+      element.inert = true;
+      element.setAttribute("inert", "");
+    });
 
     return () => {
-      document.body.style.overflow = previousOverflow;
+      body.style.overflow = previous.overflow;
+      body.style.position = previous.position;
+      body.style.top = previous.top;
+      body.style.width = previous.width;
+      priorInert.forEach(({ element, inert, hadAttribute }) => {
+        element.inert = inert;
+        if (hadAttribute) element.setAttribute("inert", "");
+        else element.removeAttribute("inert");
+      });
+      if (lockScrollPosition) window.scrollTo(0, scrollY);
       const returnFocus = returnFocusRef.current;
       returnFocusRef.current = null;
       if (returnFocus?.isConnected) returnFocus.focus();
     };
-  }, [open]);
+  }, [lockScrollPosition, open]);
 
   useEffect(() => {
     if (!open || viewId === null) return;
@@ -62,7 +95,9 @@ export function MorphingModal({
       panelRef.current?.querySelectorAll<HTMLElement>("[data-modal-view]") ?? [],
     );
     const currentView = views.find((view) => view.dataset.modalView === viewId);
-    const dialog = currentView?.querySelector<HTMLElement>('[role="dialog"]');
+    const dialog = currentView?.querySelector<HTMLElement>(
+      '[role="dialog"], [role="alertdialog"]',
+    );
 
     const focusTarget = dialog?.querySelector<HTMLElement>(FOCUSABLE) ?? dialog;
     if (focusTarget === dialog && dialog && !dialog.hasAttribute("tabindex")) {
@@ -71,7 +106,8 @@ export function MorphingModal({
     focusTarget?.focus();
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.defaultPrevented) return;
+      if (event.key === "Escape" && dismissible) {
         event.preventDefault();
         onCloseRef.current();
         return;
@@ -101,24 +137,38 @@ export function MorphingModal({
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [open, viewId]);
+  }, [dismissible, open, viewId]);
 
   return (
     <AnimatePresence initial={false}>
       {open ? (
         <PresenceGate key="backdrop">
           {({ gate }) => (
-            <motion.button
-              type="button"
-              aria-label="关闭对话框"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2, ease: EASE_OUT }}
-              {...gate}
-              onClick={onClose}
-              className="ui-touch-target pointer-events-auto fixed inset-0 z-[80] bg-background/5 [backdrop-filter:blur(14px)_saturate(140%)] [-webkit-backdrop-filter:blur(14px)_saturate(140%)]"
-            />
+            dismissible ? (
+              <motion.button
+                type="button"
+                aria-label="关闭对话框"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
+                {...gate}
+                onClick={onClose}
+                className="ui-touch-target pointer-events-auto fixed inset-0 z-[80] bg-background/5 [backdrop-filter:blur(14px)_saturate(140%)] [-webkit-backdrop-filter:blur(14px)_saturate(140%)]"
+              />
+            ) : (
+              <motion.div
+                aria-hidden="true"
+                data-modal-backdrop="blocking"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
+                {...gate}
+                onPointerDown={(event) => event.preventDefault()}
+                className="pointer-events-auto fixed inset-0 z-[80] bg-background/5 [backdrop-filter:blur(14px)_saturate(140%)] [-webkit-backdrop-filter:blur(14px)_saturate(140%)]"
+              />
+            )
           )}
         </PresenceGate>
       ) : null}

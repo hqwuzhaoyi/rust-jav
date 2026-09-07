@@ -169,16 +169,16 @@ describe("Issue #39 AssetInspector 模态可访问性", () => {
     expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "关闭资产详情" }));
   });
 
-  it("当打开模态 Inspector 时，应让 sidebar、main、bottom-nav 全部 inert", async () => {
+  it("当打开模态 Inspector 时，应由 registry Sheet inert 背景但不 inert 自身", async () => {
     stubInspectorApi();
     const { container } = render(<App />);
-    await openFromGallery();
+    const { dialog } = await openFromGallery();
 
-    expect([
-      container.querySelector(".sidebar")?.hasAttribute("inert"),
-      container.querySelector("main")?.hasAttribute("inert"),
-      container.querySelector(".bottom-nav")?.hasAttribute("inert"),
-    ]).toEqual([true, true, true]);
+    expect(container.querySelector(".shell")).not.toHaveAttribute("inert");
+    expect(container.querySelector(".sidebar")).toHaveAttribute("inert");
+    expect(container.querySelector("main.content")).toHaveAttribute("inert");
+    expect(container.querySelector(".bottom-nav")).toHaveAttribute("inert");
+    expect(dialog.closest("[inert]")).toBeNull();
   });
 
   it.each([1280, 390])("当视口宽度为 %i 时，应提供可访问的模态详情", async (width) => {
@@ -224,7 +224,7 @@ describe("Issue #39 AssetInspector 模态可访问性", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "ABC-123" })).toBeNull());
     expect(document.activeElement).toBe(trigger);
     expect(container.querySelector(".sidebar")?.hasAttribute("inert")).toBe(false);
-    expect(container.querySelector("main")?.hasAttribute("inert")).toBe(false);
+    expect(container.querySelector("main.content")?.hasAttribute("inert")).toBe(false);
     expect(container.querySelector(".bottom-nav")?.hasAttribute("inert")).toBe(false);
   });
 
@@ -248,29 +248,25 @@ describe("Issue #39 AssetInspector 模态可访问性", () => {
     render(<App />);
     const { dialog } = await openFromGallery();
 
-    expect(document.body.classList.contains("asset-inspector-open")).toBe(true);
-    expect(document.body.style.getPropertyValue("--asset-inspector-scroll-y")).toBe("640px");
+    expect(document.body.style.position).toBe("fixed");
+    expect(document.body.style.top).toBe("-640px");
 
     await userEvent.click(within(dialog).getByRole("button", { name: "关闭资产详情" }));
-    await waitFor(() => expect(document.body.classList.contains("asset-inspector-open")).toBe(false));
+    await waitFor(() => expect(document.body.style.position).toBe(""));
     expect(scrollTo).toHaveBeenCalledWith(0, 640);
   });
 
-  it("当打开后跨越移动断点时，应同步启用和移除页面滚动锁", async () => {
+  it("当打开后跨越移动断点时，registry Sheet 保持滚动锁而不重装模态行为", async () => {
     setViewport(1280);
     stubInspectorApi();
     render(<App />);
     await openFromGallery();
-    expect(document.body.classList.contains("asset-inspector-open")).toBe(false);
+    expect(document.body.style.position).toBe("fixed");
 
     setViewport(390);
-    await waitFor(() =>
-      expect(document.body.classList.contains("asset-inspector-open")).toBe(true),
-    );
+    await waitFor(() => expect(document.body.style.position).toBe("fixed"));
     setViewport(1280);
-    await waitFor(() =>
-      expect(document.body.classList.contains("asset-inspector-open")).toBe(false),
-    );
+    await waitFor(() => expect(document.body.style.position).toBe("fixed"));
   });
 });
 

@@ -53,4 +53,10 @@ describe("Issue #44 canonical CSS ownership", () => {
 
     expect(duplicates).toEqual([]);
   });
+
+  it("keeps registry Tabs presentation out of application CSS", () => {
+    expect(applicationCss).not.toMatch(/\.beui-tabs-(?:list|trigger|indicator)/);
+    expect(foundationCss).toMatch(/\.beui-tabs-list\[data-variant="segment"\]/);
+    expect(foundationCss).toMatch(/\.beui-tabs-list\[data-variant="underline"\]/);
+  });
 });

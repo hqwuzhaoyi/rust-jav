@@ -637,6 +637,41 @@ struct StoredDeletionPlan {
     rule_version: u32,
     rules: Vec<String>,
     discovered_hard_links: Vec<RelatedHardLink>,
+    actor_deletion: Option<ActorDeletionContext>,
+}
+
+/// The server-side selection that initiated an Actor Folder deletion plan.
+/// Paths are copied from the Asset Index only so execution can reconcile the
+/// affected Media Roots after it has consumed the plan.
+#[derive(Clone)]
+struct ActorDeletionContext {
+    actor_folder: String,
+    assets: Vec<IndexedAssetSelection>,
+    constituents: Vec<MediaDeletionConstituent>,
+    impacts: Vec<ActorDeletionImpact>,
+}
+
+#[derive(Clone)]
+struct IndexedAssetSelection {
+    id: String,
+    media_root: PathBuf,
+    path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct MediaDeletionConstituent {
+    primary_path: PathBuf,
+    media_root: PathBuf,
+    path: PathBuf,
+}
+
+#[derive(Clone)]
+struct ActorDeletionImpact {
+    asset_id: String,
+    metadata_actors: Vec<String>,
+    affected_actor_folders: Vec<String>,
+    other_actor_folders: Vec<String>,
+    requires_multi_actor_confirmation: bool,
 }
 
 #[derive(Clone)]
@@ -939,6 +974,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/v1/actors/:actor_name",
             get(actor_folder_confirmation).delete(remove_actor_folder_task),
+        )
+        .route(
+            "/api/v1/actors/:actor_name/permanent-deletion-plans",
+            post(create_actor_deletion_plan),
         )
         .route("/api/v1/actors/:actor_name/poster", get(actor_poster))
         .route("/api/v1/media-roots/health", get(media_root_health))
@@ -1555,7 +1594,7 @@ fn system_time_seconds(value: SystemTime) -> u64 {
 
 fn plan_json(id: &str, stored: &StoredDeletionPlan) -> serde_json::Value {
     let plan = &stored.plan;
-    serde_json::json!({
+    let mut response = serde_json::json!({
         "id": id,
         "selection": stored.selection,
         "rule_set_version": stored.rule_version,
@@ -1579,7 +1618,28 @@ fn plan_json(id: &str, stored: &StoredDeletionPlan) -> serde_json::Value {
             "type": deletion_file_type(link.file_type),
             "filesystem_identity": {"device": link.identity.device, "inode": link.identity.inode}
         })).collect::<Vec<_>>()
-    })
+    });
+    if let Some(actor_deletion) = &stored.actor_deletion {
+        response["origin"] = serde_json::json!({
+            "type": "actor_folder",
+            "actor_folder": actor_deletion.actor_folder,
+            "selected_asset_ids": actor_deletion.assets.iter().map(|asset| asset.id.clone()).collect::<Vec<_>>(),
+        });
+        response["actor_folder_impacts"] = serde_json::Value::Array(
+            actor_deletion
+                .impacts
+                .iter()
+                .map(|impact| serde_json::json!({
+                    "asset_id": impact.asset_id,
+                    "metadata_actors": impact.metadata_actors,
+                    "affected_actor_folders": impact.affected_actor_folders,
+                    "other_actor_folders": impact.other_actor_folders,
+                    "requires_multi_actor_confirmation": impact.requires_multi_actor_confirmation,
+                }))
+                .collect(),
+        );
+    }
+    response
 }
 
 fn discover_candidates(root: &Path, rules: &ActiveRuleSet, found: &mut Vec<(PathBuf, String)>) {
@@ -1721,10 +1781,391 @@ async fn create_deletion_plan(
         rule_version: rule_state.active.version(),
         rules: rule_state.active.enabled_patterns(),
         discovered_hard_links,
+        actor_deletion: None,
     };
     let response = plan_json(&id, &stored);
     state.deletion_plans.lock().unwrap().insert(id, stored);
     (StatusCode::CREATED, Json(response)).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateActorDeletionPlanRequest {
+    asset_ids: Vec<String>,
+    #[serde(default)]
+    confirmed_multi_actor_asset_ids: Vec<String>,
+}
+
+/// Create a permanent-deletion Operation Plan from Asset Index identifiers
+/// selected within one Actor Folder.  The client never supplies a filesystem
+/// path, nor can it select a derived Actor View path as a source.
+async fn create_actor_deletion_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(actor_name): AxumPath<String>,
+    Json(input): Json<CreateActorDeletionPlanRequest>,
+) -> impl IntoResponse {
+    if let Err(status) = authorized(&state, &headers) {
+        return status.into_response();
+    }
+    if input.asset_ids.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "at least one Asset Index id is required",
+        )
+            .into_response();
+    }
+    let requested_ids = input.asset_ids.iter().cloned().collect::<HashSet<_>>();
+    if requested_ids.len() != input.asset_ids.len() {
+        return (StatusCode::BAD_REQUEST, "Asset Index ids must be unique").into_response();
+    }
+    let Some(actor_root) = state.config.actor_view_root.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let actor_detail = match crate::actor_views::actor_folder_detail(actor_root, &actor_name) {
+        Ok(Some(detail)) => detail,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => return (StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response(),
+    };
+    let assets = match state.assets.assets_by_ids(&input.asset_ids) {
+        Ok(assets) if assets.len() == input.asset_ids.len() => assets,
+        Ok(_) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "every selected Media Asset must still exist in the Asset Index",
+            )
+                .into_response()
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let actor_identities = actor_detail
+        .file_identities
+        .iter()
+        .map(|identity| (identity.device, identity.inode))
+        .collect::<HashSet<_>>();
+    // Match Actor Inspector semantics: local NFO is authoritative when it
+    // identifies actors, while a certain Jellyfin Association supplies the
+    // actor membership when the local NFO has none.
+    let jellyfin_items = match jellyfin_client(&state) {
+        Ok(Some(client)) => state.jellyfin_items(&client).await.ok(),
+        _ => None,
+    };
+    let mut selections = Vec::with_capacity(assets.len());
+    for asset in &assets {
+        if !indexed_asset_is_current(&state.config, asset)
+            || !actor_identities.contains(&(asset.device, asset.inode))
+            || !actor_asset_membership_is_current(
+                &state,
+                &actor_name,
+                asset,
+                jellyfin_items.as_ref().map(|items| items.as_slice()),
+            )
+        {
+            return (
+                StatusCode::CONFLICT,
+                "Actor Folder association or indexed Media Asset changed; refresh the Actor View and Asset Index before permanent deletion",
+            )
+                .into_response();
+        }
+        selections.push(IndexedAssetSelection {
+            id: asset.id.clone(),
+            media_root: PathBuf::from(&asset.media_root),
+            path: PathBuf::from(&asset.path),
+        });
+    }
+    let constituents = match actor_deletion_constituents(&selections) {
+        Ok(constituents) => constituents,
+        Err(error) => return (StatusCode::CONFLICT, error).into_response(),
+    };
+    let mut impacts = Vec::with_capacity(assets.len());
+    for (asset, selection) in assets.iter().zip(&selections) {
+        let detail = match state.assets.detail(&asset.id) {
+            Ok(Some(detail)) => detail,
+            Ok(None) => return StatusCode::CONFLICT.into_response(),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
+        let metadata_actors = actor_names_for_deletion_impact(
+            &detail,
+            jellyfin_items.as_ref().map(|items| items.as_slice()),
+        );
+        let identities = constituents
+            .iter()
+            .filter(|constituent| {
+                constituent.media_root == selection.media_root
+                    && constituent.primary_path == selection.path
+            })
+            .map(|constituent| {
+                fs::symlink_metadata(&constituent.path)
+                    .map(|metadata| (metadata.dev(), metadata.ino()))
+                    .map_err(|error| {
+                        format!(
+                            "recognized multipart constituent changed while checking Actor Folder impact: {}: {error}",
+                            constituent.path.display()
+                        )
+                    })
+            })
+            .collect::<Result<HashSet<_>, _>>();
+        let identities = match identities {
+            Ok(identities) => identities,
+            Err(error) => return (StatusCode::CONFLICT, error).into_response(),
+        };
+        let affected_actor_folders = match actor_folders_for_identities(actor_root, &identities) {
+            Ok(folders) => folders,
+            Err(error) => {
+                return (
+                    StatusCode::CONFLICT,
+                    format!("Actor View changed while checking permanent-deletion impact: {error}"),
+                )
+                    .into_response()
+            }
+        };
+        let other_actor_folders: Vec<String> = affected_actor_folders
+            .iter()
+            .filter(|name| !person_names_equal(name, &actor_name))
+            .cloned()
+            .collect();
+        let requires_multi_actor_confirmation = metadata_actors
+            .iter()
+            .any(|name| !person_names_equal(name, &actor_name))
+            || !other_actor_folders.is_empty();
+        impacts.push(ActorDeletionImpact {
+            asset_id: asset.id.clone(),
+            metadata_actors,
+            affected_actor_folders,
+            other_actor_folders,
+            requires_multi_actor_confirmation,
+        });
+    }
+    let confirmed = input
+        .confirmed_multi_actor_asset_ids
+        .into_iter()
+        .collect::<HashSet<_>>();
+    if !confirmed.is_subset(&requested_ids) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "multi-actor confirmation ids must be selected Asset Index ids",
+        )
+            .into_response();
+    }
+    let unconfirmed = impacts
+        .iter()
+        .filter(|impact| {
+            impact.requires_multi_actor_confirmation && !confirmed.contains(&impact.asset_id)
+        })
+        .map(|impact| impact.asset_id.clone())
+        .collect::<Vec<_>>();
+    if !unconfirmed.is_empty() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "every multi-actor Media Asset requires its own confirmation before permanent deletion",
+                "unconfirmed_multi_actor_asset_ids": unconfirmed,
+                "actor_folder_impacts": actor_deletion_impacts_json(&impacts),
+            })),
+        )
+            .into_response();
+    }
+
+    let now = UNIX_EPOCH + Duration::from_secs(state.now());
+    let (plan, discovered_hard_links) =
+        match create_unified_actor_deletion_plan(&state.config, &constituents, now) {
+            Ok(result) => result,
+            Err(error) => return (StatusCode::CONFLICT, error.to_string()).into_response(),
+        };
+    let id = random_token();
+    let stored = StoredDeletionPlan {
+        plan,
+        selection: "unified".to_owned(),
+        // Actor Folder selection is explicit administrator intent, not a
+        // deletion-rule match.  Preserve the current version in the audit but
+        // never claim a rule authorized these paths.
+        rule_version: state.rules.read().unwrap().active.version(),
+        rules: Vec::new(),
+        discovered_hard_links,
+        actor_deletion: Some(ActorDeletionContext {
+            actor_folder: actor_name,
+            assets: selections,
+            constituents,
+            impacts,
+        }),
+    };
+    let response = plan_json(&id, &stored);
+    state.deletion_plans.lock().unwrap().insert(id, stored);
+    (StatusCode::CREATED, Json(response)).into_response()
+}
+
+fn actor_deletion_constituents(
+    selections: &[IndexedAssetSelection],
+) -> Result<Vec<MediaDeletionConstituent>, String> {
+    let mut constituents = HashSet::new();
+    for selection in selections {
+        for path in crate::asset_index::recognized_multipart_constituents(&selection.path).map_err(
+            |error| {
+                format!(
+                    "cannot discover the recognized multipart set for {}: {error}",
+                    selection.path.display()
+                )
+            },
+        )? {
+            if !path.starts_with(&selection.media_root) {
+                return Err(format!(
+                    "recognized multipart constituent is outside its Media Root: {}",
+                    path.display()
+                ));
+            }
+            constituents.insert(MediaDeletionConstituent {
+                primary_path: selection.path.clone(),
+                media_root: selection.media_root.clone(),
+                path,
+            });
+        }
+    }
+    let mut constituents = constituents.into_iter().collect::<Vec<_>>();
+    constituents.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(constituents)
+}
+
+fn create_unified_actor_deletion_plan(
+    config: &ManagementConfig,
+    constituents: &[MediaDeletionConstituent],
+    now: SystemTime,
+) -> Result<(PermanentDeletionPlan, Vec<RelatedHardLink>), String> {
+    let planner = deletion_planner(config);
+    let mut plan = planner
+        .create_plan(
+            constituents
+                .iter()
+                .map(|constituent| constituent.path.clone())
+                .collect(),
+            Duration::from_secs(900),
+            now,
+        )
+        .map_err(|error| error.to_string())?;
+    let mut discovered_hard_links = plan.related_hard_links.clone();
+
+    // Every planning pass promotes the exact link scope it observed. A later
+    // pass must observe no unapproved links before an irreversible plan is
+    // issued; otherwise the caller must retry against a stable filesystem.
+    for _ in 0..4 {
+        if plan.related_hard_links.is_empty() {
+            discovered_hard_links.sort_by(|left, right| left.path.cmp(&right.path));
+            discovered_hard_links.dedup_by(|left, right| left.path == right.path);
+            return Ok((plan, discovered_hard_links));
+        }
+        let mut approved_paths = plan
+            .approved_paths
+            .iter()
+            .map(|path| path.path.clone())
+            .collect::<Vec<_>>();
+        approved_paths.extend(plan.related_hard_links.iter().map(|path| path.path.clone()));
+        plan = PermanentDeletionPlanner::new(plan.hard_link_search_roots.clone())
+            .create_plan(approved_paths, Duration::from_secs(900), now)
+            .map_err(|error| error.to_string())?;
+        discovered_hard_links.extend(plan.related_hard_links.iter().cloned());
+    }
+    Err("hard-link scope changed while creating the Operation Plan; retry after filesystem activity settles".to_owned())
+}
+
+fn indexed_asset_is_current(
+    config: &ManagementConfig,
+    asset: &crate::asset_index::MediaAsset,
+) -> bool {
+    let media_root = PathBuf::from(&asset.media_root);
+    let path = PathBuf::from(&asset.path);
+    if !config.media_roots.iter().any(|root| root == &media_root) || !path.starts_with(&media_root)
+    {
+        return false;
+    }
+    fs::symlink_metadata(path).is_ok_and(|metadata| {
+        !metadata.file_type().is_symlink()
+            && metadata.is_file()
+            && metadata.dev() == asset.device
+            && metadata.ino() == asset.inode
+    })
+}
+
+fn actor_folders_for_identities(
+    actor_root: &Path,
+    identities: &HashSet<(u64, u64)>,
+) -> std::io::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for folder in crate::actor_views::browse_actor_folders(actor_root)? {
+        let Some(detail) = crate::actor_views::actor_folder_detail(actor_root, &folder.name)?
+        else {
+            continue;
+        };
+        if detail
+            .file_identities
+            .iter()
+            .any(|identity| identities.contains(&(identity.device, identity.inode)))
+        {
+            names.push(folder.name);
+        }
+    }
+    Ok(names)
+}
+
+fn actor_names_for_deletion_impact(
+    detail: &crate::asset_index::AssetDetail,
+    jellyfin_items: Option<&[JellyfinItem]>,
+) -> Vec<String> {
+    let mut names = detail
+        .actors
+        .iter()
+        .map(|actor| actor.name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if !names.is_empty() {
+        return names;
+    }
+    let Some(items) = jellyfin_items else {
+        return names;
+    };
+    let Some(association) = associate(
+        &detail.path,
+        detail.jav_code.as_deref(),
+        detail.title.as_deref(),
+        items,
+    ) else {
+        return names;
+    };
+    if association.confidence != AssociationConfidence::CertainPath {
+        return names;
+    }
+    let Some(item) = items.iter().find(|item| item.id == association.item_id) else {
+        return names;
+    };
+    for name in item
+        .actor_names()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        if !names
+            .iter()
+            .any(|existing| person_names_equal(existing, name))
+        {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
+fn actor_deletion_impacts_json(impacts: &[ActorDeletionImpact]) -> serde_json::Value {
+    serde_json::Value::Array(
+        impacts
+            .iter()
+            .map(|impact| {
+                serde_json::json!({
+                    "asset_id": impact.asset_id,
+                    "metadata_actors": impact.metadata_actors,
+                    "affected_actor_folders": impact.affected_actor_folders,
+                    "other_actor_folders": impact.other_actor_folders,
+                    "requires_multi_actor_confirmation": impact.requires_multi_actor_confirmation,
+                })
+            })
+            .collect(),
+    )
 }
 
 #[derive(Deserialize)]
@@ -1752,6 +2193,15 @@ async fn execute_deletion_plan(
     let Some(stored) = state.deletion_plans.lock().unwrap().remove(&plan_id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if let Some(context) = stored.actor_deletion.as_ref() {
+        if !actor_deletion_association_is_current(&state, context).await {
+            return (
+                StatusCode::CONFLICT,
+                "Actor Folder association changed; this Operation Plan is no longer valid and a fresh plan is required",
+            )
+                .into_response();
+        }
+    }
     let authority = plan_json(&plan_id, &stored);
     let task_media_root = stored
         .plan
@@ -1805,11 +2255,15 @@ async fn execute_deletion_plan(
                 .into_response();
         }
     };
+    let index_refresh_errors = refresh_actor_deletion_index(&state, &stored);
     let audit = serde_json::json!({
         "administrator": "Administrator", "time": state.now(), "task_id": task.id,
         "active_rule_set": {"version": stored.rule_version, "rules": stored.rules},
         "operation_plan": authority,
         "outcomes": result.outcomes.iter().map(|outcome| serde_json::json!({"path":outcome.path,"status":format!("{:?}", outcome.status).to_ascii_lowercase(),"message":outcome.message})).collect::<Vec<_>>(),
+        "asset_index_refresh": if stored.actor_deletion.is_some() {
+            serde_json::json!({"status": if index_refresh_errors.is_empty() { "completed" } else { "failed" }, "errors": index_refresh_errors.clone()})
+        } else { serde_json::Value::Null },
         "partial": result.partial, "rolled_back": false
     });
     let audit_error = state
@@ -1820,7 +2274,8 @@ async fn execute_deletion_plan(
     let has_path_failures = result
         .outcomes
         .iter()
-        .any(|outcome| outcome.status != DeletionOutcomeStatus::Deleted);
+        .any(|outcome| outcome.status != DeletionOutcomeStatus::Deleted)
+        || !index_refresh_errors.is_empty();
     let terminal_result = if let Some(error) = audit_error {
         state.tasks.mark_failed(
             &task.id,
@@ -1857,6 +2312,103 @@ async fn execute_deletion_plan(
         Ok(Some(task)) => (StatusCode::ACCEPTED, Json(task)).into_response(),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+fn refresh_actor_deletion_index(state: &AppState, stored: &StoredDeletionPlan) -> Vec<String> {
+    let Some(_context) = &stored.actor_deletion else {
+        return Vec::new();
+    };
+    let mut by_root = HashMap::<PathBuf, HashSet<PathBuf>>::new();
+    for planned in &stored.plan.approved_paths {
+        if let Some(root) = state
+            .config
+            .media_roots
+            .iter()
+            .filter(|root| planned.path.starts_with(root))
+            .max_by_key(|root| root.components().count())
+        {
+            by_root
+                .entry(root.clone())
+                .or_default()
+                .insert(planned.path.clone());
+        }
+    }
+    by_root
+        .into_iter()
+        .filter_map(|(root, paths)| {
+            state
+                .assets
+                .reconcile_paths(&root, &paths.into_iter().collect::<Vec<_>>(), state.now())
+                .err()
+                .map(|error| {
+                    format!(
+                        "failed to refresh Asset Index for {}: {error}",
+                        root.display()
+                    )
+                })
+        })
+        .collect()
+}
+
+async fn actor_deletion_association_is_current(
+    state: &AppState,
+    context: &ActorDeletionContext,
+) -> bool {
+    let Some(actor_root) = state.config.actor_view_root.as_deref() else {
+        return false;
+    };
+    let Ok(Some(actor_detail)) =
+        crate::actor_views::actor_folder_detail(actor_root, &context.actor_folder)
+    else {
+        return false;
+    };
+    let ids = context
+        .assets
+        .iter()
+        .map(|asset| asset.id.clone())
+        .collect::<Vec<_>>();
+    let Ok(assets) = state.assets.assets_by_ids(&ids) else {
+        return false;
+    };
+    if assets.len() != context.assets.len() {
+        return false;
+    }
+    if !assets
+        .iter()
+        .zip(&context.assets)
+        .all(|(asset, selection)| {
+            asset.id == selection.id
+                && Path::new(&asset.media_root) == selection.media_root
+                && Path::new(&asset.path) == selection.path
+        })
+    {
+        return false;
+    }
+    let Ok(constituents) = actor_deletion_constituents(&context.assets) else {
+        return false;
+    };
+    if constituents != context.constituents {
+        return false;
+    }
+    let actor_identities = actor_detail
+        .file_identities
+        .iter()
+        .map(|identity| (identity.device, identity.inode))
+        .collect::<HashSet<_>>();
+    let jellyfin_items = match jellyfin_client(state) {
+        Ok(Some(client)) => state.jellyfin_items(&client).await.ok(),
+        _ => None,
+    };
+    assets.iter().all(|asset| {
+        actor_identities.contains(&(asset.device, asset.inode))
+            && indexed_asset_is_current(&state.config, asset)
+            && actor_asset_membership_is_current(
+                state,
+                &context.actor_folder,
+                asset,
+                jellyfin_items.as_ref().map(|items| items.as_slice()),
+            )
+    })
 }
 
 async fn deletion_audits(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
@@ -3179,6 +3731,7 @@ fn openapi_document() -> serde_json::Value {
             "/api/v1/deletion-audits":{"get":{"summary":"List indefinite permanent-deletion audit records","responses":{"200":{"description":"Audit records"}}}},
             "/api/v1/actors":{"get":{"summary":"Browse derived Actor Folders with inode-aware storage metrics","responses":{"200":{"description":"Actor Folders","content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/ActorFolder"}}}}}}}},
             "/api/v1/actors/{actor_name}":{"get":{"summary":"Recompute Actor Folder removal confirmation","responses":{"200":{"description":"Fresh confirmation metrics"}}},"delete":{"summary":"Remove derived paths as a Management Task","responses":{"202":{"description":"Accepted Management Task"},"404":{"description":"Actor Folder not found"}}}},
+            "/api/v1/actors/{actor_name}/permanent-deletion-plans":{"post":{"summary":"Create a path-free, unified permanent-deletion Operation Plan for indexed Media Assets selected from an Actor Folder","responses":{"201":{"description":"Time-limited plan including every discovered hard link and Actor Folder impact"},"409":{"description":"Stale association or missing per-asset multi-actor confirmation"},"422":{"description":"Unknown Asset Index id"}}}},
             "/api/v1/media-roots/health":{"get":{"summary":"Report TrueNAS Host Path access and process UID/GID","responses":{"200":{"description":"Media Root permission reports","content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/RootHealth"}}}}}}}},
             "/api/v1/media-roots/storage":{"get":{"summary":"Report deduplicated Media Root filesystem capacity","responses":{"200":{"description":"Per-root and aggregate capacity in the process mount namespace","content":{"application/json":{"schema":{"$ref":"#/components/schemas/MediaRootStorage"}}}}}}},
             "/api/v1/jellyfin/config":{"get":{"summary":"Get non-secret Jellyfin configuration","responses":{"200":{"description":"Configuration without API key"}}},"put":{"summary":"Store Jellyfin configuration and server-only API key","responses":{"204":{"description":"Saved"}}}},

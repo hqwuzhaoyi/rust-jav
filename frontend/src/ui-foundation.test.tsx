@@ -4,11 +4,11 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 import {
-  BeUITab,
-  BeUITabPanel,
-  BeUITabs,
-  BeUITabsList,
-} from "./beui-tabs";
+  TabsTrigger as BeUITab,
+  TabsContent as BeUITabPanel,
+  Tabs as BeUITabs,
+  TabsList as BeUITabsList,
+} from "./components/ui/tabs";
 import { productionStyle, productionValue } from "./test-css";
 
 afterEach(cleanup);
