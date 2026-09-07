@@ -588,6 +588,46 @@ describe("Issue #55 Actor-selected source deletion", () => {
     expect(within(rejected).getByRole("button", { name: "创建最新操作计划" })).toBeEnabled();
   });
 
+  it("cancels the whole source-deletion flow instead of reopening multi-actor confirmation", async () => {
+    const impact = {
+      asset_id: linkedAsset.id,
+      metadata_actors: [actorName, "另一位演员"],
+      affected_actor_folders: [actorName, "另一位演员"],
+      other_actor_folders: ["另一位演员"],
+      requires_multi_actor_confirmation: true,
+    };
+    stubActorApi({
+      actorPlanResponse: Response.json({
+        error: "multi actor confirmation required",
+        unconfirmed_multi_actor_asset_ids: [linkedAsset.id],
+        actor_folder_impacts: [impact],
+      }, { status: 409 }),
+    });
+    render(<App />);
+    const { dialog } = await openActorFromCard();
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: "选择资产 ABC-123" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "永久删除源媒体…" }));
+    const multiActor = await screen.findByRole("alertdialog", { name: "确认多人作品影响" });
+    vi.mocked(fetch).mockImplementationOnce(async () => Response.json({
+      id: "actor-delete-plan-1",
+      selection: "unified",
+      logical_size: 1024,
+      reclaimable_space: 1024,
+      created_at: 1,
+      expires_at: 900,
+      hard_link_search_roots: ["/media", "/actors"],
+      paths: [{ path: linkedAsset.path, type: "file" }],
+      discovered_hard_links: [],
+      origin: { type: "actor_folder", actor_folder: actorName, selected_asset_ids: [linkedAsset.id] },
+      actor_folder_impacts: [impact],
+    }, { status: 201 }));
+    await userEvent.click(within(multiActor).getByRole("checkbox"));
+    await userEvent.click(within(multiActor).getByRole("button", { name: "继续检查" }));
+    const review = await screen.findByRole("alertdialog", { name: "永久删除 1 个路径？" });
+    await userEvent.click(within(review).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+  });
+
   it("invalidates a consumed plan after execute rejection and requires a fresh plan", async () => {
     stubActorApi({ actorExecuteResponse: new Response("Operation Plan has expired", { status: 409 }) });
     render(<App />);

@@ -879,6 +879,14 @@ export function App() {
       setActorDeletionPending(null);
     }
   }
+  function closeActorPermanentDeletion() {
+    setActorDeletionPlan(null);
+    setActorDeletionActor(null);
+    setActorDeletionImpacts([]);
+    setActorDeletionConfirmations(new Set());
+    setActorDeletionError(null);
+    setActorDeletionPhrase("");
+  }
   async function loadCandidates() {
     const r = await fetch("/api/v1/deletion-candidates");
     if (r.ok) setCandidates(((await r.json()) as { items: Candidate[] }).items);
@@ -1843,7 +1851,7 @@ export function App() {
       />
       <AlertDialog
         open={Boolean(actorDeletionActor && !actorDeletionPlan && actorDeletionImpacts.some((impact) => impact.requires_multi_actor_confirmation))}
-        onClose={() => { setActorDeletionActor(null); setActorDeletionImpacts([]); }}
+        onClose={closeActorPermanentDeletion}
         title="确认多人作品影响"
         description="每个多人媒体资产都需要单独确认；这不会移除演员目录。"
         className="actor-deletion-review-modal"
@@ -1867,7 +1875,7 @@ export function App() {
             </label>
           ))}
           <div className="dialog-actions">
-            <Button variant="outline" onClick={() => { setActorDeletionActor(null); setActorDeletionImpacts([]); }}>取消</Button>
+            <Button variant="outline" onClick={closeActorPermanentDeletion}>取消</Button>
             <Button
               variant="destructive"
               disabled={actorDeletionImpacts.filter((impact) => impact.requires_multi_actor_confirmation).some((impact) => !actorDeletionConfirmations.has(impact.asset_id))}
@@ -1878,7 +1886,7 @@ export function App() {
       </AlertDialog>
       <AlertDialog
         open={Boolean(actorDeletionError && actorDeletionActor && !actorDeletionPlan)}
-        onClose={() => { setActorDeletionError(null); setActorDeletionActor(null); setActorDeletionImpacts([]); }}
+        onClose={closeActorPermanentDeletion}
         title="无法创建最新永久删除计划"
         description={actorDeletionError ?? undefined}
         className="actor-deletion-review-modal"
@@ -1886,7 +1894,7 @@ export function App() {
       >
         <p>未执行任何删除。请重新检查当前演员目录与媒体资产状态。</p>
         <div className="dialog-actions">
-          <Button variant="outline" onClick={() => { setActorDeletionError(null); setActorDeletionActor(null); setActorDeletionImpacts([]); }}>取消</Button>
+          <Button variant="outline" onClick={closeActorPermanentDeletion}>取消</Button>
           <Button variant="destructive" disabled={actorDeletionPending === "planning"} onClick={() => actorDeletionActor && void requestActorPermanentDeletion(actorDeletionActor, [...selectedActorAssetIds])}>
             {actorDeletionPending === "planning" ? "正在创建最新操作计划…" : "创建最新操作计划"}
           </Button>
@@ -1894,7 +1902,7 @@ export function App() {
       </AlertDialog>
       <AlertDialog
         open={Boolean(actorDeletionPlan)}
-        onClose={() => { setActorDeletionPlan(null); setActorDeletionPhrase(""); }}
+        onClose={closeActorPermanentDeletion}
         title={actorDeletionPlan ? `永久删除 ${actorDeletionPlan.paths.length} 个路径？` : "永久删除源媒体"}
         description="将删除选定媒体资产的源路径及所有已发现硬链接。"
         className="actor-deletion-review-modal"
@@ -1918,7 +1926,7 @@ export function App() {
           <label>输入 <b>PERMANENTLY DELETE</b> 进行确认
             <Input value={actorDeletionPhrase} onChange={(event) => setActorDeletionPhrase(event.target.value)} autoComplete="off" />
           </label>
-          <div className="dialog-actions"><Button variant="outline" onClick={() => setActorDeletionPlan(null)}>取消</Button><Button variant="destructive" disabled={actorDeletionPhrase !== "PERMANENTLY DELETE" || Boolean(actorDeletionPending)} onClick={() => void executeActorPermanentDeletion()}>{actorDeletionPending === "executing" ? "正在永久删除…" : "永久删除"}</Button></div>
+          <div className="dialog-actions"><Button variant="outline" onClick={closeActorPermanentDeletion}>取消</Button><Button variant="destructive" disabled={actorDeletionPhrase !== "PERMANENTLY DELETE" || Boolean(actorDeletionPending)} onClick={() => void executeActorPermanentDeletion()}>{actorDeletionPending === "executing" ? "正在永久删除…" : "永久删除"}</Button></div>
         </> : null}
       </AlertDialog>
       <AlertDialog
