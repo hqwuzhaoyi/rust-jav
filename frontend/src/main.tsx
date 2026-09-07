@@ -202,8 +202,6 @@ type ActorFolder = {
   linked_assets?: Asset[];
 };
 type LoadState = "idle" | "loading" | "ready" | "error";
-type ActorSortKey = "name" | "count" | "size";
-type SortDirection = "asc" | "desc";
 function isTaskStatus(status: unknown): status is Task["status"] {
   return ["queued", "running", "completed", "failed", "interrupted"].includes(
     String(status),
@@ -834,10 +832,10 @@ export function App() {
         return;
       }
       setActorDeletionImpacts([]);
-      setActorDeletionError(result.error);
-    } catch (error) {
+      setActorDeletionError("无法创建最新永久删除计划。演员目录或媒体资产状态可能已变化，请刷新后重试。");
+    } catch {
       setActorDeletionImpacts([]);
-      setActorDeletionError(error instanceof Error ? error.message : "无法创建永久删除操作计划。请检查连接后重试。");
+      setActorDeletionError("网络请求失败，无法创建永久删除操作计划。请检查连接后重试。");
     } finally {
       setActorDeletionPending(null);
     }
@@ -866,13 +864,13 @@ export function App() {
       setActorDeletionImpacts([]);
       setActorDeletionPhrase("");
       setActorDeletionActor(actor);
-      setActorDeletionError(typeof result.body === "string" ? result.body : "永久删除计划已过期或文件状态已变化，请创建最新操作计划。");
-    } catch (error) {
+      setActorDeletionError("永久删除计划已过期或文件状态已变化，请创建最新操作计划。");
+    } catch {
       setActorDeletionPlan(null);
       setActorDeletionImpacts([]);
       setActorDeletionPhrase("");
       setActorDeletionActor(actor);
-      setActorDeletionError(error instanceof Error ? error.message : "永久删除请求失败。请创建最新操作计划后重试。");
+      setActorDeletionError("网络请求失败。未执行新的删除，请创建最新操作计划后重试。");
     } finally {
       setActorDeletionPending(null);
     }
@@ -1844,7 +1842,7 @@ export function App() {
         open={Boolean(actorDeletionActor && !actorDeletionPlan && actorDeletionImpacts.some((impact) => impact.requires_multi_actor_confirmation))}
         onClose={() => { setActorDeletionActor(null); setActorDeletionImpacts([]); }}
         title="确认多人作品影响"
-        description="每个多人 Media Asset 都需要单独确认；这不会移除 Actor Folder。"
+        description="每个多人媒体资产都需要单独确认；这不会移除演员目录。"
         className="actor-deletion-review-modal"
         contentClassName="actor-deletion-confirmation"
       >
@@ -1883,7 +1881,7 @@ export function App() {
         className="actor-deletion-review-modal"
         contentClassName="actor-deletion-confirmation"
       >
-        <p>未执行任何删除。请重新检查当前 Actor Folder 与 Media Asset 状态。</p>
+        <p>未执行任何删除。请重新检查当前演员目录与媒体资产状态。</p>
         <div className="dialog-actions">
           <Button variant="outline" onClick={() => { setActorDeletionError(null); setActorDeletionActor(null); setActorDeletionImpacts([]); }}>取消</Button>
           <Button variant="destructive" disabled={actorDeletionPending === "planning"} onClick={() => actorDeletionActor && void requestActorPermanentDeletion(actorDeletionActor, [...selectedActorAssetIds])}>
@@ -1895,12 +1893,12 @@ export function App() {
         open={Boolean(actorDeletionPlan)}
         onClose={() => { setActorDeletionPlan(null); setActorDeletionPhrase(""); }}
         title={actorDeletionPlan ? `永久删除 ${actorDeletionPlan.paths.length} 个路径？` : "永久删除源媒体"}
-        description="将删除选定 Media Asset 的源路径及所有已发现硬链接。"
+        description="将删除选定媒体资产的源路径及所有已发现硬链接。"
         className="actor-deletion-review-modal"
         contentClassName="actor-deletion-confirmation"
       >
         {actorDeletionPlan ? <>
-          <p className="actor-deletion-warning">{actorDeletionPlan.actor_folder_impacts.some((impact) => impact.other_actor_folders.length) ? "多人作品：以下其他 Actor Folder 也会失去这些派生路径。" : "所有已发现硬链接均已包含在本计划中。"}</p>
+          <p className="actor-deletion-warning">{actorDeletionPlan.actor_folder_impacts.some((impact) => impact.other_actor_folders.length) ? "多人作品：以下其他演员目录也会失去这些派生路径。" : "所有已发现硬链接均已包含在本计划中。"}</p>
           {actorDeletionPlan.actor_folder_impacts.some((impact) => impact.other_actor_folders.length) ? (
             <ul className="actor-deletion-affected-folders">
               {actorDeletionPlan.actor_folder_impacts.map((impact) => (
@@ -1912,7 +1910,7 @@ export function App() {
             </ul>
           ) : null}
           <dl className="deletion-plan-metrics"><div><dt>逻辑大小</dt><dd>{formatBytes(actorDeletionPlan.logical_size)}</dd></div><div><dt>可回收空间</dt><dd>{formatBytes(actorDeletionPlan.reclaimable_space)}</dd></div></dl>
-          <section className="deletion-scope"><h3>Hard-Link Search Roots</h3><div className="plan-paths">{actorDeletionPlan.hard_link_search_roots.map((root) => <code key={root}>{root}</code>)}</div></section>
+          <section className="deletion-scope"><h3>硬链接搜索根目录</h3><div className="plan-paths">{actorDeletionPlan.hard_link_search_roots.map((root) => <code key={root}>{root}</code>)}</div></section>
           <section className="deletion-scope"><h3>已批准的路径</h3><div className="plan-paths">{actorDeletionPlan.paths.map((path) => <div key={path.path}><code>{path.path}</code><span>{fileTypeLabel(path.type)}</span>{path.video_warning ? <small>{deletionWarningLabel(path.video_warning)}</small> : null}</div>)}</div></section>
           <label>输入 <b>PERMANENTLY DELETE</b> 进行确认
             <Input value={actorDeletionPhrase} onChange={(event) => setActorDeletionPhrase(event.target.value)} autoComplete="off" />

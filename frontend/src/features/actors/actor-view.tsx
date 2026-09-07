@@ -335,7 +335,7 @@ export function ActorInspectorSheet({
         ) : null}
         {actor && selectedAssetIds.size > 0 ? (
           <div className="actor-deletion-selection-bar" role="status">
-            <span>已选择 {selectedAssetIds.size} 个 Media Asset</span>
+            <span>已选择 {selectedAssetIds.size} 个媒体资产</span>
             <Button variant="destructive" onClick={() => onPermanentDelete([...selectedAssetIds])}>
               永久删除源媒体…
             </Button>

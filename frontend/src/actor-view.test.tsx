@@ -558,7 +558,7 @@ describe("Issue #55 Actor-selected source deletion", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "永久删除源媒体…" }));
 
     const review = await screen.findByRole("alertdialog", { name: "永久删除 1 个路径？" });
-    expect(review).toHaveTextContent("Hard-Link Search Roots");
+    expect(review).toHaveTextContent("硬链接搜索根目录");
     expect(review).toHaveTextContent("/media");
     expect(review).toHaveTextContent("文件");
     const execute = within(review).getByRole("button", { name: "永久删除" });
@@ -582,7 +582,7 @@ describe("Issue #55 Actor-selected source deletion", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "永久删除源媒体…" }));
 
     const rejected = await screen.findByRole("alertdialog", { name: "无法创建最新永久删除计划" });
-    expect(rejected).toHaveTextContent("Actor Folder association changed");
+    expect(rejected).toHaveTextContent("演员目录或媒体资产状态可能已变化");
     expect(within(rejected).getByRole("button", { name: "创建最新操作计划" })).toBeEnabled();
   });
 
@@ -597,7 +597,7 @@ describe("Issue #55 Actor-selected source deletion", () => {
     await userEvent.click(within(review).getByRole("button", { name: "永久删除" }));
 
     const rejected = await screen.findByRole("alertdialog", { name: "无法创建最新永久删除计划" });
-    expect(rejected).toHaveTextContent("Operation Plan has expired");
+    expect(rejected).toHaveTextContent("永久删除计划已过期或文件状态已变化");
     expect(screen.queryByRole("alertdialog", { name: "永久删除 1 个路径？" })).not.toBeInTheDocument();
   });
 });
