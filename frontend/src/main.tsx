@@ -1,20 +1,15 @@
 import React, {
   FormEvent,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { motion } from "motion/react";
 import {
   AlertTriangle,
-  ArrowDown,
   ArrowLeft,
-  ArrowUp,
   Clock3,
-  Ellipsis,
-  Film,
   Grid2X2,
   HardDrive,
   Image as ImageIcon,
@@ -27,7 +22,6 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { MorphingModal } from "./components/motion/morphing-modal";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { Input } from "./components/ui/input";
@@ -44,7 +38,7 @@ import { SettingsPage } from "./features/settings/SettingsPage";
 import { DiscardSettingsDialog, RuleActivationDialog } from "./features/settings/SettingsDialogs";
 import { OperationPlanDialog } from "./features/tasks/OperationPlanDialog";
 import { TaskPanel } from "./features/tasks/TaskPanel";
-import { Sheet } from "./components/ui/dialog";
+import { Dialog, Sheet } from "./components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { MediaAssetGallery } from "./features/assets/media-asset-gallery";
 import { galleryStateFromUrl, galleryUrl } from "./features/assets/url-state";
@@ -1832,169 +1826,6 @@ export function App() {
             ruleHeadingRef={ruleHeadingRef}
           />
         )}
-        {false && (
-          <div className="settings-stack">
-            <section className="rules-settings">
-              <p className="eyebrow">删除规则</p>
-              <h2 ref={ruleHeadingRef} tabIndex={-1}>当前规则集</h2>
-              <p>
-                远程 YAML 只是规则草案。服务器验证后原子启用；规则不能选择根目录或授权删除。
-              </p>
-              <label htmlFor="rule-source">规则来源 URL</label>
-              <div className="rule-actions">
-                <Input
-                  id="rule-source"
-                  type="url"
-                  placeholder="https://raw.githubusercontent.com/…"
-                  value={sourceUrl}
-                  disabled={rulesPending !== null}
-                  onChange={(event) => {
-                    setSourceUrl(event.target.value);
-                    setRulesError("");
-                  }}
-                />
-                <Button
-                  type="button"
-                  disabled={!sourceUrl || rulesPending !== null}
-                  onClick={downloadProposal}
-                >
-                  {rulesPending === "download" ? "正在下载草案…" : "下载草案"}
-                </Button>
-              </div>
-              <label htmlFor="rules-yaml">当前规则集 YAML</label>
-              <textarea
-                id="rules-yaml"
-                rows={18}
-                readOnly={!editing}
-                disabled={rulesPending !== null}
-                value={yaml}
-                onChange={(event) => updateYaml(event.target.value)}
-              />
-              <div className="rule-actions">
-                {!editing && (
-                  <Button
-                    type="button"
-                    onClick={() => {
-                      setEditing(true);
-                      setValidation(null);
-                    }}
-                  >
-                    编辑
-                  </Button>
-                )}
-                {editing && (
-                  <Button type="button" disabled={rulesPending !== null} onClick={validateRules}>
-                    {rulesPending === "validate" ? "正在验证…" : "验证"}
-                  </Button>
-                )}
-                {editing && !validation?.empty && (
-                  <Button
-                    type="button"
-                    disabled={!validation || validation?.yaml !== yaml}
-                    onClick={reviewRuleActivation}
-                  >
-                    保存当前规则集
-                  </Button>
-                )}
-                {editing && validation?.empty && (
-                  <Button
-                    type="button"
-                    className="danger"
-                    disabled={validation?.yaml !== yaml}
-                    onClick={reviewRuleActivation}
-                  >
-                    确认空规则并保存
-                  </Button>
-                )}
-              </div>
-              {rulesMessage && (
-                <p role="status" className="notice">
-                  {rulesMessage}
-                </p>
-              )}
-              {rulesError && (
-                <p role="alert" className="notice settings-error">
-                  {rulesError}
-                </p>
-              )}
-            </section>
-            <section
-              className="task-create jellyfin-settings"
-              aria-busy={jfLoadState === "loading" ? "true" : undefined}
-            >
-              <p className="eyebrow">媒体服务器</p>
-              <h2>Jellyfin</h2>
-              <p>
-                连接一个服务器并选择多个媒体库 ID。API 密钥只保存在本服务器。
-              </p>
-              <form className="task-form" onSubmit={saveJellyfin}>
-                {jfDirty && <p className="settings-dirty">有未保存的更改</p>}
-                <label htmlFor="jellyfin-url">服务器 URL</label>
-                <Input
-                  id="jellyfin-url"
-                  type="url"
-                  value={jfUrl}
-                  disabled={jfSaving}
-                  onChange={(event) => {
-                    jellyfinChangeGeneration.current += 1;
-                    setJfUrl(event.target.value);
-                    setJfError("");
-                  }}
-                  placeholder="http://jellyfin:8096"
-                  required
-                />
-                <label htmlFor="jellyfin-libraries">媒体库 ID</label>
-                <Input
-                  id="jellyfin-libraries"
-                  value={jfLibraries}
-                  disabled={jfSaving}
-                  onChange={(event) => {
-                    jellyfinChangeGeneration.current += 1;
-                    setJfLibraries(event.target.value);
-                    setJfError("");
-                  }}
-                  placeholder="movies, jav"
-                  required
-                />
-                <label htmlFor="jellyfin-key">服务器 API 密钥</label>
-                <Input
-                  id="jellyfin-key"
-                  type="password"
-                  autoComplete="off"
-                  value={jfKey}
-                  disabled={jfSaving}
-                  onChange={(event) => {
-                    jellyfinChangeGeneration.current += 1;
-                    setJfKey(event.target.value);
-                    setJfError("");
-                  }}
-                  required={!jfKeyConfigured}
-                />
-                <Button type="submit" disabled={!jfDirty || jfSaving}>
-                  {jfSaving ? "正在保存 Jellyfin…" : "保存 Jellyfin"}
-                </Button>
-                {jfError && (
-                  <p role="alert" className="notice settings-error">
-                    {jfError}
-                  </p>
-                )}
-                {jfLoadState === "error" && (
-                  <Button type="button" className="settings-retry" onClick={() => void loadJellyfinConfig()}>
-                    重新加载 Jellyfin 设置
-                  </Button>
-                )}
-              </form>
-              <div className="jellyfin-actions">
-                <Button type="button" disabled={jfDirty || jfSaving} onClick={() => void testJellyfin()}>
-                  测试连接
-                </Button>
-                <Button type="button" disabled={jfDirty || jfSaving} onClick={() => void refreshJellyfin()}>
-                  刷新 Jellyfin
-                </Button>
-              </div>
-            </section>
-          </div>
-        )}
       </main>
       {inspectedAsset && (
         <AssetInspector
@@ -2074,19 +1905,15 @@ export function App() {
           navigation?.();
         }}
       />
-      <MorphingModal
-        viewId={storageOpen && storage ? "media-storage" : null}
-        placement="center"
+      <Dialog
+        open={storageOpen && Boolean(storage)}
         className="storage-modal"
         onClose={() => setStorageOpen(false)}
+        aria-label="媒体存储"
+        contentClassName="storage-dialog"
       >
         {storage && (
-          <section
-            className="storage-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-label="媒体存储"
-          >
+          <>
             <Button
               density="compact"
               className="storage-dialog-close"
@@ -2096,9 +1923,9 @@ export function App() {
               <X aria-hidden="true" />
             </Button>
             <MediaStorageStatus storage={storage} compact />
-          </section>
+          </>
         )}
-      </MorphingModal>
+      </Dialog>
       <nav className="bottom-nav" aria-label="移动端主导航">
         <Button
           aria-label="图库"
@@ -2421,297 +2248,6 @@ function AssetInspector({
     </Sheet>
   );
 }
-function ActorInspector({
-  actor,
-  loading,
-  error,
-  close,
-  openAsset,
-  remove,
-  retry,
-  restoreFocusRef,
-  linkedFocusRef,
-  suspended,
-}: {
-  actor: ActorFolder | null;
-  loading: boolean;
-  error: string | null;
-  close: () => void;
-  openAsset: (asset: Asset) => void;
-  remove: (actor: ActorFolder) => void;
-  retry: () => void;
-  restoreFocusRef: { current: HTMLElement | null };
-  linkedFocusRef: { current: string | null };
-  suspended: boolean;
-}) {
-  const dialogRef = useRef<HTMLElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const actionMenuRef = useRef<HTMLDivElement>(null);
-  const actionMenuButtonRef = useRef<HTMLButtonElement>(null);
-  const actionMenuOpenRef = useRef(false);
-  const [actionMenuOpen, setActionMenuOpen] = useState(false);
-  const closeRef = useRef(close);
-  closeRef.current = close;
-  actionMenuOpenRef.current = actionMenuOpen;
-  const prefersReducedMotion = useReducedMotion();
-  const reduce = prefersReducedMotion
-    || (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
-  const mobile = useMobileBreakpoint();
-  useEffect(() => {
-    if (suspended) return;
-    const background = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        ".shell > .sidebar, .shell > main, .shell > .bottom-nav",
-      ),
-    ).map((element) => ({
-      element,
-      inert: element.inert,
-      attribute: element.hasAttribute("inert"),
-    }));
-    const scrollY = window.scrollY;
-    const returnFocus = restoreFocusRef.current;
-    background.forEach(({ element }) => {
-      element.inert = true;
-      element.setAttribute("inert", "");
-    });
-    if (mobile) {
-      document.body.classList.add("asset-inspector-open");
-      document.body.style.setProperty("--asset-inspector-scroll-y", `${scrollY}px`);
-    }
-    closeButtonRef.current?.focus();
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (actionMenuOpenRef.current) {
-          setActionMenuOpen(false);
-          actionMenuButtonRef.current?.focus();
-          return;
-        }
-        closeRef.current();
-        return;
-      }
-      if (event.key !== "Tab" || !dialogRef.current) return;
-      const focusable = Array.from(
-        dialogRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
-        ),
-      );
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      background.forEach(({ element, inert, attribute }) => {
-        element.inert = inert;
-        if (attribute) element.setAttribute("inert", "");
-        else element.removeAttribute("inert");
-      });
-      if (mobile) {
-        document.body.classList.remove("asset-inspector-open");
-        document.body.style.removeProperty("--asset-inspector-scroll-y");
-        window.scrollTo(0, scrollY);
-      }
-      if (returnFocus?.isConnected) returnFocus.focus();
-    };
-  }, [mobile, restoreFocusRef, suspended]);
-  useEffect(() => {
-    if (!actionMenuOpen) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (!actionMenuRef.current?.contains(event.target as Node)) {
-        setActionMenuOpen(false);
-      }
-    };
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, [actionMenuOpen]);
-  useEffect(() => {
-    if (suspended || !actor || !linkedFocusRef.current || !dialogRef.current) return;
-    const target = Array.from(
-      dialogRef.current.querySelectorAll<HTMLElement>("[data-asset-id]"),
-    ).find((element) => element.dataset.assetId === linkedFocusRef.current);
-    if (target) {
-      target.focus();
-      linkedFocusRef.current = null;
-    }
-  }, [actor, linkedFocusRef, suspended]);
-  return (
-    <motion.aside
-      ref={dialogRef}
-      className="asset-inspector actor-inspector"
-      role="dialog"
-      aria-modal={suspended ? undefined : "true"}
-      inert={suspended || undefined}
-      aria-labelledby={actor ? "actor-detail-title" : undefined}
-      aria-label={actor ? undefined : "演员目录详情"}
-      initial={reduce ? false : mobile ? { y: 28 } : { x: 40 }}
-      animate={mobile ? { y: 0 } : { x: 0 }}
-      exit={reduce ? undefined : mobile ? { y: 28 } : { x: 40 }}
-      transition={reduce ? { duration: 0 } : undefined}
-    >
-      <div className="sheet-handle" aria-hidden="true" />
-      <Button ref={closeButtonRef} className="inspector-close ui-icon-button" onClick={close} aria-label="关闭演员详情"><X aria-hidden="true" /></Button>
-      {actor && (
-        <div className="actor-action-menu" ref={actionMenuRef}>
-          <Button
-            ref={actionMenuButtonRef}
-            className="actor-action-menu-trigger ui-icon-button"
-            aria-label="更多操作"
-            aria-haspopup="menu"
-            aria-expanded={actionMenuOpen}
-            onClick={() => setActionMenuOpen((open) => !open)}
-          >
-            <Ellipsis aria-hidden="true" />
-          </Button>
-          {actionMenuOpen && (
-            <div className="actor-action-menu-popover" role="menu" aria-label="演员操作">
-              <Button
-                role="menuitem"
-                onClick={() => {
-                  setActionMenuOpen(false);
-                  remove(actor);
-                }}
-              >
-                <Trash2 aria-hidden="true" /> 删除演员目录…
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-      {loading && !actor ? <p role="status">正在加载演员目录…</p> : actor && (
-        <>
-          <div className="actor-detail-hero">
-            <ActorPortrait actor={actor} />
-            <div><p className="eyebrow">演员视图</p><h2 id="actor-detail-title">{actor.name}</h2></div>
-          </div>
-          <dl className="actor-metrics">
-            <Info k="派生路径" v={String(actor.derived_file_count ?? actor.hard_link_count)} />
-            <Info k="去重文件" v={String(actor.unique_inode_count ?? actor.movie_count)} />
-            <Info k="逻辑大小" v={formatBytes(actor.logical_size)} />
-            <Info k="可回收空间" v={formatBytes(actor.reclaimable_space)} />
-          </dl>
-          <span className="sr-only" aria-hidden="true">引用的逻辑大小</span>
-          <span className="sr-only" aria-hidden="true">移除后可回收空间</span>
-          <section className="linked-assets">
-            <div className="section-title"><h3>关联媒体资产</h3><span>{actor.linked_assets?.length ?? 0}</span></div>
-            {(actor.linked_assets ?? []).length ? (
-              <div className="linked-asset-grid">
-                {(actor.linked_assets ?? []).map((asset) => (
-                  <Button key={asset.id} data-asset-id={asset.id} aria-label={`打开资产 ${asset.jav_code ?? asset.title ?? "媒体资产"}`} onClick={() => openAsset(asset)}>
-                    <LinkedAssetArtwork asset={asset} />
-                    <span><b>{asset.jav_code ?? "媒体资产"}</b><small>{asset.title ?? asset.path}</small></span>
-                  </Button>
-                ))}
-              </div>
-            ) : <p className="muted">暂无关联媒体资产。</p>}
-          </section>
-        </>
-      )}
-      {!loading && error && (
-        <div className="actor-feedback actor-detail-error" role="alert">
-          <AlertTriangle aria-hidden="true" />
-          <h2>{error}</h2>
-          <p>演员目录仍然存在，请重新读取当前文件系统状态。</p>
-          <Button onClick={retry}>重试演员目录</Button>
-        </div>
-      )}
-    </motion.aside>
-  );
-}
-
-const ACTOR_POSTER_FALLBACK =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 600'%3E%3Crect width='400' height='600' fill='%232c3f5d'/%3E%3Ccircle cx='200' cy='220' r='72' fill='%2398a9bf'/%3E%3Cpath d='M76 510c14-114 72-171 124-171s110 57 124 171' fill='%2398a9bf'/%3E%3C/svg%3E";
-
-function ActorPortrait({
-  actor,
-  loading,
-}: {
-  actor: ActorFolder;
-  loading?: "lazy";
-}) {
-  const [failed, setFailed] = useState(false);
-  const unavailable = !actor.poster_url || failed;
-  return (
-    <img
-      src={unavailable ? ACTOR_POSTER_FALLBACK : actor.poster_url ?? ACTOR_POSTER_FALLBACK}
-      alt={unavailable ? `${actor.name} 暂无头像` : `${actor.name} 头像`}
-      loading={loading}
-      onError={() => setFailed(true)}
-    />
-  );
-}
-function ActorRemovalDialog({
-  actor,
-  busy,
-  cancel,
-  remove,
-}: {
-  actor: ActorFolder;
-  busy: boolean;
-  cancel: () => void;
-  remove: () => void;
-}) {
-  return (
-    <section
-      className="confirm-dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="remove-actor-title"
-    >
-        <p className="eyebrow">安全移除派生路径</p>
-        <h2 id="remove-actor-title">移除 {actor.name}？</h2>
-        <p>
-          只会解除此演员目录下的派生演员视图路径。源媒体资产、NFO 元数据和 Jellyfin 项目都不会被删除。
-        </p>
-        <dl>
-          <div>
-            <dt>演员目录</dt>
-            <dd>{actor.name}</dd>
-          </div>
-          <div>
-            <dt>影片</dt>
-            <dd>{actor.movie_count}</dd>
-          </div>
-          <div>
-            <dt>派生路径</dt>
-            <dd>{actor.derived_file_count ?? actor.hard_link_count}</dd>
-          </div>
-          <div>
-            <dt>去重文件</dt>
-            <dd>{actor.unique_inode_count ?? 0}</dd>
-          </div>
-          <div>
-            <dt>引用的逻辑大小</dt>
-            <dd>{formatBytes(actor.logical_size)}</dd>
-          </div>
-          <div>
-            <dt>移除后可回收空间</dt>
-            <dd>{formatBytes(actor.reclaimable_space)}</dd>
-          </div>
-        </dl>
-        <p className="regenerate-note">
-          之后可根据源 NFO 元数据重新生成演员链接。硬链接要求演员视图和媒体根目录位于同一文件系统。
-        </p>
-        <div className="dialog-actions">
-          <Button disabled={busy} onClick={cancel}>
-            取消
-          </Button>
-          <Button className="danger" disabled={busy} onClick={remove}>
-            通过管理任务移除
-          </Button>
-        </div>
-    </section>
-  );
-}
 function MediaStorageStatus({
   storage,
   compact = false,
@@ -2764,15 +2300,6 @@ function MediaStorageStatus({
   );
 }
 
-function Empty() {
-  return (
-    <div className="empty">
-      <span>◇</span>
-      <h2>暂无媒体资产</h2>
-      <p>配置媒体根目录后，重新扫描文件系统。</p>
-    </div>
-  );
-}
 
 function AssetArtwork({ asset }: { asset: Asset }) {
   const [failed, setFailed] = useState(false);
@@ -2796,231 +2323,6 @@ function AssetArtwork({ asset }: { asset: Asset }) {
   );
 }
 
-function LinkedAssetArtwork({ asset }: { asset: Asset }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [asset.artwork_url]);
-  if (!asset.artwork_url || failed) return <Film aria-hidden="true" />;
-  return (
-    <img
-      src={asset.artwork_url}
-      alt=""
-      loading="lazy"
-      onError={() => setFailed(true)}
-    />
-  );
-}
-function LegacyTaskPanel({
-  tasks,
-  taskTotal,
-  hasMoreTasks,
-  historyPageLoading,
-  mediaRoot,
-  setMediaRoot,
-  selectedOps,
-  setSelectedOps,
-  createTask,
-  requestPlanConfirmation,
-  refresh,
-  loadMore,
-}: {
-  tasks: Task[];
-  taskTotal: number;
-  hasMoreTasks: boolean;
-  historyPageLoading: boolean;
-  mediaRoot: string;
-  setMediaRoot: (v: string) => void;
-  selectedOps: string[];
-  setSelectedOps: (v: string[]) => void;
-  createTask: (e: FormEvent) => void;
-  requestPlanConfirmation: (task: Task) => void;
-  refresh: () => Promise<void>;
-  loadMore: () => Promise<void>;
-}) {
-  const toggle = (key: string) =>
-    setSelectedOps(
-      selectedOps.includes(key)
-        ? selectedOps.filter((value) => value !== key)
-        : [...selectedOps, key],
-    );
-  return (
-    <div className="task-dashboard">
-      <section className="task-create">
-        <h2>新建操作计划</h2>
-        <form className="task-form" onSubmit={createTask}>
-          <label htmlFor="media-root">媒体根目录</label>
-          <Input
-            id="media-root"
-            value={mediaRoot}
-            onChange={(e) => setMediaRoot(e.target.value)}
-            placeholder="/media/library"
-            required
-          />
-          <div className="operation-heading">
-            <label>操作</label>
-            <Button
-              type="button"
-              onClick={() => setSelectedOps(operations.map(([key]) => key))}
-            >
-              完整流程
-            </Button>
-          </div>
-          <div className="operation-list">
-            {operations.map(([key, label]) => (
-              <label key={key}>
-                <Input
-                  type="checkbox"
-                  checked={selectedOps.includes(key)}
-                  onChange={() => toggle(key)}
-                />
-                <span>{label}</span>
-              </label>
-            ))}
-          </div>
-          <Button type="submit" disabled={!selectedOps.length}>
-            预览 15 分钟有效的计划
-          </Button>
-        </form>
-      </section>
-      <section className="task-history">
-        <div className="task-title">
-          <div>
-            <h2>任务生命周期</h2>
-            <p>持久化历史、实时进度、报告与验证</p>
-            <p className="task-count">{taskTotal} 个任务</p>
-          </div>
-          <Button className="refresh" onClick={() => void refresh()}>
-            刷新
-          </Button>
-        </div>
-        {tasks.length === 0 ? (
-          <p className="task-empty">暂无管理任务。</p>
-        ) : (
-          <ol className="tasks">
-            {tasks.map((task) => (
-              <li key={task.id}>
-                <div className="task-summary">
-                  <span className={`status status-${taskDisplayStatus(task)}`}>
-                    {taskStatusLabels[taskDisplayStatus(task)]}
-                  </span>
-                  <strong>{taskKindLabels[task.kind]}</strong>
-                  <span className="task-root">{task.media_root}</span>
-                </div>
-                <small>
-                  {task.items.length} 个项目结果 · {task.id}
-                </small>
-                {(task.status === "queued" || task.status === "running") && (
-                  <div
-                    className="task-progress"
-                    role="progressbar"
-                    aria-label="任务进度"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={taskProgressPercent(task)}
-                  >
-                    <span style={{ width: taskProgressPercent(task) === undefined
-                      ? undefined
-                      : `${taskProgressPercent(task)}%` }} />
-                  </div>
-                )}
-                {task.error && (
-                  <p className="task-error" role={task.status === "failed" ? "alert" : undefined}>
-                    {task.error}
-                  </p>
-                )}
-                {task.operation_plan && (
-                  <div className="plan">
-                    <b>检查最终路径</b>
-                    <small>
-                      到期时间{" "}
-                      {new Date(
-                        task.plan_expires_at! * 1000,
-                      ).toLocaleTimeString()}
-                    </small>
-                    {task.operation_plan.warnings.map((warning) => (
-                      <p className="task-error" key={warning}>
-                        {warning}
-                      </p>
-                    ))}
-                    <ul>
-                      {task.operation_plan.actions.slice(0, 50).map((action, index) => (
-                        <li
-                          className={action.destructive ? "destructive" : ""}
-                          key={index}
-                        >
-                          <span>
-                            {action.destructive ? "破坏性操作" : kindLabel(action.kind)}
-                          </span>
-                          <code>{action.path ?? "—"}</code>
-                        </li>
-                      ))}
-                      {task.operation_plan.actions.length > 50 && (
-                        <li className="task-truncated">
-                          最终报告中还有 {task.operation_plan.actions.length - 50} 个计划操作
-                        </li>
-                      )}
-                    </ul>
-                    {task.status === "completed" &&
-                      !task.plan_consumed_at &&
-                      Date.now() / 1000 <= task.plan_expires_at! && (
-                        <Button onClick={() => requestPlanConfirmation(task)}>
-                          确认并执行
-                        </Button>
-                      )}
-                  </div>
-                )}
-                {task.items.length > 0 && (
-                  <ul className="task-items">
-                    {task.items.slice(0, 50).map((item) => (
-                      <li key={item.id}>
-                        <span>{taskItemStatusLabels[item.status] ?? item.status}</span>
-                        <b>{kindLabel(item.kind)}</b>
-                        <span className="task-item-path">
-                          <code>{item.path ?? "—"}</code>
-                          {item.path && (
-                            <Button
-                              type="button"
-                              className="copy-path"
-                              aria-label={`复制完整路径 ${item.path}`}
-                              onClick={() => void navigator.clipboard?.writeText(item.path!)}
-                            >
-                              复制
-                            </Button>
-                          )}
-                        </span>
-                        {item.message && <small>{item.message}</small>}
-                      </li>
-                    ))}
-                    {task.items.length > 50 && (
-                      <li className="task-truncated">
-                        最终报告中还有 {task.items.length - 50} 个项目结果
-                      </li>
-                    )}
-                  </ul>
-                )}
-                {task.report && (
-                  <details>
-                    <summary>最终报告和迁移验证</summary>
-                    <pre>{JSON.stringify(task.report, null, 2)}</pre>
-                  </details>
-                )}
-              </li>
-            ))}
-          </ol>
-        )}
-        {hasMoreTasks && (
-          <Button
-            type="button"
-            className="show-more-tasks"
-            disabled={historyPageLoading}
-            onClick={() => void loadMore()}
-          >
-            {historyPageLoading ? "正在加载任务…" : "再加载 20 个任务"}
-          </Button>
-        )}
-      </section>
-    </div>
-  );
-}
 function formatDate(v: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     month: "long",

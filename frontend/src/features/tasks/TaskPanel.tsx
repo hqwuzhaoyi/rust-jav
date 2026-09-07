@@ -127,11 +127,11 @@ export function TaskPanel({
                   {(task.status === "queued" || task.status === "running") && (
                     <Progress aria-label="任务进度" value={progress ?? 0} className="task-progress" />
                   )}
-                  {task.error && (
-                    <p className="task-error" role={task.status === "failed" ? "alert" : undefined}>
-                      {task.error}
-                    </p>
-                  )}
+                  {task.error && (task.status === "failed" ? (
+                    <p className="task-error" role="alert">{task.error}</p>
+                  ) : (
+                    <p className="task-error">{task.error}</p>
+                  ))}
                   {task.operation_plan && (
                     <Accordion type="multiple" defaultValue="plan" className="plan">
                       <AccordionItem value="plan">
