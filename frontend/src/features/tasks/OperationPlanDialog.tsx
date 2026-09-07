@@ -6,6 +6,7 @@ import {
 } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
+import { CopyPathButton } from "./CopyPathButton";
 import { operations, taskKindLabel, type Task } from "./types";
 
 export function OperationPlanDialog({
@@ -46,10 +47,10 @@ export function OperationPlanDialog({
                       <b>{taskKindLabel(action.kind)}</b>
                       {action.source !== undefined || action.target !== undefined ? (
                         <>
-                          <code>来源 {action.source ?? "—"}</code>
-                          <code>目标 {action.target ?? "—"}</code>
+                          <span className="task-item-path"><code>来源 {action.source ?? "—"}</code>{action.source && <CopyPathButton path={action.source} />}</span>
+                          <span className="task-item-path"><code>目标 {action.target ?? "—"}</code>{action.target && <CopyPathButton path={action.target} />}</span>
                         </>
-                      ) : <code>{action.path ?? "—"}</code>}
+                      ) : <span className="task-item-path"><code>{action.path ?? "—"}</code>{action.path && <CopyPathButton path={action.path} />}</span>}
                       {action.warning && <small>{action.warning}</small>}
                     </li>
                   ))}

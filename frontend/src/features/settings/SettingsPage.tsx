@@ -128,7 +128,7 @@ export function SettingsPage({
           <Input id="jellyfin-key" type="password" autoComplete="off" value={jfKey} disabled={jellyfinBusy} onChange={(event) => setJfKey(event.target.value)} required={!jfKeyConfigured} />
           <Button type="submit" variant="default" disabled={!jfDirty || jellyfinBusy}>{jfSaving ? "正在保存 Jellyfin…" : "保存 Jellyfin"}</Button>
           {jfError && <p role="alert" className="notice settings-error">{jfError}</p>}
-          {jfLoadState === "error" && <Button type="button" variant="secondary" className="settings-retry" onClick={loadJellyfinConfig}>重新加载 Jellyfin 设置</Button>}
+          {jfLoadState === "error" && <Button type="button" variant="secondary" className="settings-retry" disabled={jellyfinBusy} onClick={loadJellyfinConfig}>重新加载 Jellyfin 设置</Button>}
         </form>
         <div className="jellyfin-actions">
           <Button type="button" variant="secondary" disabled={jfDirty || jellyfinBusy} onClick={testJellyfin}>{jellyfinAction === "test" ? "正在测试连接…" : "测试连接"}</Button>

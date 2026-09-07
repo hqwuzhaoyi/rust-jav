@@ -11,6 +11,7 @@ import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { CopyPathButton } from "./CopyPathButton";
 import {
   operations,
   taskDisplayStatus,
@@ -146,7 +147,10 @@ export function TaskPanel({
                             {task.operation_plan.actions.map((action, index) => (
                               <li className={action.destructive ? "destructive" : ""} key={`${action.kind}-${action.path}-${index}`}>
                                 <span>{action.destructive ? "破坏性操作" : taskKindLabel(action.kind)}</span>
-                                <code>{action.path ?? "—"}</code>
+                                <span className="task-item-path">
+                                  <code>{action.path ?? "—"}</code>
+                                  {action.path && <CopyPathButton path={action.path} />}
+                                </span>
                               </li>
                             ))}
                           </ul>
@@ -169,17 +173,7 @@ export function TaskPanel({
                                 <b>{taskKindLabel(item.kind)}</b>
                                 <span className="task-item-path">
                                   <code>{item.path ?? "—"}</code>
-                                  {item.path && (
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      className="copy-path"
-                                      aria-label={`复制完整路径 ${item.path}`}
-                                      onClick={() => void navigator.clipboard?.writeText(item.path!)}
-                                    >
-                                      复制
-                                    </Button>
-                                  )}
+                                  {item.path && <CopyPathButton path={item.path} />}
                                 </span>
                                 {item.message && <small>{item.message}</small>}
                               </li>

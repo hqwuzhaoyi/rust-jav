@@ -357,6 +357,26 @@ describe("Issue #42 Jellyfin Settings state and security", () => {
     await userEvent.click(within(section).getByRole("button", { name: "刷新 Jellyfin" }));
     expect(await within(section).findByRole("alert")).toHaveTextContent("Jellyfin refresh needs manual retry.");
   });
+
+  it("disables Jellyfin reload while a connection action is pending", async () => {
+    let resolveTest!: (response: Response) => void;
+    const pendingTest = new Promise<Response>((resolve) => { resolveTest = resolve; });
+    stubSettingsApi((request) => {
+      if (request.url === "/api/v1/jellyfin/config" && request.method === "GET")
+        return new Response("Jellyfin settings are unavailable.", { status: 503 });
+      if (request.url === "/api/v1/jellyfin/test") return pendingTest;
+    });
+    render(<App />);
+    await userEvent.click((await screen.findAllByRole("button", { name: "设置" }))[0]);
+
+    const section = settingsSection("Jellyfin");
+    const reload = await within(section).findByRole("button", { name: "重新加载 Jellyfin 设置" });
+    await userEvent.click(within(section).getByRole("button", { name: "测试连接" }));
+    expect(reload).toBeDisabled();
+
+    await act(async () => { resolveTest(Response.json({ server_name: "Jellyfin" })); });
+    await waitFor(() => expect(reload).toBeEnabled());
+  });
 });
 
 describe("Issue #42 mobile Settings", () => {
