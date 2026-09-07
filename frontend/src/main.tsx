@@ -317,15 +317,6 @@ function assetRoute(id: string, tab: AssetTab) {
   const path = `/assets/${encodeURIComponent(id)}`;
   return tab === "nfo" ? `${path}?tab=nfo` : path;
 }
-function useMobileBreakpoint() {
-  const [mobile, setMobile] = useState(() => window.innerWidth <= 760);
-  useEffect(() => {
-    const update = () => setMobile(window.innerWidth <= 760);
-    addEventListener("resize", update);
-    return () => removeEventListener("resize", update);
-  }, []);
-  return mobile;
-}
 function normalizeLibraryIds(value: string) {
   return value
     .split(",")
@@ -396,7 +387,6 @@ export function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [assetTab, setAssetTab] = useState<AssetTab>(assetTabFromSearch);
   const inspectedAssetRef = useRef<Asset | null>(null);
-  const assetOpenerRef = useRef<HTMLElement | null>(null);
   const assetDismissRef = useRef(false);
   const [galleryLoading, setGalleryLoading] = useState(true);
   const [galleryError, setGalleryError] = useState(false);
@@ -827,44 +817,65 @@ export function App() {
     setActorDeletionPending("planning");
     setActorDeletionError(null);
     setActorDeletionPhrase("");
-    const result = await createActorDeletionPlan(actor.name, {
-      asset_ids: assetIds,
-      ...(confirmed.size ? { confirmed_multi_actor_asset_ids: [...confirmed] } : {}),
-    });
-    setActorDeletionPending(null);
-    if (result.status === "created") {
-      setActorDeletionPlan(result.plan);
-      setActorDeletionImpacts(result.plan.actor_folder_impacts);
-      setActorDeletionActor(actor);
-      return;
+    setActorDeletionActor(actor);
+    try {
+      const result = await createActorDeletionPlan(actor.name, {
+        asset_ids: assetIds,
+        ...(confirmed.size ? { confirmed_multi_actor_asset_ids: [...confirmed] } : {}),
+      });
+      if (result.status === "created") {
+        setActorDeletionPlan(result.plan);
+        setActorDeletionImpacts(result.plan.actor_folder_impacts);
+        return;
+      }
+      if (result.status === "multi_actor_confirmation_required") {
+        setActorDeletionImpacts(result.actor_folder_impacts);
+        setActorDeletionConfirmations(new Set());
+        return;
+      }
+      setActorDeletionImpacts([]);
+      setActorDeletionError(result.error);
+    } catch (error) {
+      setActorDeletionImpacts([]);
+      setActorDeletionError(error instanceof Error ? error.message : "无法创建永久删除操作计划。请检查连接后重试。");
+    } finally {
+      setActorDeletionPending(null);
     }
-    if (result.status === "multi_actor_confirmation_required") {
-      setActorDeletionImpacts(result.actor_folder_impacts);
-      setActorDeletionActor(actor);
-      setActorDeletionConfirmations(new Set());
-      return;
-    }
-    setActorDeletionError(result.error);
   }
   async function executeActorPermanentDeletion() {
     if (!actorDeletionPlan || actorDeletionPhrase !== "PERMANENTLY DELETE") return;
+    const actor = actorDeletionActor;
     setActorDeletionPending("executing");
-    const result = await executeDeletionPlan(actorDeletionPlan.id, actorDeletionPhrase);
-    setActorDeletionPending(null);
-    if (result.http_status === 202 && result.body && typeof result.body === "object") {
-      setActorDeletionOutcome(result.body as DeletionExecutionTask);
+    try {
+      const result = await executeDeletionPlan(actorDeletionPlan.id, actorDeletionPhrase);
+      if (result.http_status === 202 && result.body && typeof result.body === "object") {
+        setActorDeletionOutcome(result.body as DeletionExecutionTask);
+        setActorDeletionPlan(null);
+        setSelectedActorAssetIds(new Set());
+        setActorDeletionActor(null);
+        setActorDeletionImpacts([]);
+        setInspectedActor(null);
+        setNav("actors");
+        history.replaceState({}, "", "/actors");
+        await Promise.all([loadActors(), loadAssets()]);
+        return;
+      }
+      // Execution consumes the server-side plan even when validation rejects it.
+      // Do not present a stale snapshot as retryable; require a fresh plan.
       setActorDeletionPlan(null);
-      setSelectedActorAssetIds(new Set());
-      setActorDeletionActor(null);
       setActorDeletionImpacts([]);
-      setInspectedActor(null);
-      setNav("actors");
-      history.replaceState({}, "", "/actors");
-      await loadActors();
-      return;
+      setActorDeletionPhrase("");
+      setActorDeletionActor(actor);
+      setActorDeletionError(typeof result.body === "string" ? result.body : "永久删除计划已过期或文件状态已变化，请创建最新操作计划。");
+    } catch (error) {
+      setActorDeletionPlan(null);
+      setActorDeletionImpacts([]);
+      setActorDeletionPhrase("");
+      setActorDeletionActor(actor);
+      setActorDeletionError(error instanceof Error ? error.message : "永久删除请求失败。请创建最新操作计划后重试。");
+    } finally {
+      setActorDeletionPending(null);
     }
-    setActorDeletionPhrase("");
-    setActorDeletionError(typeof result.body === "string" ? result.body : "永久删除计划已过期或文件状态已变化，请重新检查。");
   }
   async function loadCandidates() {
     const r = await fetch("/api/v1/deletion-candidates");
@@ -1135,9 +1146,6 @@ export function App() {
     await loadAssets();
   }
   async function inspect(asset: Asset, navigate = true) {
-    const active = document.activeElement;
-    if (active instanceof HTMLElement && !active.closest(".asset-inspector"))
-      assetOpenerRef.current = active;
     setAssetTab("overview");
     if (navigate) {
       const current = history.state as AssetHistoryState | null;
@@ -1529,6 +1537,7 @@ export function App() {
   return (
     <motion.div
       className={`shell ui-foundation ${inspectedAsset ? "inspecting" : ""}`}
+      data-modal-background
       data-design="beui-photos"
       initial={false}
       animate={{ opacity: 1 }}
@@ -1803,7 +1812,6 @@ export function App() {
           backLabel={assetBackActor ? `返回 ${assetBackActor.name}` : undefined}
           tab={assetTab}
           onTabChange={changeAssetTab}
-          restoreFocusRef={assetOpenerRef}
         />
       )}
       {!confirmActor && (inspectedActor || actorDetailLoading || actorDetailError) && (
@@ -1868,6 +1876,22 @@ export function App() {
         </> : null}
       </AlertDialog>
       <AlertDialog
+        open={Boolean(actorDeletionError && actorDeletionActor && !actorDeletionPlan)}
+        onClose={() => { setActorDeletionError(null); setActorDeletionActor(null); setActorDeletionImpacts([]); }}
+        title="无法创建最新永久删除计划"
+        description={actorDeletionError ?? undefined}
+        className="actor-deletion-review-modal"
+        contentClassName="actor-deletion-confirmation"
+      >
+        <p>未执行任何删除。请重新检查当前 Actor Folder 与 Media Asset 状态。</p>
+        <div className="dialog-actions">
+          <Button variant="outline" onClick={() => { setActorDeletionError(null); setActorDeletionActor(null); setActorDeletionImpacts([]); }}>取消</Button>
+          <Button variant="destructive" disabled={actorDeletionPending === "planning"} onClick={() => actorDeletionActor && void requestActorPermanentDeletion(actorDeletionActor, [...selectedActorAssetIds])}>
+            {actorDeletionPending === "planning" ? "正在创建最新操作计划…" : "创建最新操作计划"}
+          </Button>
+        </div>
+      </AlertDialog>
+      <AlertDialog
         open={Boolean(actorDeletionPlan)}
         onClose={() => { setActorDeletionPlan(null); setActorDeletionPhrase(""); }}
         title={actorDeletionPlan ? `永久删除 ${actorDeletionPlan.paths.length} 个路径？` : "永久删除源媒体"}
@@ -1888,8 +1912,8 @@ export function App() {
             </ul>
           ) : null}
           <dl className="deletion-plan-metrics"><div><dt>逻辑大小</dt><dd>{formatBytes(actorDeletionPlan.logical_size)}</dd></div><div><dt>可回收空间</dt><dd>{formatBytes(actorDeletionPlan.reclaimable_space)}</dd></div></dl>
-          <div className="plan-paths">{actorDeletionPlan.paths.map((path) => <code key={path.path}>{path.path}</code>)}</div>
-          {actorDeletionError ? <p role="alert">{actorDeletionError}</p> : null}
+          <section className="deletion-scope"><h3>Hard-Link Search Roots</h3><div className="plan-paths">{actorDeletionPlan.hard_link_search_roots.map((root) => <code key={root}>{root}</code>)}</div></section>
+          <section className="deletion-scope"><h3>已批准的路径</h3><div className="plan-paths">{actorDeletionPlan.paths.map((path) => <div key={path.path}><code>{path.path}</code><span>{fileTypeLabel(path.type)}</span>{path.video_warning ? <small>{deletionWarningLabel(path.video_warning)}</small> : null}</div>)}</div></section>
           <label>输入 <b>PERMANENTLY DELETE</b> 进行确认
             <Input value={actorDeletionPhrase} onChange={(event) => setActorDeletionPhrase(event.target.value)} autoComplete="off" />
           </label>
@@ -1899,11 +1923,11 @@ export function App() {
       <AlertDialog
         open={Boolean(actorDeletionOutcome)}
         onClose={() => setActorDeletionOutcome(null)}
-        title={actorDeletionOutcome?.status === "completed" ? "永久删除已完成" : "永久删除已完成，但部分路径失败"}
+        title={actorDeletionOutcome?.status === "completed" ? "永久删除已完成" : actorDeletionOutcome?.status === "interrupted" ? "永久删除已中断" : "永久删除已完成，但部分路径失败"}
         className="actor-deletion-review-modal"
         contentClassName="actor-deletion-confirmation"
       >
-        {actorDeletionOutcome ? <><div className="plan-paths">{actorDeletionOutcome.items.map((item) => <code key={`${item.path}-${item.status}`}>{item.path ?? "未知路径"} · {taskItemStatusLabels[item.status] ?? item.status} {item.message ?? ""}</code>)}</div><Button onClick={() => setActorDeletionOutcome(null)}>关闭</Button></> : null}
+        {actorDeletionOutcome ? <><p className="eyebrow">文件系统结果</p>{actorDeletionOutcome.error ? <p role="alert">{actorDeletionOutcome.error}</p> : null}<div className="plan-paths">{actorDeletionOutcome.items.map((item) => <code key={`${item.path}-${item.status}`}>{item.path ?? "未知路径"} · {taskItemStatusLabels[item.status] ?? item.status} {item.message ?? ""}</code>)}</div>{actorDeletionOutcome.status !== "completed" ? <p className="no-rollback">任务未完成；不会尝试回滚任何已删除路径。</p> : null}<Button onClick={() => setActorDeletionOutcome(null)}>关闭</Button></> : null}
       </AlertDialog>
       <OperationPlanDialog
         task={planToConfirm}
@@ -2047,7 +2071,6 @@ function AssetInspector({
   backLabel,
   tab,
   onTabChange,
-  restoreFocusRef,
 }: {
   asset: Asset;
   detail: AssetDetail | null;
@@ -2056,81 +2079,13 @@ function AssetInspector({
   backLabel?: string;
   tab: AssetTab;
   onTabChange: (tab: AssetTab) => void;
-  restoreFocusRef: { current: HTMLElement | null };
 }) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const closeRef = useRef(close);
-  closeRef.current = close;
-  const mobile = useMobileBreakpoint();
-  useEffect(() => {
-    const background = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        ".shell > .sidebar, .shell > main, .shell > .bottom-nav",
-      ),
-    ).map((element) => ({
-      element,
-      inert: element.inert,
-      attribute: element.hasAttribute("inert"),
-    }));
-    const scrollY = window.scrollY;
-    const returnFocus = restoreFocusRef.current;
-    background.forEach(({ element }) => {
-      element.inert = true;
-      element.setAttribute("inert", "");
-    });
-    if (mobile) {
-      document.body.classList.add("asset-inspector-open");
-      document.body.style.setProperty("--asset-inspector-scroll-y", `${scrollY}px`);
-    }
-    closeButtonRef.current?.focus();
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeRef.current();
-        return;
-      }
-      if (event.key !== "Tab" || !dialogRef.current) return;
-      const focusable = Array.from(
-        dialogRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
-        ),
-      );
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      background.forEach(({ element, inert, attribute }) => {
-        element.inert = inert;
-        if (attribute) element.setAttribute("inert", "");
-        else element.removeAttribute("inert");
-      });
-      if (mobile) {
-        document.body.classList.remove("asset-inspector-open");
-        document.body.style.removeProperty("--asset-inspector-scroll-y");
-        window.scrollTo(0, scrollY);
-      }
-      if (returnFocus?.isConnected) returnFocus.focus();
-    };
-  }, [mobile, restoreFocusRef]);
   return (
     <Sheet open onClose={close} aria-label={asset.jav_code ?? "媒体资产"} className="asset-inspector-sheet" contentClassName="asset-inspector">
-      <div ref={dialogRef}>
+      <div>
       <div className="sheet-handle" aria-hidden="true" />
-      <Button
-        ref={closeButtonRef}
-        className="inspector-close ui-icon-button"
+        <Button
+          className="inspector-close ui-icon-button"
         onClick={close}
         aria-label="关闭资产详情"
       >

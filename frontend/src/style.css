@@ -2,12 +2,6 @@
 * {
   box-sizing: border-box;
 }
-button {
-  font: inherit;
-}
-input {
-  font: inherit;
-}
 .shell {
   min-height: 100vh;
 }
@@ -54,7 +48,7 @@ input {
   font-weight: 700;
   letter-spacing: 0.08em;
 }
-.sidebar nav button em {
+.sidebar nav .beui-button em {
   margin-left: auto;
   padding: 1px 6px;
   border-radius: 9px;
@@ -340,7 +334,7 @@ input {
   gap: 15px;
   margin-top: 35px;
 }
-.pagination button {
+.pagination .beui-button {
   min-height: 44px;
   padding: 7px 12px;
   border: 1px solid var(--line);
@@ -370,13 +364,13 @@ input {
   margin-bottom: 7px;
   font-size: 12px;
 }
-.auth input {
+.auth .beui-input {
   width: 100%;
   padding: 10px;
   border: 1px solid #d2d2d7;
   border-radius: 9px;
 }
-.auth button {
+.auth .beui-button {
   width: 100%;
   margin-top: 14px;
   padding: 10px;
@@ -402,14 +396,14 @@ input {
   font-size: 11px;
   font-weight: 650;
 }
-.task-form select {
+.task-form .beui-select {
   width: 100%;
   padding: 9px 10px;
   border: 1px solid #d2d2d7;
   border-radius: 9px;
   background: #fff;
 }
-.task-form > button {
+.task-form > .beui-button {
   width: 100%;
   margin-top: 16px;
   padding: 10px;
@@ -597,7 +591,7 @@ input {
   font-size: 11px;
   font-weight: 650;
 }
-.rules-settings textarea[readonly] {
+.rules-settings .beui-textarea[readonly] {
   color: #6e6e73;
   background: #f5f5f7;
 }
@@ -606,7 +600,7 @@ input {
   align-items: stretch;
   gap: 10px;
 }
-.rule-actions button:disabled {
+.rule-actions .beui-button:disabled {
   opacity: 0.45;
 }
 .rule-actions .danger {
@@ -622,7 +616,7 @@ input {
   color: #6e6e73;
   font-size: 12px;
 }
-.deletion-intro button {
+.deletion-intro .beui-button {
   flex: none;
   padding: 10px 14px;
   border: 0;
@@ -631,7 +625,7 @@ input {
   background: #c83e36;
   font-weight: 650;
 }
-.deletion-intro button:disabled {
+.deletion-intro .beui-button:disabled {
   opacity: 0.4;
 }
 .candidate-list {
@@ -710,13 +704,13 @@ input {
   grid-template-columns: 1fr 1fr;
   gap: 8px;
 }
-.choice button {
+.choice .beui-button {
   padding: 10px;
   border: 1px solid #d2d2d7;
   border-radius: 9px;
   background: #fff;
 }
-.choice button[aria-pressed="true"] {
+.choice .beui-button[aria-pressed="true"] {
   border-color: var(--blue);
   background: #eaf4ff;
 }
@@ -866,7 +860,7 @@ input {
   gap: 8px;
   margin-top: 16px;
 }
-.confirm-actions button {
+.confirm-actions .beui-button {
   padding: 9px 12px;
   border: 0;
   border-radius: 9px;
@@ -875,7 +869,7 @@ input {
   color: #fff;
   background: #c83e36;
 }
-.confirm-actions button:disabled {
+.confirm-actions .beui-button:disabled {
   opacity: 0.4;
 }
 .confirmation-action-review {
@@ -921,28 +915,12 @@ input {
 }
 
 /* BeUI / Photos surface */
-button:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--blue) 55%, transparent);
-  outline-offset: 2px;
-}
-a:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--blue) 55%, transparent);
-  outline-offset: 2px;
-}
-input:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--blue) 55%, transparent);
-  outline-offset: 2px;
-}
-textarea:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--blue) 55%, transparent);
-  outline-offset: 2px;
-}
-.sidebar nav button span {
+.sidebar nav .beui-button span {
   width: 18px;
   text-align: center;
   font-size: 17px; display: inline-grid; place-items: center; }
-.bottom-nav button span { display: inline-grid; place-items: center; }
-.sidebar nav button svg { width: 17px; height: 17px; stroke-width: 1.8; }
+.bottom-nav .beui-button span { display: inline-grid; place-items: center; }
+.sidebar nav .beui-button svg { width: 17px; height: 17px; stroke-width: 1.8; }
 .logo svg { width: 19px; height: 19px; }
 .signout svg { width: 16px; height: 16px; }
 .content h1 {
@@ -950,7 +928,7 @@ textarea:focus-visible {
   font-size: 31px;
   letter-spacing: -0.04em; font-size: 27px; }
 .scan svg { width: 16px; height: 16px; }
-.search input {
+.search .beui-input {
   width: 100%;
   border: 0;
   outline: 0;
@@ -999,7 +977,7 @@ textarea:focus-visible {
 .gallery-feedback svg { width: 28px; height: 28px; }
 .gallery-feedback h2 { margin: 0; color: #303034; font-size: 18px; }
 .gallery-feedback p { margin: 0; font-size: 12px; }
-.gallery-feedback button {
+.gallery-feedback .beui-button {
   margin-top: 6px;
   padding: 8px 18px;
   border: 0;
@@ -1010,7 +988,7 @@ textarea:focus-visible {
 }
 .gallery-loading svg { animation: gallery-spin .9s linear infinite; }
 @keyframes gallery-spin { to { transform: rotate(360deg); } }
-.beui-tabs-list > button {
+.beui-tabs-list > .beui-button {
   position: relative;
   flex: 1;
   border: 0;
@@ -1018,7 +996,7 @@ textarea:focus-visible {
   background: transparent;
   font-weight: 650;
 }
-.beui-tabs-list > button[aria-selected="true"] { color: #111; }
+.beui-tabs-list > .beui-button[aria-selected="true"] { color: #111; }
 .inspector-close svg { width: 16px; height: 16px; flex-shrink: 0; }
 .inspector-back { display: inline-flex; align-items: center; gap: 7px; max-width: calc(100% - 48px); padding: 0 8px; border: 0; color: var(--blue); background: transparent; }
 .inspector-back svg { width: 17px; height: 17px; flex: none; }
@@ -1049,8 +1027,8 @@ textarea:focus-visible {
 .section-title span { color: #999; font-size: 11px; }
 .linked-asset-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .linked-asset-grid img { width: 100%; height: 100%; object-fit: cover; }
-.linked-asset-grid > button > svg { width: 32px; height: 32px; }
-.linked-asset-grid button > span { position: absolute; inset: auto 0 0; padding: 28px 9px 8px; text-align: left; background: linear-gradient(transparent, rgba(0,0,0,.8)); }
+.linked-asset-grid > .beui-button > svg { width: 32px; height: 32px; }
+.linked-asset-grid .beui-button > span { position: absolute; inset: auto 0 0; padding: 28px 9px 8px; text-align: left; background: linear-gradient(transparent, rgba(0,0,0,.8)); }
 .linked-asset-grid b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .linked-asset-grid small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255,255,255,.72); font-size: 9px; }
 .actor-detail-remove svg { width: 16px; height: 16px; }
@@ -1066,7 +1044,7 @@ textarea:focus-visible {
 .actor-feedback > svg { width: 28px; height: 28px; }
 .actor-feedback > p { margin: 0; }
 .actor-feedback > h2 { margin: 0; color: #303034; font-size: 18px; }
-.actor-feedback > button {
+.actor-feedback > .beui-button {
   margin-top: 6px;
   padding: 8px 18px;
   border: 0;
@@ -1143,7 +1121,7 @@ textarea:focus-visible {
   font-size: 11px;
   line-height: 1.45;
 }
-.jellyfin-actions button {
+.jellyfin-actions .beui-button {
   padding: 10px 14px;
   border: 0;
   border-radius: 10px;
@@ -1198,7 +1176,7 @@ textarea:focus-visible {
   color: var(--ds-secondary);
   font-size: 12px;
 }
-.actor-sort-toolbar select {
+.actor-sort-toolbar .beui-select {
   min-height: var(--ds-control);
   padding: 0 34px 0 12px;
   border: 1px solid var(--ds-line);
@@ -1206,8 +1184,6 @@ textarea:focus-visible {
   color: var(--ds-text);
   background: var(--ds-surface-solid);
   font: inherit;
-}
-.actor-sort-toolbar .beui-select {
   width: auto;
   min-width: 132px;
 }
@@ -1289,7 +1265,7 @@ textarea:focus-visible {
   font-weight: 700;
   text-align: right;
 }
-.actor-folder-meta button {
+.actor-folder-meta .beui-button {
   width: 100%;
   margin-top: 12px;
   padding: 8px;
@@ -1330,7 +1306,7 @@ textarea:focus-visible {
   gap: 8px;
   margin-top: 19px;
 }
-.dialog-actions button {
+.dialog-actions .beui-button {
   padding: 9px 12px;
   border: 0;
   border-radius: 9px;
@@ -1340,7 +1316,7 @@ textarea:focus-visible {
   color: #fff;
   background: #d9362b;
 }
-.dialog-actions button:disabled {
+.dialog-actions .beui-button:disabled {
   opacity: 0.55;
 }
 .operation-heading {
@@ -1348,7 +1324,7 @@ textarea:focus-visible {
   align-items: end;
   justify-content: space-between;
 }
-.operation-heading button {
+.operation-heading .beui-button {
   border: 0;
   color: var(--blue);
   background: transparent;
@@ -1368,7 +1344,7 @@ textarea:focus-visible {
   border-radius: 8px;
   background: #f5f5f7;
 }
-.operation-list input {
+.operation-list .beui-checkbox {
   width: auto;
 }
 .plan {
@@ -1407,7 +1383,7 @@ textarea:focus-visible {
 .plan code {
   overflow-wrap: anywhere;
 }
-.plan > button {
+.plan > .beui-button {
   width: 100%;
   padding: 9px;
   border: 0;
@@ -1641,7 +1617,7 @@ body {
   margin-left: 230px;
   padding: 0 34px 72px;
 }
-.sidebar nav button {
+.sidebar nav .beui-button {
   width: 100%;
   display: flex;
   align-items: center;
@@ -1678,11 +1654,11 @@ body {
   color: var(--ds-secondary);
   transition: color .16s ease, background-color .16s ease, transform .16s ease;
 }
-.sidebar nav button:hover { color: var(--ds-text); background: var(--ds-hover); }
+.sidebar nav .beui-button:hover { color: var(--ds-text); background: var(--ds-hover); }
 .signout:hover { color: var(--ds-text); background: var(--ds-hover); }
-.sidebar nav button:active { transform: scale(.985); }
+.sidebar nav .beui-button:active { transform: scale(.985); }
 .signout:active { transform: scale(.985); }
-.sidebar nav button.active {
+.sidebar nav .beui-button.active {
   color: #096ed8;
   background: #e4f0ff;
   font-weight: 650; color: var(--ds-accent); background: var(--ds-accent-soft); }
@@ -1730,7 +1706,7 @@ body {
   background: var(--ds-muted);
   transition: background-color .16s ease, border-color .16s ease, box-shadow .16s ease;
 }
-.task-form input {
+.task-form .beui-input {
   width: 100%;
   padding: 9px 10px;
   border: 1px solid #d2d2d7;
@@ -1743,7 +1719,7 @@ body {
   background: var(--ds-muted);
   transition: background-color .16s ease, border-color .16s ease, box-shadow .16s ease;
 }
-.rules-settings input {
+.rules-settings .beui-input {
   width: 100%;
   padding: 10px;
   border: 1px solid #d2d2d7;
@@ -1757,7 +1733,7 @@ body {
   background: var(--ds-muted);
   transition: background-color .16s ease, border-color .16s ease, box-shadow .16s ease;
 }
-.rules-settings textarea {
+.rules-settings .beui-textarea {
   width: 100%;
   padding: 10px;
   border: 1px solid #d2d2d7;
@@ -1774,7 +1750,7 @@ body {
   background: var(--ds-muted);
   transition: background-color .16s ease, border-color .16s ease, box-shadow .16s ease;
 }
-.confirm-dialog input {
+.confirm-dialog .beui-input {
   min-height: var(--ds-control);
   border: 1px solid transparent;
   border-radius: var(--ds-radius-md);
@@ -1782,7 +1758,7 @@ body {
   background: var(--ds-muted);
   transition: background-color .16s ease, border-color .16s ease, box-shadow .16s ease;
 }
-.delete-confirm input {
+.delete-confirm .beui-input {
   width: 100%;
   padding: 10px;
   border: 1px solid #d2d2d7;
@@ -1795,13 +1771,13 @@ body {
   transition: background-color .16s ease, border-color .16s ease, box-shadow .16s ease;
 }
 .search:hover { background: var(--ds-hover); }
-.task-form input:hover {
+.task-form .beui-input:hover {
   background: var(--ds-hover);
 }
-.rules-settings input:hover {
+.rules-settings .beui-input:hover {
   background: var(--ds-hover);
 }
-.rules-settings textarea:hover {
+.rules-settings .beui-textarea:hover {
   background: var(--ds-hover);
 }
 .search:focus-within {
@@ -1809,27 +1785,27 @@ body {
   box-shadow: var(--ds-focus);
   outline: none;
 }
-.task-form input:focus {
+.task-form .beui-input:focus {
   border-color: color-mix(in srgb, var(--ds-accent) 40%, transparent);
   box-shadow: var(--ds-focus);
   outline: none;
 }
-.rules-settings input:focus {
+.rules-settings .beui-input:focus {
   border-color: color-mix(in srgb, var(--ds-accent) 40%, transparent);
   box-shadow: var(--ds-focus);
   outline: none;
 }
-.rules-settings textarea:focus {
+.rules-settings .beui-textarea:focus {
   border-color: color-mix(in srgb, var(--ds-accent) 40%, transparent);
   box-shadow: var(--ds-focus);
   outline: none;
 }
-.confirm-dialog input:focus {
+.confirm-dialog .beui-input:focus {
   border-color: color-mix(in srgb, var(--ds-accent) 40%, transparent);
   box-shadow: var(--ds-focus);
   outline: none;
 }
-.delete-confirm input:focus {
+.delete-confirm .beui-input:focus {
   border-color: color-mix(in srgb, var(--ds-accent) 40%, transparent);
   box-shadow: var(--ds-focus);
   outline: none;
@@ -1847,7 +1823,7 @@ body {
   border-radius: var(--ds-radius-md);
   background: var(--ds-muted);
 }
-.beui-tabs-list[data-variant="segment"] > button {
+.beui-tabs-list[data-variant="segment"] > .beui-button {
   position: relative;
   isolation: isolate;
   min-height: 38px;
@@ -1860,8 +1836,8 @@ body {
   font-size: 11px;
   cursor: pointer;
 }
-.beui-tabs-list[data-variant="segment"] > button:hover { color: var(--ds-text); }
-.beui-tabs-list[data-variant="segment"] > button[aria-selected="true"] {
+.beui-tabs-list[data-variant="segment"] > .beui-button:hover { color: var(--ds-text); }
+.beui-tabs-list[data-variant="segment"] > .beui-button[aria-selected="true"] {
   color: var(--ds-text);
   font-weight: 680;
 }
@@ -1881,7 +1857,7 @@ body {
   width: 100%;
   border-bottom: 1px solid var(--ds-line);
 }
-.beui-tabs-list[data-variant="underline"] > button {
+.beui-tabs-list[data-variant="underline"] > .beui-button {
   position: relative;
   isolation: isolate;
   flex: 1;
@@ -1894,8 +1870,8 @@ body {
   font-weight: 560;
   transition: color .16s ease;
 }
-.beui-tabs-list[data-variant="underline"] > button:hover { color: var(--ds-text); }
-.beui-tabs-list[data-variant="underline"] > button[aria-selected="true"] {
+.beui-tabs-list[data-variant="underline"] > .beui-button:hover { color: var(--ds-text); }
+.beui-tabs-list[data-variant="underline"] > .beui-button[aria-selected="true"] {
   color: var(--ds-text);
   background: transparent;
   font-weight: 680;
@@ -1908,7 +1884,7 @@ body {
   background: var(--ds-accent);
 }
 
-.linked-asset-grid button { position: relative; overflow: hidden; aspect-ratio: 4 / 3; padding: 0; border: 0; border-radius: 10px; background: #ddd; color: white;
+.linked-asset-grid .beui-button { position: relative; overflow: hidden; aspect-ratio: 4 / 3; padding: 0; border: 0; border-radius: 10px; background: #ddd; color: white;
   border-radius: var(--ds-radius-md);
   box-shadow: none;
 }
@@ -2145,13 +2121,13 @@ body {
   transition: transform .16s ease, filter .16s ease;
 }
 
-.task-form > button[type="submit"] {
+.task-form > .beui-button[type="submit"] {
   border: 0;
   border-radius: var(--ds-radius-md);
   transition: transform .16s ease, filter .16s ease;
 }
 
-.rule-actions button {
+.rule-actions .beui-button {
   flex: 0 0 auto;
   padding: 9px 12px;
   border: 0;
@@ -2164,11 +2140,11 @@ body {
   transition: transform .16s ease, filter .16s ease;
 }
 .scan:hover { filter: brightness(.97); }
-.task-form > button[type="submit"]:hover { filter: brightness(.97); }
-.rule-actions button:hover { filter: brightness(.97); }
+.task-form > .beui-button[type="submit"]:hover { filter: brightness(.97); }
+.rule-actions .beui-button:hover { filter: brightness(.97); }
 .scan:active { transform: scale(.985); }
-.task-form > button[type="submit"]:active { transform: scale(.985); }
-.rule-actions button:active { transform: scale(.985); }
+.task-form > .beui-button[type="submit"]:active { transform: scale(.985); }
+.rule-actions .beui-button:active { transform: scale(.985); }
 .danger { color: var(--ds-danger); background: var(--ds-danger-soft); }
 .actor-action-menu {
   position: absolute;
@@ -2193,7 +2169,7 @@ body {
   background: var(--ds-surface-solid);
   box-shadow: var(--ds-shadow-sheet);
 }
-.actor-action-menu-popover button {
+.actor-action-menu-popover .beui-button {
   display: flex;
   width: 100%;
   align-items: center;
@@ -2205,7 +2181,7 @@ body {
   background: transparent;
   white-space: nowrap;
 }
-.actor-action-menu-popover button:hover { background: var(--ds-danger-soft); }
+.actor-action-menu-popover .beui-button:hover { background: var(--ds-danger-soft); }
 .actor-action-menu-popover svg { width: 16px; height: 16px; }
 
 @media (max-width: 760px) {
@@ -2249,7 +2225,7 @@ body {
   .deletion-intro {
     display: block;
   }
-  .deletion-intro button {
+  .deletion-intro .beui-button {
     width: 100%;
   }
   .candidate-card {
@@ -2273,13 +2249,13 @@ body {
     align-items: stretch;
     flex-direction: column-reverse;
   }
-  .confirm-actions button {
+  .confirm-actions .beui-button {
     width: 100%;
   }
-  .bottom-nav button span {
+  .bottom-nav .beui-button span {
     font-size: 20px;
   }
-  .bottom-nav button.active {
+  .bottom-nav .beui-button.active {
     color: var(--blue);
   }
   .content > header {
@@ -2290,11 +2266,11 @@ body {
     padding: 9px 0; top: 70px; }
   .gallery-filter-tabs { margin-top: 8px; }
   .beui-tabs-list[data-variant="segment"] { width: 100%; }
-  .beui-tabs-list[data-variant="segment"] > button { flex: 1; padding-inline: 6px; }
+  .beui-tabs-list[data-variant="segment"] > .beui-button { flex: 1; padding-inline: 6px; }
   .asset-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 20px 9px; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-  .bottom-nav button {
+  .bottom-nav .beui-button {
     flex: 1;
     display: grid;
     place-items: center;
@@ -2303,7 +2279,7 @@ body {
     color: #85858a;
     background: transparent;
     font-size: 9px; min-height: 44px; }
-  .bottom-nav button svg { width: 20px; height: 20px; }
+  .bottom-nav .beui-button svg { width: 20px; height: 20px; }
   .actor-detail-hero { margin-left: -18px; margin-right: -18px; }
   .actor-folder-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2317,11 +2293,11 @@ body {
   .actor-sort-toolbar label {
     flex: 1;
   }
-  .actor-sort-toolbar select {
+  .actor-sort-toolbar .beui-select {
     min-width: 0;
     flex: 1;
+    width: 100%;
   }
-  .actor-sort-toolbar .beui-select { width: 100%; min-width: 0; }
   .actor-folder-meta {
     padding: 10px;
   }
@@ -2344,11 +2320,11 @@ body {
     width: 100%;
     min-height: 44px;
   }
-  .jellyfin-actions > button {
+  .jellyfin-actions > .beui-button {
     width: 100%;
     min-height: 44px;
   }
-  .dialog-actions > button {
+  .dialog-actions > .beui-button {
     width: 100%;
     min-height: 44px;
   }
@@ -2403,12 +2379,6 @@ body {
     padding: 0 12px 90px;
   }
   .search { width: 100%; }
-  body.asset-inspector-open {
-    position: fixed;
-    inset: calc(-1 * var(--asset-inspector-scroll-y, 0px)) 0 auto;
-    width: 100%;
-    overflow: hidden;
-  }
   .asset-inspector {
     inset: auto 0 0;
     width: 100%;
@@ -2434,7 +2404,7 @@ body {
     overflow-x: auto;
     scrollbar-width: none;
   }
-  .filters button {
+  .filters .beui-button {
     flex: 1;
     white-space: nowrap;
   }

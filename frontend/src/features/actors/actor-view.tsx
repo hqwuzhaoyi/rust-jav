@@ -217,16 +217,6 @@ export function ActorFolders({
   );
 }
 
-function useMobileBreakpoint() {
-  const [mobile, setMobile] = useState(() => window.innerWidth <= 760);
-  useEffect(() => {
-    const update = () => setMobile(window.innerWidth <= 760);
-    addEventListener("resize", update);
-    return () => removeEventListener("resize", update);
-  }, []);
-  return mobile;
-}
-
 export function ActorInspectorSheet({
   actor,
   loading,
@@ -252,34 +242,7 @@ export function ActorInspectorSheet({
   onSelectedAssetIdsChange: (ids: Set<string>) => void;
   onPermanentDelete: (assetIds: string[]) => void;
 }) {
-  const mobile = useMobileBreakpoint();
   const contentRef = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const background = Array.from(
-      document.querySelectorAll<HTMLElement>(".shell > .sidebar, .shell > main, .shell > .bottom-nav"),
-    ).map((element) => ({ element, inert: element.inert, attribute: element.hasAttribute("inert") }));
-    const scrollY = window.scrollY;
-    background.forEach(({ element }) => {
-      element.inert = true;
-      element.setAttribute("inert", "");
-    });
-    if (mobile) {
-      document.body.classList.add("asset-inspector-open");
-      document.body.style.setProperty("--asset-inspector-scroll-y", `${scrollY}px`);
-    }
-    return () => {
-      background.forEach(({ element, inert, attribute }) => {
-        element.inert = inert;
-        if (attribute) element.setAttribute("inert", "");
-        else element.removeAttribute("inert");
-      });
-      if (mobile) {
-        document.body.classList.remove("asset-inspector-open");
-        document.body.style.removeProperty("--asset-inspector-scroll-y");
-        window.scrollTo(0, scrollY);
-      }
-    };
-  }, [mobile]);
   useEffect(() => {
     if (!actor || !linkedFocusRef.current || !contentRef.current) return;
     const target = Array.from(contentRef.current.querySelectorAll<HTMLElement>("[data-asset-id]"))

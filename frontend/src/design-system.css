@@ -68,6 +68,20 @@
 .ui-foundation {
   font-family: "Avenir Next", "DIN Alternate", "Helvetica Neue", sans-serif;
 }
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--ds-accent) 55%, transparent);
+  outline-offset: 2px;
+}
 .ui-panel,
 .auth form.ui-panel {
   border: 1px solid var(--border);

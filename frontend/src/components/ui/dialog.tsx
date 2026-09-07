@@ -74,7 +74,7 @@ export function Dialog(props: DialogProps) {
 }
 
 export function Sheet(props: SheetProps) {
-  return <ModalSurface role="dialog" placement="bottom" {...props} />;
+  return <ModalSurface role="dialog" placement="bottom" lockScrollPosition {...props} />;
 }
 
 export function AlertDialog({ dismissible = false, ...props }: AlertDialogProps) {

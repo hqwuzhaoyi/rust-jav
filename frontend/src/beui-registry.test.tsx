@@ -47,20 +47,29 @@ describe("beUI registry primitives", () => {
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "75");
   });
 
-  it("moves focus into a Dropdown Menu and lets Escape close it", async () => {
+  it("moves focus through a Dropdown Menu and returns it to the trigger on Escape", async () => {
     render(
       <DropdownMenu>
-        <DropdownMenuTrigger aria-label="更多操作">•••</DropdownMenuTrigger>
-        <DropdownMenuContent aria-label="资产操作">
-          <DropdownMenuItem>移除演员目录…</DropdownMenuItem>
+          <DropdownMenuTrigger aria-label="更多操作">•••</DropdownMenuTrigger>
+          <DropdownMenuContent aria-label="资产操作">
+            <DropdownMenuItem>移除演员目录…</DropdownMenuItem>
+            <DropdownMenuItem>永久删除源媒体…</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>,
     );
     await userEvent.click(screen.getByRole("button", { name: "更多操作" }));
     const menu = screen.getByRole("menu", { name: "资产操作" });
-    expect(within(menu).getByRole("menuitem")).toHaveFocus();
+    const items = within(menu).getAllByRole("menuitem");
+    expect(items[0]).toHaveFocus();
+    await userEvent.keyboard("{ArrowDown}");
+    expect(items[1]).toHaveFocus();
+    await userEvent.keyboard("{Home}");
+    expect(items[0]).toHaveFocus();
+    await userEvent.keyboard("{End}");
+    expect(items[1]).toHaveFocus();
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("menu", { name: "资产操作" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "更多操作" })).toHaveFocus();
   });
 
   it("adapts the vendored beUI modal with focus and Escape behavior", async () => {

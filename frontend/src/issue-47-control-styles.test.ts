@@ -33,11 +33,11 @@ describe("Issue #47 explicit touch target contracts", () => {
 
   it("keeps intentional compact and 44px controls explicit after global coupling is removed", () => {
     const touchTarget = control("ui-touch-target");
-    const filter = control("ui-touch-target", "beui-tabs-list");
+    const filter = control("beui-button ui-touch-target", "beui-tabs-list");
     filter.parentElement?.setAttribute("data-variant", "segment");
     const actorMenu = control("actor-action-menu-trigger ui-touch-target ui-icon-button");
-    const pagination = control("", "pagination");
-    const tabs = control("", "beui-tabs-list");
+    const pagination = control("beui-button", "pagination");
+    const tabs = control("beui-button", "beui-tabs-list");
     tabs.parentElement?.setAttribute("data-variant", "underline");
     const bottomNav = control("ui-touch-target", "bottom-nav");
 

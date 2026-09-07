@@ -13,6 +13,8 @@ export interface MorphingModalProps {
   initialAnimation?: boolean;
   /** Alert dialogs can make dismissal an explicit domain action. */
   dismissible?: boolean;
+  /** Sheets preserve document position while the modal owns body scrolling. */
+  lockScrollPosition?: boolean;
 }
 
 const FOCUSABLE = [
@@ -33,6 +35,7 @@ export function MorphingModal({
   className,
   initialAnimation = true,
   dismissible = true,
+  lockScrollPosition = false,
 }: MorphingModalProps) {
   const open = viewId !== null;
   const reduce = useReducedMotion();
@@ -45,19 +48,46 @@ export function MorphingModal({
 
   useEffect(() => {
     if (!open) return;
-    const previousOverflow = document.body.style.overflow;
+    const body = document.body;
+    const previous = {
+      overflow: body.style.overflow,
+      position: body.style.position,
+      top: body.style.top,
+      width: body.style.width,
+    };
+    const scrollY = window.scrollY;
+    const backgrounds = Array.from(document.querySelectorAll<HTMLElement>("[data-modal-background]"));
+    const priorInert = backgrounds.map((element) => ({ element, inert: element.inert, hadAttribute: element.hasAttribute("inert") }));
     returnFocusRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
-    document.body.style.overflow = "hidden";
+    body.style.overflow = "hidden";
+    if (lockScrollPosition) {
+      body.style.position = "fixed";
+      body.style.top = `-${scrollY}px`;
+      body.style.width = "100%";
+    }
+    priorInert.forEach(({ element }) => {
+      element.inert = true;
+      element.setAttribute("inert", "");
+    });
 
     return () => {
-      document.body.style.overflow = previousOverflow;
+      body.style.overflow = previous.overflow;
+      body.style.position = previous.position;
+      body.style.top = previous.top;
+      body.style.width = previous.width;
+      priorInert.forEach(({ element, inert, hadAttribute }) => {
+        element.inert = inert;
+        if (hadAttribute) element.setAttribute("inert", "");
+        else element.removeAttribute("inert");
+      });
+      if (lockScrollPosition) window.scrollTo(0, scrollY);
       const returnFocus = returnFocusRef.current;
       returnFocusRef.current = null;
       if (returnFocus?.isConnected) returnFocus.focus();
     };
-  }, [open]);
+  }, [lockScrollPosition, open]);
 
   useEffect(() => {
     if (!open || viewId === null) return;
