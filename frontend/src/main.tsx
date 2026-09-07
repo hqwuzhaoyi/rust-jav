@@ -1535,13 +1535,12 @@ export function App() {
   return (
     <motion.div
       className={`shell ui-foundation ${inspectedAsset ? "inspecting" : ""}`}
-      data-modal-background
       data-design="beui-photos"
       initial={false}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.2, ease: EASE_OUT }}
     >
-      <aside className="sidebar">
+      <aside className="sidebar" data-modal-background>
         <div className="logo">
           <span><ImageIcon aria-hidden="true" /></span>
           <div>
@@ -1653,7 +1652,7 @@ export function App() {
           <LogOut aria-hidden="true" /> 退出登录
         </Button>
       </aside>
-      <main className="content">
+      <main className="content" data-modal-background>
         <header>
           <div>
             <p className="eyebrow">媒体图库</p>
@@ -1993,7 +1992,7 @@ export function App() {
           </>
         )}
       </Dialog>
-      <nav className="bottom-nav" aria-label="移动端主导航">
+      <nav className="bottom-nav" aria-label="移动端主导航" data-modal-background>
         <Button
           aria-label="图库"
           aria-current={nav === "assets" || nav === "recent" || nav === "exceptions" ? "page" : undefined}
